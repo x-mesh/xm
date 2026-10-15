@@ -38,6 +38,8 @@ install_server() {
   local server_dir="$HOME/.local/share/x-sync"
   mkdir -p "$server_dir"
   curl -fsSL "$REPO_URL/x-sync/lib/x-sync-server.mjs" -o "$server_dir/x-sync-server.mjs"
+  mkdir -p "$server_dir/x-sync"
+  curl -fsSL "$REPO_URL/x-sync/lib/x-sync/sync-storage.mjs" -o "$server_dir/x-sync/sync-storage.mjs"
 
   # Create wrapper
   cat > "$BIN_DIR/x-sync-server" << 'WRAPPER'
@@ -64,7 +66,7 @@ install_client() {
   # Download client scripts
   local lib_dir="$HOME/.local/share/x-sync"
   mkdir -p "$lib_dir"
-  for f in sync-push.mjs sync-pull.mjs sync-push-all.mjs sync-pull-all.mjs sync-config.mjs; do
+  for f in sync-push.mjs sync-pull.mjs sync-push-all.mjs sync-pull-all.mjs sync-config.mjs sync-storage.mjs sync-handoff.mjs sync-lessons.mjs; do
     curl -fsSL "$REPO_URL/xm/lib/x-sync/$f" -o "$lib_dir/$f"
   done
 

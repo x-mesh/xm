@@ -2211,8 +2211,15 @@ async function renderProbeDetail(file) {
 }
 
 function solverStateBadge(state) {
-  if (state === 'solved') return `<span class="badge badge-success">solved</span>`;
-  return `<span class="badge badge-warning">${state || 'unknown'}</span>`;
+  // Mirrors x-solver PROBLEM_STATES: only `solved` claims a proven fix; `diagnosed`
+  // and `answered` are successful exits without one, not failures.
+  const cls = {
+    solved: 'badge-success',
+    diagnosed: 'badge-info',
+    answered: 'badge-neutral',
+    abandoned: 'badge-danger',
+  }[state] || 'badge-warning';
+  return `<span class="badge ${cls}">${state || 'unknown'}</span>`;
 }
 
 const SOLVER_PHASES = ['01-intake', '02-classify', '03-solve', '04-verify', '05-close'];
@@ -6643,7 +6650,7 @@ function renderRetrospectiveDetail(d) {
 
 async function renderPrdList() {
   const app = document.getElementById('app');
-  app.innerHTML = `<div class="view-header"><h1>PRDs</h1><p>.xm/prd + build projects</p></div>${renderLoading()}`;
+  app.innerHTML = `<div class="view-header"><h1>PRDs</h1><p>.xm/prd + build projects + .xm/plan</p></div>${renderLoading()}`;
 
   const res = await fetchJSON(apiUrl('/prd'));
   if (res.error) {
@@ -6654,40 +6661,52 @@ async function renderPrdList() {
   const items = Array.isArray(res) ? res : [];
   if (items.length === 0) {
     app.innerHTML = `
-      <div class="view-header"><h1>PRDs</h1><p>.xm/prd + build projects</p></div>
-      ${renderEmpty('No PRDs found', 'xm build legacy-plan', ['.xm/prd', '.xm/build/projects/*/phases'])}
+      <div class="view-header"><h1>PRDs</h1><p>.xm/prd + build projects + .xm/plan</p></div>
+      ${renderEmpty('No PRDs found', 'xm build legacy-plan', ['.xm/prd', '.xm/build/projects/*/phases', '.xm/plan'])}
     `;
     return;
   }
 
   const e = escapeHtmlHumble;
+  const sourceBadge = (item) => {
+    if (item.source === 'plan') {
+      return `<span class="badge ${item.draft ? 'badge-amber' : 'badge-blue'}">${item.draft ? 'plan draft' : 'plan'}</span>`;
+    }
+    return `<span class="badge ${item.source === 'project' ? 'badge-indigo' : 'badge-gray'}">${item.source || 'standalone'}</span>`;
+  };
+  const planLine = (item) => {
+    const parts = [item.status, item.phase && `phase: ${item.phase}`, item.goal].filter(Boolean);
+    return parts.length ? `<div class="text-muted" style="font-size:0.75rem;margin-top:4px">${e(parts.join(' · '))}</div>` : '';
+  };
   const cards = items.map(item => `
     <div class="card prd-card" style="cursor:pointer;padding:12px 16px;margin-bottom:0.5rem"
          onclick="window.location.hash='#/prd/${encodeURIComponent(item.id || item.name)}'">
       <div style="display:flex;align-items:center;justify-content:space-between;gap:8px">
         <strong>${e(item.name)}</strong>
         <span style="display:flex;align-items:center;gap:8px;flex-shrink:0">
-          <span class="badge ${item.source === 'project' ? 'badge-indigo' : 'badge-gray'}">${item.source || 'standalone'}</span>
+          ${sourceBadge(item)}
           <span class="text-muted" style="font-size:0.8rem">${timeAgo(item.mtime)}</span>
         </span>
       </div>
+      ${item.source === 'plan' ? planLine(item) : ''}
       ${item.size != null ? `<div class="text-muted" style="font-size:0.75rem;margin-top:4px">${item.size} bytes</div>` : ''}
     </div>
   `).join('');
 
   app.innerHTML = `
-    <div class="view-header"><h1>PRDs</h1><p>.xm/prd + build projects · ${items.length} file${items.length !== 1 ? 's' : ''}</p></div>
+    <div class="view-header"><h1>PRDs</h1><p>.xm/prd + build projects + .xm/plan · ${items.length} file${items.length !== 1 ? 's' : ''}</p></div>
     ${cards}
   `;
 }
 
 async function renderPrdDetail(name) {
   const app = document.getElementById('app');
-  const display = String(name).replace(/^[sp]:/, '');  // strip s:/p: id prefix for display
+  const display = String(name).replace(/^[spx]:/, '');  // strip s:/p:/x: id prefix for display
+  const label = String(name).startsWith('x:') ? 'Plan' : 'PRD';
   app.innerHTML = `
     <div class="view-header">
       <div><a href="#/prd" style="font-size:0.875rem;opacity:0.7">← PRDs</a></div>
-      <h1 style="margin-top:0.5rem">PRD: <code>${escapeHtmlHumble(display)}</code></h1>
+      <h1 style="margin-top:0.5rem">${label}: <code>${escapeHtmlHumble(display)}</code></h1>
     </div>
     ${renderLoading()}
   `;
@@ -6697,17 +6716,22 @@ async function renderPrdDetail(name) {
     app.innerHTML = `
       <div class="view-header">
         <div><a href="#/prd" style="font-size:0.875rem;opacity:0.7">← PRDs</a></div>
-        <h1 style="margin-top:0.5rem">PRD</h1>
+        <h1 style="margin-top:0.5rem">${label}</h1>
       </div>
       ${renderError(res.message || res.error)}
     `;
     return;
   }
 
+  const heading = res.source === 'plan' ? (res.draft ? 'Plan draft' : 'Plan') : 'PRD';
+  const planMeta = res.source === 'plan'
+    ? [res.status, res.phase && `phase: ${res.phase}`, res.draft && 'not importable by x-build until complete and executable'].filter(Boolean).join(' · ')
+    : '';
   app.innerHTML = `
     <div class="view-header">
       <div><a href="#/prd" style="font-size:0.875rem;opacity:0.7">← PRDs</a></div>
-      <h1 style="margin-top:0.5rem">PRD: <code>${escapeHtmlHumble(display)}</code></h1>
+      <h1 style="margin-top:0.5rem">${heading}: <code>${escapeHtmlHumble(display)}</code></h1>
+      ${planMeta ? `<p>${escapeHtmlHumble(planMeta)}</p>` : ''}
     </div>
     <div class="card markdown-body">${renderMarkdown(res.content || '')}</div>
   `;

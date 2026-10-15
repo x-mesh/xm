@@ -16,6 +16,7 @@
  */
 import { describe, test, expect, beforeAll, afterAll } from 'bun:test';
 import { spawn } from 'node:child_process';
+import { createServer } from 'node:net';
 import { mkdtempSync, mkdirSync, writeFileSync, readFileSync, rmSync } from 'node:fs';
 import { join, dirname, resolve } from 'node:path';
 import { tmpdir } from 'node:os';
@@ -27,9 +28,40 @@ const SERVER_PATH = join(REPO_ROOT, 'x-dashboard', 'lib', 'x-dashboard-server.mj
 // The dashboard resolves this same source cost-engine when run from the repo
 // (getCostEngine's second candidate); importing it here compares like-for-like.
 const COST_ENGINE_PATH = join(REPO_ROOT, 'x-build', 'lib', 'x-build', 'cost-engine.mjs');
-const TEST_PORT = 19899;
-const BASE = `http://127.0.0.1:${TEST_PORT}`;
+// Assigned in beforeAll: a fixed port collided with whatever else was listening
+// on the machine, and the child's EADDRINUSE exit surfaced only as a 5s hook
+// timeout while the poll kept hitting the foreign server's /health.
+let TEST_PORT;
+let BASE;
 const MILLION = 1_000_000;
+
+/** Ask the OS for a free loopback port. */
+function freePort() {
+  return new Promise((resolvePort, reject) => {
+    const probe = createServer();
+    probe.once('error', reject);
+    probe.listen(0, '127.0.0.1', () => {
+      const { port } = probe.address();
+      probe.close(() => resolvePort(port));
+    });
+  });
+}
+
+/** Poll /health; fail with the child's stderr as soon as it exits instead of timing out silently. */
+async function waitForHealth(proc, base, timeoutMs) {
+  let stderr = '';
+  let exit = null;
+  proc.stderr?.on('data', (chunk) => { stderr += chunk; });
+  proc.stdout?.on('data', () => {});
+  proc.on('exit', (code, signal) => { exit = { code, signal }; });
+  const deadline = Date.now() + timeoutMs;
+  while (Date.now() < deadline) {
+    if (exit) throw new Error(`x-dashboard-server exited before /health (code ${exit.code}, signal ${exit.signal}):\n${stderr.trim()}`);
+    try { const res = await fetch(`${base}/health`); if (res.ok) return; } catch {}
+    await new Promise((r) => setTimeout(r, 150));
+  }
+  throw new Error(`x-dashboard-server did not answer /health within ${timeoutMs}ms:\n${stderr.trim()}`);
+}
 
 // Realistic model IDs so resolveModelKey's substring match is exercised too.
 const TIER_MODEL_ID = {
@@ -64,6 +96,8 @@ beforeAll(async () => {
   ];
   writeFileSync(join(tracesDir, 'pricing-guard-20260701-000000.jsonl'), lines.join('\n') + '\n');
 
+  TEST_PORT = await freePort();
+  BASE = `http://127.0.0.1:${TEST_PORT}`;
   serverProc = spawn('bun', [SERVER_PATH, '--port', String(TEST_PORT)], {
     stdio: ['ignore', 'pipe', 'pipe'],
     detached: true,
@@ -71,15 +105,9 @@ beforeAll(async () => {
     // HOME → tmpRoot isolates the global PID file, registry, and global config.
     env: { ...process.env, HOME: tmpRoot, NO_BROWSER: '1', CI: '1' },
   });
-  serverProc.stderr?.on('data', () => {});
-  serverProc.stdout?.on('data', () => {});
 
-  const deadline = Date.now() + 8000;
-  while (Date.now() < deadline) {
-    try { const res = await fetch(`${BASE}/health`); if (res.ok) return; } catch {}
-    await new Promise((r) => setTimeout(r, 150));
-  }
-  throw new Error('x-dashboard-server did not start within 8s');
+  // Under bun's 5s hook timeout, so a startup failure is reported by name.
+  await waitForHealth(serverProc, BASE, 4000);
 });
 
 afterAll(() => {

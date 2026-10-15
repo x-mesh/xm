@@ -114,9 +114,16 @@ Synthesis principles:
 - Verify: does solving all sub-problems actually solve the original problem? If not, identify the gap.
 
 Resolve any conflicts and present the final integrated solution.
+State, per hard constraint, the evidence that the integrated solution satisfies it.
 ```
 
-Use the result to create the final candidate + select.
+Use the result to create the final candidate, then score it: `verify` judges the selected candidate
+only, and the sub-problem scores from `evaluate` do not carry over to it.
+```bash
+$XMS candidates add "<integrated solution>" --source architect
+$XMS candidates score <id> --constraint <cN> --score <n>   # once per hard constraint, from the evidence above
+$XMS candidates select <id>
+```
 
 ### Strategy: iterate
 
@@ -246,18 +253,12 @@ Identify which constraints conflict if a hard constraint fails.
 
 Use the result to call `$XMS candidates select <id>`.
 
-### Strategy: pipeline
+### pipeline (removed)
 
-#### Phase: classify
-Run `$XMS classify` to detect problem type.
-Auto-select the appropriate strategy based on the result.
-
-#### Phase: route
-Execute the solve workflow of the selected strategy (decompose/iterate/constrain).
-
-#### Phase: meta-verify
-Additional verification after solving: confirm the original problem is actually resolved.
-Retry with an alternative strategy on failure.
+`pipeline` promised classify → route → meta-verify, but the CLI had no way to move a running problem
+onto the routed strategy (`strategy set` refuses once a run is underway; `--reset` discards it).
+`classify` plus the strategy AskUserQuestion do that routing. A legacy `pipeline` problem is refused
+with `strategy set <decompose|iterate|constrain> --reset`.
 
 ## Applies to
 Invoked by x-solver after `classify` + `strategy set`. Dispatches agents per phase as defined in the selected strategy.

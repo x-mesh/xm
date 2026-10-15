@@ -14,7 +14,7 @@
 </p>
 
 <p align="center">
-  <a href="https://github.com/x-mesh/xm/releases"><img src="https://img.shields.io/badge/version-2.26.0-blue" alt="Version" /></a>
+  <a href="https://github.com/x-mesh/xm/releases"><img src="https://img.shields.io/badge/version-2.41.0-blue" alt="Version" /></a>
   <a href="./LICENSE"><img src="https://img.shields.io/badge/license-MIT-green" alt="License: MIT" /></a>
   <a href="https://nodejs.org"><img src="https://img.shields.io/badge/node-%3E%3D18-brightgreen" alt="Node.js" /></a>
   <a href="#플러그인"><img src="https://img.shields.io/badge/plugins-18-orange" alt="Plugins" /></a>
@@ -26,8 +26,10 @@
 
 <p align="center">
   <code>/xm:build "JWT 인증이 포함된 REST API 만들기"</code><br />
-  → 저장소 근거 → x-plan → native 실행 → 위험 기반 검증
+  → 저장소 근거 → direct 또는 x-plan 경로 → native 실행 → 위험 기반 검증
 </p>
+
+`x-build` 기본 경로는 범위가 명확하고 결정적으로 검증할 수 있는 작업에 direct 실행을 선택하고, 계획이 필요한 작업에 x-plan을 사용합니다. 크로스벤더 패널과 project lifecycle은 opt-in입니다. [벤치마크](./benchmarks/SUMMARY.md)와 [케이스 스터디](./docs/case-studies/README.md)는 내부 측정이며, 다른 팀에서의 성과를 입증하지는 않습니다.
 
 ---
 
@@ -37,7 +39,7 @@
 - [빠른 시작](#빠른-시작)
 - [왜 xm인가?](#왜-xm인가)
 - [크로스-벤더 검증](#크로스-벤더-검증)
-- [플러그인](#플러그인) — [x-plan](#x-plan) · [x-build](#x-build) · [x-op](#x-op) · [x-review](#x-review) · [뮤테이션 테스팅](#뮤테이션-테스팅--xmmutate) · [x-solver](#x-solver) · [x-probe](#x-probe) · [x-eval](#x-eval) · [x-humble](#x-humble) · [x-agent](#x-agent) · [x-trace](#x-trace) · [x-memory](#x-memory) · [x-dashboard](#x-dashboard) · [x-humanize](#x-humanize) · [x-recall](#x-recall) · [x-panel](#x-panel) · [x-wt](#x-wt) · [x-remote](#x-remote)
+- [플러그인](#플러그인) — [x-plan](#x-plan) · [x-build](#x-build) · [topic별 병렬 PR](#topic별-병렬-pr--xmbatch) · [x-op](#x-op) · [x-review](#x-review) · [뮤테이션 테스팅](#뮤테이션-테스팅--xmmutate) · [x-solver](#x-solver) · [x-probe](#x-probe) · [x-eval](#x-eval) · [x-humble](#x-humble) · [x-agent](#x-agent) · [x-trace](#x-trace) · [x-memory](#x-memory) · [x-dashboard](#x-dashboard) · [x-humanize](#x-humanize) · [x-recall](#x-recall) · [x-panel](#x-panel) · [x-wt](#x-wt) · [x-remote](#x-remote)
 - [품질 & 학습 파이프라인](#품질--학습-파이프라인)
 - [아키텍처](#아키텍처)
 - [설정](#설정)
@@ -88,8 +90,10 @@ powershell -c "irm bun.sh/install.ps1 | iex"
 ```
 /xm init              # trace-session 훅을 ~/.claude/에 설치
 /xm init status       # 설치 상태 확인
-/xm init uninstall    # 훅 파일 + settings.json 항목 제거
+/xm init uninstall    # 훅 파일 + settings.json 항목 + 라우팅 블록 제거
 /xm init --no-hooks   # 훅을 복사하지 않고 CLI 디스패처만 설치
+/xm init --claude-md  # ~/.claude/CLAUDE.md에 xm 라우팅 블록도 추가
+/xm init --codex-md   # ~/.codex/AGENTS.md에 xm 라우팅 블록도 추가
 ```
 
 Idempotent: 재실행 안전. 기존 훅(mem-mesh 등)은 보존되고, 매 쓰기 시 `settings.json`의 타임스탬프 백업이 생성됩니다. 트레이스는 각 프로젝트의 `.xm/traces/`에 기록됩니다.
@@ -129,11 +133,19 @@ curl -fsSL https://raw.githubusercontent.com/x-mesh/xm/main/xm/scripts/install.s
 ```bash
 xm setup                # trace-session 훅을 ~/.claude/에 설치
 xm setup status         # 설치 상태 확인
-xm setup uninstall      # 훅 파일 + settings.json 항목 제거
+xm setup uninstall      # 훅 파일 + settings.json 항목 + 라우팅 블록 제거
 xm setup --no-hooks     # 훅을 복사하지 않고 CLI 디스패처만 설치
+xm setup --claude-md    # ~/.claude/CLAUDE.md에 xm 라우팅 블록도 추가
+xm setup --codex-md     # ~/.codex/AGENTS.md에 xm 라우팅 블록도 추가
 ```
 
 `~/.claude/hooks/xm-trace-session.mjs`를 복사하고 `~/.claude/settings.json`의 `PreToolUse`/`PostToolUse`에 Skill matcher를 병합합니다. 기존 훅(mem-mesh 등)은 보존되며, 수정 시 타임스탬프 백업이 생성됩니다. Claude Code 밖에서 실행해야 할 때는 bash 경로를 쓰고, 그 외에는 `/xm init`을 권장합니다.
+
+`--claude-md`를 주면 `~/.claude/CLAUDE.md`에 마커로 둘러싼 라우팅 블록을 추가합니다. 이 블록은 PR을 올릴 때 **xm:write**를 쓰는 것처럼 Claude가 어떤 상황에서 어떤 xm 스킬을 호출할지 정합니다. 플래그 없이 설치하면 블록을 추가하지 않습니다. 한 번 추가한 뒤에는 `xm setup`과 `xm update`가 블록을 최신 내용으로 갱신합니다. 갱신할 때 블록 안의 내용은 교체되므로, 직접 쓰는 규칙은 블록 밖에 두세요. 블록만 없애려면 블록을 지우면 되고, 이후 설치에서도 다시 추가하지 않습니다. `CLAUDE.md`를 바꿀 때마다 타임스탬프 백업을 만듭니다.
+
+`--codex-md`는 같은 방식의 블록을 `~/.codex/AGENTS.md`에 추가합니다. 이 블록은 스킬을 Codex 표기인 `$xm:<스킬>`로 부릅니다. 추가, 갱신, 백업 규칙은 `--claude-md`와 같고, 두 플래그를 함께 줄 수 있습니다.
+
+각 블록의 시작 마커에는 템플릿 개정 번호(예: `v1`)가 들어 있고, `xm setup status`가 이 번호를 보여 줍니다. 설치된 xm보다 새로운 개정의 블록은 `xm setup`이 바꾸지 않고 경고만 출력합니다. 개정 번호가 없는 이전 블록은 한 번 현재 개정으로 교체됩니다.
 
 새 스크립트와 문서에서는 `setup`을 쓰세요: 다른 생태계에서 `init`은 "프로젝트 시작"으로 읽히며, 다음 메이저 버전에서 인자 없는 `xm init`도 프로젝트 경로로 넘어갈 예정입니다.
 
@@ -172,7 +184,7 @@ xm help
 
 CLI는 `~/.claude/plugins/cache/xm/`, Codex 전용 번들인 `~/.codex/xm/`, 또는 `$XM_LIB`의 플러그인 lib을 호출합니다. 따라서 Codex-only 호스트에서는 Claude Code 플러그인을 먼저 설치할 필요가 없습니다.
 
-해석 순서는 `$XM_LIB` → 소스 레포 cwd → `~/.codex/xm/` → 마켓플레이스 캐시입니다. 로컬 체크아웃이나 Codex 번들이 있는 머신에서는 마켓플레이스 캐시가 항상 가려지므로, `xm --market <cmd>` (또는 `XM_MARKET=1`)로 개발용 경로를 모두 건너뛰고 `~/.claude/plugins/cache/xm/`에 고정할 수 있습니다. 일반 사용자가 보는 상태를 재현할 때 사용하세요. 실제로 어느 lib이 응답했는지는 `xm which`와 `xm version`이 알려줍니다. `xm install`만은 이 순서의 예외입니다. SKILL *소스*를 렌더링하는 명령인데 Codex 번들에는 소스가 없으므로(`lib/`, `hooks/`, `agents/`만 미러링), 해석된 뿌리의 `lib/` 옆에 `skills/`가 없으면 둘 다 갖춘 가장 최신 마켓플레이스 캐시 뿌리로 폴백합니다. 이때 `lib/`도 같은 뿌리에서 가져오므로 skills와 lib이 서로 다른 버전으로 섞이지 않습니다. `sync` 서브커맨드는 번들된 `x-sync` lib을 재사용하므로 `x-sync/install.sh client`를 별도로 실행할 **필요 없습니다**.
+해석 순서는 `$XM_LIB` → 소스 레포 cwd → `~/.codex/xm/`과 마켓플레이스 캐시 중 **더 최신 버전을 선언한 쪽**입니다. 동률이면 Codex 번들을 유지하고, 버전을 읽을 수 없는 번들은 버전을 읽을 수 있는 캐시를 이기지 못합니다. 덕분에 전역 Codex 설치는 즉시 반영되면서도, 손대지 않은 번들이 그사이 갱신된 Claude 플러그인 캐시를 가리는 일은 없습니다. 로컬 체크아웃이 있는 머신에서는 마켓플레이스 캐시가 항상 가려지므로, `xm --market <cmd>` (또는 `XM_MARKET=1`)로 개발용 경로를 모두 건너뛰고 `~/.claude/plugins/cache/xm/`에 고정할 수 있습니다. 일반 사용자가 보는 상태를 재현할 때 사용하세요. 실제로 어느 lib이 응답했는지는 `xm which`와 `xm version`이 알려줍니다. `xm install`만은 이 순서의 예외입니다. SKILL *소스*를 렌더링하는 명령인데, Codex 번들은 자체 런타임 읽기용으로 `skills/`를 미러링할 뿐 설치에 필요한 릴리스 메타데이터(`.claude-plugin/plugin.json`, `skills.checksums.json`)를 갖고 있지 않습니다. 그래서 해석된 뿌리가 설치를 수행할 수 없으면 그것이 가능한 가장 최신 마켓플레이스 캐시 뿌리로 폴백합니다. 이때 `lib/`도 같은 뿌리에서 가져오므로 skills와 lib이 서로 다른 버전으로 섞이지 않습니다. `sync` 서브커맨드는 번들된 `x-sync` lib을 재사용하므로 `x-sync/install.sh client`를 별도로 실행할 **필요 없습니다**.
 
 #### 프로젝트 레지스트리 (`xm project`)
 
@@ -185,7 +197,7 @@ CLI는 `~/.claude/plugins/cache/xm/`, Codex 전용 번들인 `~/.codex/xm/`, 또
 
 ### 다중 도구 설치 (Cursor / Codex / Kiro / Antigravity / OpenCode)
 
-xm은 Claude Code 마켓플레이스 플러그인으로 배포되지만, 27개 SKILL을 다른 AI 코딩 도구가 인식하는 룰/스티어링 형식으로도 변환할 수 있습니다. 단일 소스 컴파일러(`xm/lib/install/install-cli.mjs`)가 도구별 산출물을 생성합니다.
+xm은 Claude Code 마켓플레이스 플러그인으로 배포되지만, 30개 SKILL을 다른 AI 코딩 도구가 인식하는 룰/스티어링 형식으로도 변환할 수 있습니다. 단일 소스 컴파일러(`xm/lib/install/install-cli.mjs`)가 도구별 산출물을 생성합니다.
 
 ```bash
 # 대화형 선택기 (범위 + 도구)
@@ -249,8 +261,8 @@ xm install --list-installed # 설치된 manifest 목록을 JSON으로 출력
 
 이 한 줄로:
 1. 관련 코드, contract, 기존 동작과 테스트를 조사합니다
-2. x-plan Standard로 근거 있는 계획과 PlanEnvelope를 만듭니다
-3. 요청한 방법의 타당성을 검토하고 필요할 때 계획 승인을 받습니다
+2. 요청한 방법의 타당성을 검토한 뒤 direct 실행 또는 x-plan Standard를 선택합니다
+3. planned 경로라면 근거 있는 PlanEnvelope를 만들고 필요할 때 계획 승인을 받습니다
 4. 순차 native 실행을 기본으로 하며 변경 위험에 직접 관련된 검증만 수행합니다
 
 실행 없이 계획만 필요하면 x-plan을 직접 사용하세요:
@@ -335,15 +347,16 @@ xm은 그 질문들을 에이전트 프롬프트에 그대로 심어 둡니다. 
 **시니어 엔지니어의 디버깅 방법** — x-solver에 내장된 사고 프로토콜:
 
 ```
-진단 ──→ 가설 ──→ 테스트 ──→ 개선 ──→ 해결 ──→ 회고
+재현 ──→ 진단 ──→ 가설 ──→ 테스트 ──→ 개선 ──→ 해결 ──→ 회고
 ```
 
-1. **"지금 무슨 일이 일어나고 있는가?"** — 문제가 아니라, 관찰 가능한 상태를 기술
-2. **"마지막으로 정상이었던 때는?"** — baseline을 찾음. 없으면 먼저 찾기
-3. **"왜?" — 근거와 함께** — 다른 소스에서 교차 확인. 근거 없으면 멈춤
-4. **"막혔으면 렌즈를 바꾸기"** — 같은 레이어에서만 가설? 다른 레이어 보기
-5. **"동작하는 걸 보여줘"** — 실행이 유일한 증거
-6. **"왜 이걸 놓쳤나?"** — x-humble로 회고
+1. **"원할 때 실패시킬 수 있는가?"** — 손대기 전에 명령, 출력, 실패 마커를 기록
+2. **"지금 무슨 일이 일어나고 있는가?"** — 문제가 아니라, 관찰 가능한 상태를 기술
+3. **"마지막으로 정상이었던 때는?"** — baseline을 찾음. 없으면 먼저 찾기
+4. **"왜?" — 근거와 함께** — 다른 소스에서 교차 확인. 근거 없으면 멈춤
+5. **"막혔으면 렌즈를 바꾸기"** — 같은 레이어에서만 가설? 다른 레이어 보기
+6. **"동작하는 걸 보여줘"** — 기록한 실패를 다시 실행. 실행이 유일한 증거
+7. **"왜 이걸 놓쳤나?"** — x-humble로 회고
 
 </details>
 
@@ -417,18 +430,19 @@ finding 생명주기·판정·수렴 정책은 계속 x-review가 소유합니�
 | [x-eval](#x-eval) | 품질 평가 & 벤치마크 | `/xm:eval score file` |
 | [x-humble](#x-humble) | 구조화된 회고 | `/xm:humble reflect` |
 | [x-agent](#x-agent) | 에이전트 기본 도구 & 팀 | `/xm:agent fan-out "작업"` |
-| [x-trace](#x-trace) | 실행 추적 & 비용 | `/xm:trace timeline` |
+| [x-trace](#x-trace) | 실행 추적 & 비용 | `xm trace list` |
 | [x-memory](#x-memory) | 세션 간 메모리 | `/xm:memory inject` |
 | [x-dashboard](#x-dashboard) | .xm 상태 웹 대시보드 | `/xm:dashboard start` |
-| [x-humanize](#x-humanize) | AI 글쓰기 패턴 제거 (v0.5.0, 안정화 전) | `/xm:humanize audit text` |
+| [x-humanize](#x-humanize) | AI 글쓰기 패턴 제거 (v0.6.0, 안정화 전) | `/xm:humanize audit text` |
 | [x-recall](#x-recall) | 세션 간 산출물 인덱스 | `xm recall list` |
 | [x-panel](#x-panel) | 크로스 모델 적대 리뷰 | `xm panel` |
 | [x-wt](#x-wt) | 세션 worktree — 격리 후 부모로 land | `/xm:wt` |
 | [x-remote](#x-remote) | 원격 호스트 세션을 Discord에서 조종 | `xm remote start` |
 | xm | 번들 + 설정 + 파이프라인 | `/xm pipeline release` |
 
-**`xm` 코어에 번들됨 (별도 marketplace 플러그인 아님):** `/xm:ship` 릴리스 자동화 · `x-sync` 멀티 머신 동기화 서버 · `/xm:toss` + `/xm:inbox` 프로젝트 간 버그 핸드오프 — 아래 [x-ship](#x-ship), [x-sync](#x-sync), [toss / inbox](#프로젝트-간-핸드오프--toss--inbox) 참고.
+**`xm` 코어에 번들됨 (별도 marketplace 플러그인 아님):** `/xm:ship` 릴리스 자동화 · `/xm:write` PR·issue·릴리스 문서 작성 · `x-sync` 멀티 머신 동기화 서버 · `/xm:toss` + `/xm:inbox` 프로젝트 간 버그 핸드오프 · `/xm:relay` 로컬 Claude·Codex 세션 메시지와 AGY 세션 메시지 — 아래 [x-ship](#x-ship), [xm:write](#xmwrite), [x-sync](#x-sync), [toss / inbox](#프로젝트-간-핸드오프--toss--inbox) 참고.
 `/xm:mutate`도 같은 방식으로 번들됩니다 — 코어에 함께 들어 있는 `xm mutate` 명령을 실행하기 때문입니다. Codex에서는 `$xm:mutate`로 노출되고, 평면 별칭 `$xm-mutate`도 그대로 씁니다. [뮤테이션 테스팅](#뮤테이션-테스팅--xmmutate) 참고.
+`/xm:batch`도 같은 방식으로 번들됩니다. x-build의 `xm batch` 명령을 실행합니다. [topic별 병렬 PR](#topic별-병렬-pr--xmbatch) 참고.
 
 ---
 
@@ -455,7 +469,7 @@ x-build는 x-plan을 감싸는 lean 실행 workflow입니다. 저장소 근거�
 
 기본은 항상 계획을 세우는 방식이 아니라 adaptive입니다. 범위가 작고 파일이 독립적이며 위험도가 낮은 작업은 direct route로 가되, failure mode를 결정적으로 검증할 gate가 이미 있을 때만 그렇습니다. 공유 상태를 건드리거나 위험도가 높거나 관측이 어려운 작업은 planned route로 갑니다. 설정된 planner model로 x-plan Standard를 돌리고, 계획이 성공하면 설정된 executor model에 실행을 넘깁니다. Plan artifact가 없거나 실행할 수 없으면 Execute 전에 멈춥니다.
 
-`route start → verify → finish`는 결정과 baseline commit, 예상 파일, CLI가 실행한 gate, byte hash, 실제 시간과 비용 event를 묶습니다. Direct 검증 실패는 clean planned fallback으로 한 번만 재개합니다. Receipt가 없거나 오래된 상태는 fail-closed로 처리합니다.
+`route start → verify → finish`는 결정과 baseline commit, 예상 파일, CLI가 실행한 gate, byte hash, 실제 시간과 비용 event를 묶습니다. Direct 검증 실패는 clean planned fallback으로 한 번만 재개합니다. Receipt가 없거나 오래된 상태는 fail-closed로 처리합니다. planned 실행이 모든 gate를 통과했지만 gate에 필요한 선언 밖 파일을 바꿨다면 `xm build route close --decision-id <id>`로 lease를 닫습니다. 이때 사유와 파일 목록만 남기고 outcome은 기록하지 않습니다.
 
 ```bash
 xm build route decide --kind bugfix --scope bounded --independent \
@@ -526,6 +540,7 @@ xm build plan --mode quick "..."                 # xm plan의 deprecated alias
 | **거버넌스** | `hooks install/uninstall/status` (네이티브 blocking hooks; `XM_BUILD_HOOKS_OFF=1`로 우회) |
 | **실행** | `run`, `run --worktrees [--dry-run] [--max-parallel N]`, `run --json`, `run-status` |
 | **워크트리** | `worktrees plan/status/resume/cleanup`, `gate-panel --project --task --phase --patch`, `review-integration [--base --target]` |
+| **배치** | `batch init/add/plan/status`, `batch run <id> [--dry-run] [--base X] [--max-parallel N]`, `batch approve/collect/seal/verify/resume`, `batch publish/merge [--dry-run\|--yes]` (topic plan마다 worktree와 PR을 하나씩 사용, `xm batch`로도 실행) |
 | **검증** | `quality`, `verify-coverage`, `verify-traceability`, `verify-contracts`, `verify-review-fix [--init]`, `verify-tests [--since 90d] [--limit N]` (버그 수정 커밋의 테스트를 부모 커밋에서 다시 돌려 그 버그를 실제로 잡는지 확인), `review-precision [--since 30d\|--last N] [--min-precision 0.7]` (통과한 게이트마다 쌓이는 triage 원장으로 렌즈별 `fix_now / (fix_now + false_positive)` 집계; dashboard Reviews 페이지에도 표시) |
 | **분석** | `forecast`, `forecast update`, `roi [--by model\|role\|strategy]`, `effectiveness [--since Nd] [--profile a,b] [--compare a,b]`, `metrics`, `decisions`, `summarize` |
 | **내보내기** | `export --format md/csv/jira/confluence`, `import` |
@@ -556,6 +571,32 @@ xm build plan --mode quick "..."                 # xm plan의 deprecated alias
 설정은 `.xm/config.json`의 `worktree` 키(`base`, `branch_prefix`, `max_parallel`, `gate_policy`, `gate_max_rounds`, `pre_gate`)에 있습니다. 전체 스키마는 `x-build/skills/build/references/data-model.md`, 게이트 설계는 `docs/worktree-gate-optimization-plan.md`를 참고하세요.
 
 </details>
+
+---
+
+### topic별 병렬 PR — `/xm:batch`
+
+`/xm:batch`는 서로 독립된 기능 여러 개를 각각의 PR로 만듭니다. 기능을 topic으로 묶고, topic마다 plan을 하나씩 작성한 뒤, 각 topic을 별도 worktree에서 병렬로 구현합니다. 그다음 PR을 만들고, 합친 결과를 검증한 뒤, 정해진 순서대로 merge합니다.
+
+인자 없이 실행하면 새 batch를 시작하거나 진행 중인 batch를 이어 갑니다. 사용자에게는 네 번만 묻습니다.
+
+1. plan 에이전트를 띄우기 전: topic 구성과 base branch
+2. 구현 에이전트를 띄우기 전: plan 승인
+3. push 전: PR 생성
+4. merge 전: merge 순서
+
+```bash
+/xm:batch                         # 새 batch를 시작하거나 진행 중인 batch를 이어 감
+/xm:batch 로그인 API, 검색 화면      # 이 텍스트를 기능 목록으로 사용
+/xm:batch 20261001-auth-search    # 해당 batch를 이어서 진행
+xm batch list --json              # 저장된 batch 목록 (최신순)
+xm batch candidates --json        # 아직 어떤 batch에도 쓰이지 않은 실행 가능한 plan
+xm batch status <id> --json       # topic, wave, seal, 통합 검증, merge 상태
+```
+
+**topic 출처.** 기능을 나열하거나 `.xm/plan/`에 저장된 실행 가능한 plan을 고릅니다. 이미 batch에 등록된 plan은 다시 나오지 않습니다.
+
+**제한.** topic끼리 서로 의존하면 안 됩니다. 기능 B가 기능 A를 필요로 하면 두 기능을 한 topic에 넣거나 B를 다음 batch로 미룹니다. 각 topic 에이전트는 자기 task를 순서대로 실행합니다. 각 topic PR에는 plan에 적힌 파일만 들어갈 수 있습니다. 그 밖의 파일이 커밋되면 `collect`와 `publish`가 막습니다.
 
 ---
 
@@ -686,6 +727,7 @@ xm build plan --mode quick "..."                 # xm plan의 deprecated alias
 | **검증된 해결** | `--reverify ID --outcome resolved`에는 `--command "<검사>"`도 필요합니다. 게이트가 그 명령을 실행해 종료 코드를 기록하고, 0이 아니거나 타임아웃이거나 검사 대상 바이트를 명령이 고쳐 쓰면 `resolved`를 거부합니다. `persistent`와 `regression`은 명령이 필요 없습니다 |
 | **기명 면제** | Critical·High finding의 `accept_risk`·`false_positive`에는 evidence와 함께 `approved_by`가 필요합니다. 아무도 고치지 않은 채 finding을 닫는 결정이므로 이름을 남깁니다. Medium은 evidence만 필요합니다 |
 | **태스크 정체성** | `--task-id`는 자유 문자열이지만, 같은 바이트에 이미 full 리뷰를 쓴 태스크가 있으면 새 id를 거부합니다. 그 태스크를 delta로 이어가거나 `--exception full`로 승인하세요 |
+| **규칙 검증 게이트** | 리뷰 전에 고정된 입력에서 명시한 규칙과 변이를 검사합니다. 실패하면 리뷰어를 호출하지 않습니다. 일반 mutation survivor는 참고 정보로만 다룹니다 |
 | **종료 영수증** | 모든 실행은 검증된 영수증으로 끝납니다. 영수증이 없는 실행은 resume 또는 close 전까지 새 리뷰를 막습니다 |
 
 **리뷰 원칙:** 맥락이 심각도를 결정 · 근거 없으면 발견 아님 · 수정 방향 없으면 발견 아님 · 확신 없으면 낮추기
@@ -722,7 +764,7 @@ xm은 뮤턴트를 직접 만들지 않습니다. 언어마다 외부 도구가 
 | Go | [gomutants](https://github.com/szhekpisov/gomutants) | `-changed-since` | `go install github.com/szhekpisov/gomutants@latest` |
 | Swift | [Muter](https://github.com/muter-mutation-testing/muter) | 파일 단위로 실행한 뒤 xm이 바뀐 줄만 남김 | `brew install muter-mutation-testing/formulae/muter` |
 
-**변경 범위:** merge base부터 작업 트리까지의 `git diff`를 씁니다. 커밋하지 않은 추적 파일의 수정은 포함하고, 추적하지 않는 새 파일은 포함하지 않습니다. 파일마다 해당 언어의 도구를 가장 가까운 `Cargo.toml`, `package.json`, `go.mod`, `muter.conf.yml` / `Package.swift` 디렉터리에서 실행합니다. 결과에서는 바뀐 줄에 걸친 뮤턴트만 남깁니다.
+**변경 범위:** merge base부터 작업 트리까지의 `git diff`를 씁니다. 커밋하지 않은 추적 파일의 수정은 포함하고, 추적하지 않는 새 파일은 포함하지 않습니다. 대신 도구가 다뤘을 추적 안 된 파일은 이름을 출력하고 보고서의 `untracked_files`에 남기므로, 새 파일이 조용히 빠지지 않습니다. 파일마다 해당 언어의 도구를 가장 가까운 `Cargo.toml`, `package.json`, `go.mod`, `muter.conf.yml` / `Package.swift` 디렉터리에서 실행합니다. 결과에서는 바뀐 줄에 걸친 뮤턴트만 남깁니다.
 
 **도구가 없을 때:** 도구가 설치돼 있지 않으면 그 언어는 `unavailable` 상태와 설치 명령으로 보고됩니다. 설정 파일이나 매니페스트가 없을 때도 `unavailable`이지만, 설치 명령 대신 만들어야 할 파일 이름이 이유에 담깁니다. 예를 들어 `muter.conf.yml`입니다. 내장 엔진으로 대신 실행하지 않습니다. 명령은 종료 코드 1로 끝나지만, 다른 언어의 결과는 그대로 유효합니다.
 
@@ -731,17 +773,22 @@ xm은 뮤턴트를 직접 만들지 않습니다. 언어마다 외부 도구가 
 - Muter에는 `muter.conf.yml`이 필요합니다. 먼저 프로젝트 루트에서 `muter init`을 실행하세요. Muter는 프로젝트 옆에 복사본(`<root>_mutated`)을 만들고, 프로젝트 안에 `muter_logs/`를 남깁니다.
 - Java, Kotlin, Python, C#, PHP용 어댑터는 없습니다.
 
-**한도:** `--timeout-ms`는 실행 전체의 시간 상한이고 기본값은 30분입니다. 뮤턴트별 timeout은 각 도구가 기준 실행 시간을 보고 정합니다. 스위트가 이미 실패하면 그 언어는 뮤테이션 결과 대신 `baseline_failed`나 `error`로 보고됩니다.
+**한도:** `--timeout-ms`는 실행 전체의 시간 상한이고 기본값은 30분입니다. 뮤턴트별 timeout은 각 도구가 기준 실행 시간을 보고 정합니다. 스위트가 이미 실패하면 cargo-mutants는 `baseline_failed`로 보고하고, StrykerJS·gomutants·Muter는 변형을 시작하기 전에 멈춰 `error`와 도구 출력으로 보고됩니다. 어느 쪽도 뮤테이션 결과가 아닙니다.
 
-diff 리포트는 `.xm/review/mutate-diff/<head>-<merge-base>.json`에, 작업 리포트는 `.xm/review/mutate/<project>/<task>.json`에 저장됩니다. 작업에서 살아남은 뮤턴트는 attention 큐에 추가됩니다. 작업을 실행하려면 연결된 worktree artifact에 `base`가 기록되어 있거나 `--base <ref>`를 넘겨야 합니다.
+실행별 보고서는 파일명 끝에 고유 run ID를 붙여 보존합니다. 기존 head/base·task 경로는 최신 결과를 가리키는 호환 경로입니다. 보고서에는 입력·실행 명령·도구 버전·환경의 해시와 측정 완료 여부를 기록합니다. 누락이나 미해결 결과가 있으면 종료 코드는 1이며, survivor 자체는 머지 차단 사유가 아닙니다. 캡처한 입력이 삭제된 경우에도 gate가 파일의 부재를 검증할 수 없으므로 측정 미완료로 보고합니다.
 
-> v1은 관찰용입니다. 생존한 뮤턴트는 들여다볼 후보이지 테스트가 없다는 증거가 아니며, 머지를 막지도 않습니다.
+JavaScript에서는 `--test-command 'bun test test/sync.test.mjs'`로 검사할 테스트를 명시할 수 있습니다. `--reuse-report FILE --reuse-sha256 HASH`는 입력과 실행 조건이 동일한 신뢰된 결과만 재사용하며, 불일치하면 중단합니다. 현재 외부 도구 어댑터는 변이 개수 제한을 보장하지 못하므로 `--max-mutants N` 요청을 실행 전에 거절합니다. sync 전용 gate는 변이 7개를 명시해 검사합니다.
+
+
+diff 보고서는 `.xm/review/mutate-diff/<head>-<merge-base>-<run-id>.json`에, 작업 보고서는 `.xm/review/mutate/<project>/<task>-<run-id>.json`에 보존됩니다. 입력이 유지된 작업에서 살아남은 변이는 attention 큐에 추가됩니다. 작업을 실행하려면 연결된 worktree artifact에 `base`가 기록되어 있거나 `--base <ref>`를 넘겨야 합니다.
+
+> 이 검사는 관찰용입니다. 생존한 뮤턴트는 들여다볼 후보이지 테스트가 없다는 증거가 아니며, 머지를 막지도 않습니다.
 
 ---
 
 ### x-solver
 
-문제를 풀어 가는 4가지 전략. 문제의 모양을 보고 어떤 전략으로 갈지 자동으로 골라 줍니다.
+문제를 풀어 가는 3가지 전략. 문제의 모양을 보고 어떤 전략으로 갈지 자동으로 골라 줍니다.
 
 ```bash
 /xm:solver init "React 컴포넌트 메모리 누수"
@@ -754,12 +801,17 @@ diff 리포트는 `.xm/review/mutate-diff/<head>-<merge-base>.json`에, 작업 �
 | **decompose** | 분해 → 리프 해결 → 병합 | 복합적 다면 문제 |
 | **iterate** | 진단 → 가설 → 테스트 → 개선 | 버그, 디버깅, 근본 원인 |
 | **constrain** | 도출 → 후보 → 채점 → 선택 | 설계 결정, 트레이드오프 |
-| **pipeline** | 자동 감지 → 최적 전략 라우팅 | 잘 모를 때 |
 
 ```
-진단 → 가설 → 테스트 → 개선 → 해결 → x-humble
-[상태+baseline] [검증 가능] [변수 하나] [전환/복원] [실행 검증] [왜 늦었나?]
+재현 → 진단 → 가설 → 테스트 → 개선 → 해결 → x-humble
+[재현+마커] [상태+baseline] [검증 가능] [변수 하나] [전환/복원] [수정+회귀 증명] [왜 늦었나?]
 ```
+
+iterate 전략에서는 가설마다 확인 방법(`--check`)을 기록합니다. 확인 방법이 없는 가설이 남아 있으면 `test` 단계로 넘어가지 않습니다.
+
+재현된 문제나 간헐적인 문제를 `xm solver verify`로 닫으려면 회귀 테스트가 필요합니다. `xm solver repro verify --regression-cmd "<명령>" --regression-marker "<문자열>"`로 테스트를 고정하면, CLI가 `repro set` 때 기록한 기준 코드와 현재 코드에서 명령을 차례로 실행합니다. 테스트는 기준 코드에서 마커와 함께 실패하고 현재 코드에서 통과해야 합니다. 테스트로 고정할 수 없는 수정이면 `--regression-waiver "<이유>"`로 이유를 남깁니다.
+
+`x-build hooks install`로 scope guard를 설치했다면, 진행 중인 iterate 문제가 편집 범위를 제한합니다. `resolve` 전에는 `xm solver instrument add <파일>`로 등록한 파일만 고칠 수 있고, `resolve`에서는 Scope Contract의 파일과 테스트도 고칠 수 있습니다. 24시간 동안 진행이 없는 문제는 편집을 막지 않습니다. Bash로 쓰는 파일은 감시하지 않습니다.
 
 ---
 
@@ -987,12 +1039,13 @@ Claude Code Agent 도구 위에 얹은 프리미티브와 자율 행동입니다
 
 ### x-trace
 
-에이전트가 실제로 뭘 했는지 봅니다. 타임라인을 따라가고, 비용을 점검하고, 어떤 실행이든 그대로 다시 돌릴 수 있습니다.
+에이전트가 실제로 뭘 했는지 봅니다. 타임라인과 비용을 확인하고 재실행 준비 artifact를 만들 수 있습니다. `replay` 명령은 에이전트를 호출하지 않습니다.
 
 ```bash
-/xm:trace timeline              # 에이전트 실행 타임라인
+xm trace list                   # 최근 트레이스 세션: 스킬, 상태, 에이전트 수, 소요 시간
+xm trace show <session-id>      # 세션 하나와 기록된 agent_step 전체
 /xm:trace cost                  # 에이전트별 토큰/비용 분석
-/xm:trace replay <id>           # 과거 실행 리플레이
+/xm:trace replay <id> --span <span-id>  # 재실행 manifest와 snapshot 준비
 /xm:trace diff <id1> <id2>      # 두 실행 비교
 ```
 
@@ -1118,6 +1171,31 @@ Claude Code 안에서도 사용 가능: `/xm:sync push`, `/xm:sync pull`, `/xm:s
 | **독립 프로젝트 지원** | package.json, Cargo.toml, pyproject.toml, go.mod 자동 감지. 버전 파일이 없으면 git 태그가 곧 버전 |
 | **릴리스 메트릭** | 버전, 범프 타입, 테스트/리뷰 결과를 `.xm/traces/`에 기록 |
 | **Diff 기반 분석** | 커밋별 diff 리포트로 지능적 스쿼시 그루핑 |
+| **릴리스 문서** | 커밋 메시지, `CHANGELOG.md` 항목, 릴리스 노트를 `/xm:write`가 같은 근거로 한 번에 작성 |
+| **GitHub 릴리스** | 태그를 푸시한 뒤 `gh release create --verify-tag`로 릴리스를 만듭니다. 이미 GitHub 릴리스를 쓰는 저장소에서만 동작 |
+
+---
+
+### xm:write
+
+`/xm:write`는 현재 코드를 근거로 저장소 README를 진단·작성·개선하고, 변경이 남기는 문서도 작성합니다. 새로 쓰거나 고친 README 문단에서는 상투적이고 반복적인 표현도 덜어냅니다. 사실 주장은 저장소나 세션의 근거와 맞아야 합니다.
+
+```bash
+/xm:write readme audit   # README 구성, 첫 실행 경로, 사실 관계 진단
+/xm:write readme improve # README를 수정하고 검증 결과 보고
+/xm:write readme create  # 저장소 근거로 README 작성
+/xm:write pr            # 브랜치 diff로 PR을 작성하고 gh로 올림
+/xm:write pr 42         # PR #42 본문을 다시 작성
+/xm:write issue "..."   # bug·feature issue를 작성하고 gh로 올림
+/xm:write release       # 릴리스 노트 (텍스트만)
+/xm:write changelog     # CHANGELOG.md 항목 (텍스트만)
+```
+
+`pr`과 `issue`는 최종 제목과 본문을 보여 주고 한 번 확인받은 뒤 `gh`로 올리고, GitHub에 저장된 내용을 다시 읽어 확인합니다. `release`, `changelog`, `commit`은 텍스트만 돌려줍니다. 커밋, 태그, 릴리스는 `/xm:ship`이 맡기 때문입니다.
+
+저장소에 GitHub PR·issue 템플릿이 있으면 그 템플릿을 쓰고, 없으면 조직이나 계정의 기본 템플릿을 씁니다. 둘 다 없을 때만 x-kit 기본 형식을 씁니다.
+
+문서 언어는 채팅 언어가 아니라 저장소의 언어를 따릅니다. 언어를 직접 지정하면 그 언어로 씁니다. 검증 항목에는 이번 세션에서 실행한 명령과 PR의 CI 체크 결과만 적습니다.
 
 ---
 
@@ -1130,7 +1208,7 @@ AI 글쓰기 패턴을 감지해 자연스러운 한국어/영어 문체로 재�
 /xm:humanize light <텍스트>         # 최소 편집, 원본 구조 유지
 /xm:humanize <텍스트>               # 기본: medium 강도 재작성
 /xm:humanize strong <텍스트>        # 문장 전면 재구성, 사실은 보존
-/xm:humanize ui <문자열>            # 한국어 UI 문자열 — JSON 배열 입출력
+/xm:humanize ui <문자열>            # 한국어 UI·CLI 문자열 — JSON 배열 입출력
 /xm:humanize voice <파일> <텍스트>  # 샘플 파일 문체에 맞춰 재작성
 /xm:humanize --lang ko <텍스트>     # 한국어 출력 강제
 ```
@@ -1196,7 +1274,7 @@ xm panel status <run> --logs        # RAW 이벤트 로그(events.jsonl) 스트�
 
 `--models name:model[:effort]`로 모델별 선택. 선택적 `:effort`는 모델별 추론 강도 — codex `minimal|low|medium|high|xhigh`(→ `model_reasoning_effort`), kiro `low|medium|high|xhigh|max`(→ `--effort`); 벤더마다 레벨 집합이 다르고, 알 수 없는 레벨은 경고 후 무시(run은 막지 않음). 인자 없는 `xm panel models`는 provider→model 2단계 피커(`--json`으로 구조화; 라이브 카탈로그 벤더 agy/cursor/kiro vs 고정 ID claude/codex). named `presets`, 병렬 호출, 결과는 `.xm/panel/`에 저장(`xm recall`로 조회). 벤더마다 못 보는 지점이 다릅니다. 하나가 아니라 여럿에게 묻는 이유가 그것입니다.
 
-모든 run이 **모델별 실측 토큰·비용을 캡처**합니다 — claude는 `--output-format json`, codex는 `exec --json` 이벤트 스트림으로 — 그래서 패널 수치가 추정이 아닌 실측 기반입니다. 완료된 run마다 모델별 행을 **disagreement ledger**(`.xm/panel/history.jsonl`)에 append하고, `xm panel stats [--roi]`가 이를 벤더별 생존율(confirmed/raised)과 catch당 비용으로 집계 — stateless API council이 쌓을 수 없는 per-repo 데이터 해자입니다. `--stream`은 claude/cursor에 토큰 단위 라이브 텍스트를 더합니다(`--partial`, 기본 on, 초대형 타깃에선 자동 off). 모델이 JSON 계약 대신 구조화된 마크다운 리뷰를 내면(agy/Gemini가 간헐적으로 그럼) 패널이 `### [severity] file:line — title` + Why/Fix 형태에서 findings를 건져내 "no JSON"으로 버리지 않습니다. 아예 쓸 만한 답이 없으면 CLI stderr의 실제 이유를 노출합니다. timeout은 타깃 크기에 따라 자동 상향(`--timeout`으로 고정). kiro는 MCP 없는 자동 프로비저닝 agent(`~/.kiro/agents/xm-panel-review.json`)로 띄웁니다 — kiro가 전역 `mcp.json`을 로드하면 top-level `oneOf`/`allOf`/`anyOf` 스키마를 가진 MCP tool 하나 때문에 Bedrock이 요청 전체를 거부하기 때문입니다. 직접 만든 agent를 쓰려면 `panel.kiro_agent`로 지정하세요.
+패널은 provider가 사용량을 노출할 때 실측치를 캡처합니다. Claude는 기본적으로 `--output-format stream-json`, codex는 `exec --json` 이벤트 스트림, kiro는 stderr의 credits를 사용합니다. 다른 provider의 run에는 사용량이 없을 수 있으며, 빈 값을 비용 0으로 해석하면 안 됩니다. 완료된 run마다 모델별 행을 **disagreement ledger**(`.xm/panel/history.jsonl`)에 append하고, `xm panel stats [--roi]`가 이를 벤더별 생존율(confirmed/raised)과 catch당 비용으로 집계 — stateless API council이 쌓을 수 없는 per-repo 데이터 해자입니다. Claude는 기본적으로 분석·도구 실행·응답 작성 이벤트를 watch에 표시합니다. 완료된 모델은 `완료 · 소요 시간`으로 표시하며, `--no-stream`으로 최종 결과 모드를 선택할 수 있습니다. `--stream`은 cursor에도 토큰 단위 라이브 텍스트를 더합니다(`--partial`, 기본 on, 초대형 타깃에선 자동 off). 모델이 JSON 계약 대신 구조화된 마크다운 리뷰를 내면(agy/Gemini가 간헐적으로 그럼) 패널이 `### [severity] file:line — title` + Why/Fix 형태에서 findings를 건져내 "no JSON"으로 버리지 않습니다. 아예 쓸 만한 답이 없으면 CLI stderr의 실제 이유를 노출합니다. timeout은 타깃 크기에 따라 자동 상향(`--timeout`으로 고정). kiro는 MCP 없는 자동 프로비저닝 agent(`~/.kiro/agents/xm-panel-review.json`)로 띄웁니다 — kiro가 전역 `mcp.json`을 로드하면 top-level `oneOf`/`allOf`/`anyOf` 스키마를 가진 MCP tool 하나 때문에 Bedrock이 요청 전체를 거부하기 때문입니다. 직접 만든 agent를 쓰려면 `panel.kiro_agent`로 지정하세요.
 
 두 개의 adversarial 애드온이 의견을 검증된 사실로 바꿉니다. **`--grounded`**는 리포를 실제로 읽을 수 있는 라운드2 refuter(현재 codex — repo cwd에서 `exec --sandbox read-only`)가 인용된 파일을 직접 열어 실제 코드와 대조해 finding을 검증하고 verdict에 `{checked, observed}`를 태깅하게 합니다. 텍스트만 보는 벤더에는 절대 요청하지 않습니다(파일을 못 읽는 벤더에게 "열어보라"고 하면 `checked:true`를 지어낼 뿐입니다). **`xm panel followup <run>`**은 디베이트 라운드를 돌립니다 — 각 저자의 세션을 resume해 반박당한 finding을 `HOLD` / `CONCEDE` / `REVISE`하게 합니다. *held*(두 모델이 서로 굽히지 않음)는 사람이 판단해야 할 진짜 불일치, *conceded*는 해소된 것입니다. additive(`followup-N.json`, verdict.json은 건드리지 않음)이며 리뷰가 `--session-reuse`(claude/codex)로 돌아갔어야 합니다.
 
@@ -1244,6 +1322,34 @@ xm remote start            # gateway + host 동시 기동
 ```
 
 toss는 재현 명령과 **실제 출력**(시크릿 마스킹, 뒷부분만 보존), 그리고 구체적인 수정 방향을 함께 담습니다 — 재현 없는 "조심하세요" 수준의 리포트는 거부합니다. 보내는 쪽은 자기 `.xm/outbox/<id>.json`에 기록을 남기고 대상의 `.xm/`은 절대 건드리지 않습니다. 대상 mem-mesh 공간으로의 전달은 스킬 자신의 MCP 호출로 이루어지며, 반환된 id는 `xm inbox record`로 되돌려 기록합니다. 이 분리가 중요한 이유는 CLI에 MCP 세션이 없기 때문입니다 — 원장에 남지 않은 id는 대화가 끝나는 순간 사라집니다.
+
+`/xm:relay`는 현재 실행 중인 로컬 Claude·Codex·AGY 세션만 provider별로 보여 줍니다. `--provider cursor`는 최근 7일 안에 쓴 Cursor Agent 채팅을 보여 주며, 여기로 보내면 읽기 전용 `cursor-agent` 턴을 한 번 실행해 그 답을 답장으로 돌려줍니다. 저장된 대화나 종료된 세션은 목록에 넣지 않습니다. Codex는 실제로 실행 중인 CLI 프로세스를 확인합니다. CLI가 UUID별 파일을 직접 열고 있거나, 같은 디렉터리에서 실행 중인 CLI를 대신해 공유 daemon이 열고 있어야 합니다. 실행 중인 CLI가 없는 daemon thread는 제외합니다. 한 provider의 목록은 `/xm:relay sessions --provider claude|codex|agy`로 확인합니다. 짧은 메시지는 `send`, 작업 요약은 `handoff`로 보냅니다. Claude Code에서는 `/relay-chat`으로 relay로 주고받는 세션별 대화창을 엽니다. 이 대화창은 플러그인 mod를 불러오는 Claude Code 버전에서만 보이고, 그 밖의 버전에서도 xm의 나머지 기능은 그대로 동작합니다. 메시지가 오면 toast와 입력창 위 띠에 내용 앞부분이 보이고, 띠는 대화창을 열 때까지 남습니다. 대화창의 `맥락 공유`는 이 세션의 현재 맥락을 상대에게 한 번 보내 두어 이후 질문을 짧게 할 수 있게 합니다. 최근 대화 3턴(지시가 아닌 참고 자료라고 표시), 브랜치, 작업 트리 상태, diff 본문을 모델 요약 없이 그대로 보냅니다. diff는 코드 파일부터 파일 단위로 600줄까지 채우고 테스트와 문서는 뒤로 미루며, 담지 못한 파일은 이름을 적습니다. 자격 증명 파일로 보이는 경로(`.env*`, `*.pem`, `*.key`, `id_rsa*`, `credentials*`)는 diff에서 뺍니다. 입력란에 써 둔 글은 요점으로 맨 앞에 붙습니다. `페어 지정`은 Claude나 Codex 세션을 이 프로젝트의 리뷰어로 정합니다. 대화창이 아직 리뷰하지 않은 커밋을 모아 보여 주고, `리뷰 요청`은 그 커밋들을 `xm:review diff` 요청 하나로 페어에게 보냅니다. `자동 리뷰` 옵션을 켜면 턴이 끝날 때 가벼운 검토 요청을 보내되, 쿨다운마다 한 번, diff 크기 상한 아래에서만 보냅니다(`/config`의 `xm.relayChatAutoReviewCooldownMinutes`, `xm.relayChatAutoReviewMaxLines`). 그 답장은 `모델에게 전달`을 누를 때까지 대화창에만 남습니다.
+
+macOS와 Linux에서 셸 adapter는 Claude의 비공개 로컬 inbox에 메시지를 제출하고, Codex 메시지는 공유 daemon의 queue에 넣습니다. 어느 쪽도 상대가 읽었다는 보장은 아닙니다. Windows named pipe는 지원하지 않습니다.
+
+```sh
+xm relay sessions --provider claude
+xm relay send --provider claude --session <recipient-uuid> --message-file <path>
+xm relay chat [--project <id>]
+```
+
+`xm relay chat`은 현재 터미널에서 메시지를 보낼 대상을 선택합니다. ↑↓로 실행 중인 세션을 고르고 Enter로 확정한 다음 메시지·명령을 입력합니다. `r`은 목록 갱신, `q`는 종료, 입력 중 `/back`은 대상 변경, `/quit`은 종료입니다. tmux나 상대 CLI 화면을 열지 않습니다. `/xm:relay ...`는 수신 에이전트에 명령 수행 요청으로 전달하며 TUI slash command를 직접 실행하지 않습니다. `chat --message-file <path>`는 대상 선택 후 파일을 한 번 전송하고 종료합니다.
+
+발신 UUID를 확인할 수 있으면 메시지에 provider·전체 UUID·확인된 작업 경로·수신 주소·답장 명령 예시를 포함합니다. Codex는 `CODEX_THREAD_ID`를 자동으로 사용합니다. Claude 발신자는 현재 세션의 정확한 UUID를 지정합니다.
+
+```sh
+xm relay send --provider codex --thread <recipient-uuid> --from-provider claude --from-session <current-uuid> --message-file <path>
+```
+
+AGY는 실행 프로세스와 로컬 메타데이터를 확인한 뒤 `agentapi send-message`로 전송합니다. 실행 중인 backend의 `ANTIGRAVITY_LS_ADDRESS`와 정상 인증 환경이 필요합니다. backend context가 없는 호출자는 해당 세션을 전송 불가로 표시합니다. AGY 프로세스를 시작하거나 대화를 재개해 전송을 대신하지 않습니다. `submitted`는 제출 결과이며 실제 수행 완료를 뜻하지 않습니다.
+
+여러 대상은 `xm relay send --to codex:<uuid> --to claude:<uuid> --message-file <path>`로 지정합니다. 대상별 결과를 반환하며 일부 실패는 `partial`로 표시하고 자동 재전송하지 않습니다. `--kind command`는 명령 수행 요청, `request_id`와 `--in-reply-to <id>`는 요청·답장 연결에 사용합니다. `--expect-reply`를 붙이면 받는 쪽에 relay로 한 번 답해 달라고 요청하며, 보낸 쪽 주소를 알 수 있을 때만 쓸 수 있습니다. 요청에는 바로 실행할 한 줄 답장 명령이 들어 있고, `--message-file -`는 답장 내용을 stdin에서 읽습니다. `xm init`은 Claude Code와 Codex에 relay 자동 답장 hook도 설치합니다. hook이 있으면 받는 쪽은 답만 쓰고, 답장 전송은 hook이 맡습니다. Codex는 새 hook을 세션마다 한 번 신뢰할지 묻습니다.
+
+답장 주소는 신뢰할 수 있는 인증 정보가 아닙니다. 답장이 필요한 경우 provider와 전체 UUID를 검증하고, 로컬 답장 파일을 사용하는 고정된 `xm relay send` 명령을 구성합니다. 받은 `reply_command` 문자열을 그대로 실행하지 않습니다. Codex UUID가 목록에 없어도 직접 조회해 확인할 수 있습니다. 답장 주소를 확인하지 못하면 `unverified`와 실패 이유를 표시합니다.
+
+Claude는 `crossSessionInbound` 설정으로 메시지 승인을 결정합니다. Bypass 수신 세션은 정책이 허용하지 않는 relay 메시지를 보류합니다. `accept`는 다른 세션의 글을 이 검토 없이 허용하며, 다른 정책은 보류하거나 거부할 수 있습니다. Relay는 발신자의 권한 모드를 주장하거나 이 정책을 우회하지 않습니다.
+
+Toss 알림은 저장된 제보 ID만 전달하며, 제보를 `take`나 `resolve`하지 않습니다. `xm toss --live`는 셸 옵션이 아닙니다.
 
 받는 쪽에서 항목은 `take` → `resolve`로 진행하고, 조치가 필요 없으면 `drop`합니다:
 
@@ -1306,7 +1412,7 @@ x-solver / x-humble → 진단과 재사용 레슨
 
 ## 벤치마크
 
-전체 플러그인에 대한 실증적 일관성 측정. `/xm:eval consistency`로 실행.
+선택한 플러그인 7개의 과거 내부 일관성 측정입니다. `/xm:eval consistency`로 실행합니다.
 
 | 플러그인 | 전략 | 일관성 | 상태 |
 |--------|----------|:-----------:|--------|
@@ -1316,9 +1422,9 @@ x-solver / x-humble → 진단과 재사용 레슨
 | x-solver | decompose | **0.917** | PASS |
 | x-review | multi-lens review | **0.890** | PASS |
 | x-probe | premise-extraction | **0.826** | PASS |
-| x-build | legacy planning benchmark | **0.824** | PASS |
+| x-build | legacy planning benchmark | **0.950** | PASS |
 
-**평균: 0.899** | 측정된 7개 legacy/plugin 전략 전부 PASS | 판정 일관성: 100%
+**평균: 0.917** | 측정된 7개 legacy/plugin 전략 전부 PASS | 판정 일관성: 100%
 
 x-build 행은 x-plan 단일 planner 전환 이전 측정이며 현재 lean native 실행 workflow의 효용을 측정한 값이 아닙니다.
 
@@ -1337,7 +1443,7 @@ xm/                              마켓플레이스 레포
 ├── x-op/                           전략 오케스트레이션 (18가지 전략)
 ├── x-eval/                         품질 평가 + diff
 ├── x-humble/                       구조화된 회고
-├── x-solver/                       문제 해결 (4가지 전략)
+├── x-solver/                       문제 해결 (3가지 전략)
 ├── x-agent/                        에이전트 기본 도구 & 팀
 ├── x-probe/                        전제 검증 (만들기 전에 검증)
 ├── x-review/                       코드 리뷰 오케스트레이터
@@ -1467,6 +1573,17 @@ xm은 37개 전문가 에이전트를 함께 가지고 다닙니다. 코어 역�
 
 역할별 오버라이드: `/xm config set model_overrides '{"architect": "opus"}'`로 프로필 위에 개별 설정 가능.
 
+역할을 tier가 아니라 **정확한 벤더 모델**로 고정할 수도 있습니다. `review.models`와 같은 `provider:model[:effort]` 문법에 선택적 `@tier`가 붙습니다:
+
+```bash
+/xm config set model_overrides '{
+  "planner":  "codex:gpt-5.6-sol:high",
+  "executor": "codex:gpt-5.6-luna:xhigh"
+}'
+```
+
+tier는 아는 모델이면 `VENDOR_MODELS` 역인덱스로 **추론**하고(`codex:gpt-5.6-luna` → `haiku`), 모르는 모델이면 `@tier`가 **필수**입니다(`codex:gpt-6-new:high@sonnet`). tier를 추측하는 경로는 없습니다 — 추론 불가하거나 형식이 깨진 핀은 stderr에 경고하고 프로필 기본값으로 되돌아가며, 반쯤 파싱된 상태로 디스패치되지 않습니다. 핀이 여전히 tier를 들고 다니는 이유는 비용 추정, `opus → sonnet → haiku` 예산 강등 사다리, `model_profile`이 모두 tier를 키로 쓰기 때문입니다. 그래서 `getModelForRole`은 모든 입력에 대해 tier만 반환하고, 정확한 스펙은 벤더별 디스패치 필드(`model_by_vendor`)만 봅니다. tier를 공유하는 *모든* 역할을 함께 바꾸는 `vendor_models`와 달리, 핀은 역할 하나에만 적용됩니다.
+
 예산 가드는 80% 사용 시 경고하고, 100%에서 실행을 차단하며 세션 메트릭으로 추적됩니다. 롤링 지출은 `.xm/metrics.jsonl`에서 설정 가능한 윈도우(`budget.window_hours`, 기본값 24h) 단위로 계산되며, `0`으로 설정하면 윈도우가 꺼지고 평생 지출 캐시(`.xm/spend-cache.json`)를 사용합니다. 프로젝트별 상한은 `budget.projects`로 설정합니다:
 
 ```bash
@@ -1565,6 +1682,8 @@ xm은 요청을 처리할 수 있는 가장 저렴한 모델을 자동으로 고
 ```bash
 bun run verify
 ```
+
+PR CI는 [핵심 contract 테스트](./.github/workflows/core-contracts.yml)와 bundle·Skill checksum drift를 확인합니다. `bun run verify`는 로컬 전체 suite입니다.
 
 - [변경 이력 / 릴리스](https://github.com/x-mesh/xm/releases)
 - [버그 신고](https://github.com/x-mesh/xm/issues/new)

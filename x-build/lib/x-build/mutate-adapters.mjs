@@ -38,7 +38,7 @@ function mapStatus(table, value) {
   return Object.hasOwn(table, value) ? table[value] : 'error';
 }
 
-function mutantRow(tool, { file, line, endLine = line, column = null, mutator, description, status }) {
+function mutantRow(tool, { file, line, endLine = line, column = null, endColumn = null, mutator, description, status }) {
   if (typeof file !== 'string' || !file) throw invalid(tool, 'a mutant has no file');
   if (!Number.isInteger(line) || line < 1) throw invalid(tool, `a mutant in ${file} has no line`);
   return {
@@ -46,6 +46,7 @@ function mutantRow(tool, { file, line, endLine = line, column = null, mutator, d
     line,
     end_line: Number.isInteger(endLine) && endLine >= line ? endLine : line,
     column: Number.isInteger(column) ? column : null,
+    end_column: Number.isInteger(endColumn) ? endColumn : null,
     mutator: String(mutator || ''),
     description: String(description || mutator || ''),
     status,
@@ -135,6 +136,7 @@ const rust = {
         line: mutant.span?.start?.line,
         endLine: mutant.span?.end?.line,
         column: mutant.span?.start?.column,
+        endColumn: mutant.span?.end?.column,
         mutator: mutant.genre,
         // The name repeats "file:line:col: "; the report already carries the location.
         description: String(mutant.name ?? '').replace(/^.*?:\d+:\d+:\s*/, ''),
@@ -172,8 +174,8 @@ const javascript = {
     if (!bin) return { unavailable: 'StrykerJS is not installed for this package (node_modules/.bin/stryker)' };
     return { ...probe('StrykerJS', [bin, '--version'], /(\d+\.\d+\.\d+)/, root), bin };
   },
-  plan({ root, repoTop, changed, outDir }, { bin }) {
-    const command = packageTestCommand(root, repoTop);
+  plan({ root, repoTop, changed, outDir, testCommand }, { bin }) {
+    const command = testCommand || packageTestCommand(root, repoTop);
     if (!command) return { unavailable: 'package.json has no test script for the Stryker command runner' };
     const mutate = [...changed].flatMap(([file, lines]) => lineRanges(lines).map(([start, end]) => `${escapeGlob(file)}:${start}-${end}`));
     const configPath = join(outDir, 'stryker.config.json');
@@ -205,6 +207,7 @@ const javascript = {
           line: mutant?.location?.start?.line,
           endLine: mutant?.location?.end?.line,
           column: mutant?.location?.start?.column,
+          endColumn: mutant?.location?.end?.column,
           mutator: mutant?.mutatorName,
           description: mutant?.replacement == null ? mutant?.mutatorName : `${mutant.mutatorName}: ${mutant.replacement}`,
           status: mapStatus(STRYKER_STATUS, mutant?.status),
@@ -215,6 +218,8 @@ const javascript = {
   },
 };
 
+// The statuses carry a space, measured against gomutants 0.6.1; `NOT VIABLE`
+// came from a string `+=` mutated to `-=`, which does not compile.
 const GOMUTANTS_STATUS = { KILLED: 'killed', LIVED: 'survived', 'NOT COVERED': 'no_coverage', 'TIMED OUT': 'timeout', 'NOT VIABLE': 'unviable' };
 
 const go = {
@@ -230,6 +235,8 @@ const go = {
     argv: ['gomutants', '-changed-since', mergeBase, '-o', join(outDir, 'gomutants.json'), '-cache', 'off', '-q'],
   }),
   parse({ outDir }, run) {
+    // A red baseline exits 1 and writes no report (measured), so it arrives as
+    // `error` with the tool's output rather than as a mutation result.
     if (run.exitCode !== 0) throw new Error(`gomutants exited ${run.exitCode}`);
     const report = readReport(join(outDir, 'gomutants.json'), 'gomutants');
     if (!Array.isArray(report?.files)) throw invalid('gomutants', 'files is not an array');
@@ -272,6 +279,8 @@ const swift = {
     return { argv: ['muter', 'run', ...files, '--format', 'json', '--output', join(outDir, 'muter.json'), '--skip-update-check'] };
   },
   parse({ root, outDir }, run) {
+    // A red baseline exits 255 and writes no report (measured); Muter stops
+    // before it mutates rather than reporting every mutant as killed.
     if (run.exitCode !== 0) throw new Error(`Muter exited ${run.exitCode}`);
     const report = readReport(join(outDir, 'muter.json'), 'Muter');
     if (!Array.isArray(report?.fileReports)) throw invalid('Muter', 'fileReports is not an array');

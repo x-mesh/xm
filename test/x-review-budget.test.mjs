@@ -381,6 +381,27 @@ describe('worktree review budgets', () => {
     expect(patch).toContain('-export const a = 3;'); expect(patch).toContain('+export const a = 4;'); expect(patch).not.toContain('export const a = 5;');
   });
 
+  test('accepts a positional Git ref range as the frozen review target', () => {
+    const dir = workspace(); const base = git(dir, 'rev-parse', 'HEAD');
+    change(dir, 3); git(dir, 'add', 'src/a.js'); git(dir, 'commit', '-m', 'ref change');
+    const range = base + '..HEAD';
+    const result = ok(cli(dir, ['run', range, '--lenses', 'correctness', '--run-id', 'ref-range']));
+    const manifest = read(runFile(dir, 'ref-range', 'run.json'));
+    const patch = readFileSync(runFile(dir, 'ref-range', 'target.patch'), 'utf8');
+    expect(result.verdict).toBe('LGTM');
+    expect(manifest.target).toMatchObject({ kind: 'git-diff', ref: range });
+    expect(manifest.snapshot.kind).toBe('commits');
+    expect(patch).toContain('-export const a = 1;');
+    expect(patch).toContain('+export const a = 3;');
+  });
+
+  test('rejects a positional value that is neither a file nor a Git ref', () => {
+    const dir = workspace();
+    const result = cli(dir, ['run', 'missing-ref..HEAD', '--lenses', 'correctness', '--run-id', 'bad-ref']);
+    expect(result.status).not.toBe(0);
+    expect(result.stderr).toContain('not a valid Git ref');
+  });
+
   test('active PR association preserves its reservation and worker identity', () => {
     const dir = workspace(); const prepared = ok(cli(dir, ['prepare', 'target.patch', '--lenses', 'correctness', '--run-id', 'before-pr']));
     ok(cli(dir, ['associate', 'before-pr', '--repo', 'owner/repo', '--pr', '21', '--reason', 'PR created for this task']));

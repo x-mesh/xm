@@ -42,6 +42,9 @@ export const MAX_DRIFT_SNAPSHOT_BYTES = 64 * 1024;
 export const MAX_JSONL_FILE_BYTES = 16 * 1024 * 1024;
 export const MAX_JSONL_LINE_BYTES = 256 * 1024;
 export const MAX_JSONL_ROWS = 100_000;
+// session_end spellings that mean "finished cleanly": the hook writes success,
+// pre-2026-04-10 writers used completed/complete/ok.
+const LEGACY_SUCCESS_STATUSES = new Set(['success', 'completed', 'complete', 'ok']);
 const SCORE_IDENTIFIER_RE = /^[a-z0-9][a-z0-9._:|-]{0,63}$/;
 const GROUP_IDENTIFIER_RE = /^[a-z0-9][a-z0-9._:-]{0,63}$/;
 const ANSI_ESCAPE_RE = /\x1B(?:\[[0-?]*[ -/]*[@-~]|\][^\x07]*(?:\x07|\x1B\\)?)/g;
@@ -479,9 +482,41 @@ export function driftReport({ xmDir = resolveXmDir(), window = DEFAULT_WINDOW, b
     report.axes.tokens = { unit: 'tokens_est total (p50, estimate)', rows: compareWindows(rows, { ...common, axis: 'tokens', keyOf: r => `${r.skill}/${r.role}/${r.model}`, statOf: rs => percentile50(rs.map(r => r.tokens_total)) }) };
   }
   if (need('errors')) {
-    const known = trace.sessions.filter(r => ['success', 'completed', 'failed', 'error'].includes(String(r.status).toLowerCase()));
-    const unknownCount = trace.sessions.length - known.length;
-    if (unknownCount) coverage.push(`errors: ${unknownCount} session_end row(s) with unknown status excluded (known: success, completed, failed, error)`);
+    // Writers before the 2026-04-10 hook wrote complete/completed/ok for a clean
+    // finish; the hook itself writes 'unknown' because it cannot observe the
+    // skill's outcome. Legacy spellings fold into success, 'unknown' is reported
+    // per skill so the gap is visible, and anything else is listed verbatim.
+    const known = [];
+    const unknownBySkill = {};
+    const otherValues = {};
+    for (const r of trace.sessions) {
+      const raw = String(r.status ?? '').toLowerCase();
+      const status = LEGACY_SUCCESS_STATUSES.has(raw) ? 'success' : raw;
+      if (status === 'success' || status === 'failed' || status === 'error') { known.push({ ...r, status }); continue; }
+      if (raw === '' || raw === 'unknown') {
+        const skill = canonicalIdentifier(r.skill, '(unparseable)').slice(0, 32);
+        unknownBySkill[skill] = (unknownBySkill[skill] || 0) + 1;
+        continue;
+      }
+      // Trace files are data: the value is canonicalised like every other
+      // identifier here and capped so the note stays one readable line.
+      const key = canonicalIdentifier(raw, '(unparseable)').slice(0, 32);
+      otherValues[key] = (otherValues[key] || 0) + 1;
+    }
+    const unknownEntries = Object.entries(unknownBySkill).sort((a, b) => b[1] - a[1]);
+    const unknownTotal = unknownEntries.reduce((a, [, n]) => a + n, 0);
+    if (unknownTotal) {
+      const listed = unknownEntries.slice(0, 5).map(([skill, n]) => `${skill} ${n}`).join(', ');
+      const more = unknownEntries.length > 5 ? `, +${unknownEntries.length - 5} more` : '';
+      coverage.push(`errors: ${unknownTotal} session_end row(s) with status unknown excluded from the rate (the trace-session hook cannot observe a skill's outcome) — ${listed}${more}`);
+    }
+    const otherEntries = Object.entries(otherValues).sort((a, b) => b[1] - a[1]);
+    const otherTotal = otherEntries.reduce((a, [, n]) => a + n, 0);
+    if (otherTotal) {
+      const listed = otherEntries.slice(0, 5).map(([value, n]) => `'${value}' ${n}`).join(', ');
+      const more = otherEntries.length > 5 ? `, +${otherEntries.length - 5} more` : '';
+      coverage.push(`errors: ${otherTotal} session_end row(s) with unrecognised status excluded: ${listed}${more} (known: success, completed, complete, ok, failed, error)`);
+    }
     report.axes.errors = { unit: 'session_end failed/error rate', rows: compareWindows(known, { ...common, axis: 'errors', keyOf: r => r.skill, statOf: errorRate }) };
   }
   if (need('quality')) {

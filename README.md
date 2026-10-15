@@ -14,7 +14,7 @@
 </p>
 
 <p align="center">
-  <a href="https://github.com/x-mesh/xm/releases"><img src="https://img.shields.io/badge/version-2.26.0-blue" alt="Version" /></a>
+  <a href="https://github.com/x-mesh/xm/releases"><img src="https://img.shields.io/badge/version-2.41.0-blue" alt="Version" /></a>
   <a href="./LICENSE"><img src="https://img.shields.io/badge/license-MIT-green" alt="License: MIT" /></a>
   <a href="https://nodejs.org"><img src="https://img.shields.io/badge/node-%3E%3D18-brightgreen" alt="Node.js" /></a>
   <a href="#plugins"><img src="https://img.shields.io/badge/plugins-18-orange" alt="Plugins" /></a>
@@ -26,8 +26,10 @@
 
 <p align="center">
   <code>/xm:build "Build a REST API with JWT auth"</code><br />
-  → repository evidence → x-plan → native execution → risk-based validation
+  → repository evidence → direct or x-plan route → native execution → risk-based validation
 </p>
+
+The default `x-build` route selects direct execution for bounded, deterministically verifiable work and uses `x-plan` for work that needs planning. Cross-vendor panels and the project lifecycle are opt-in. The [benchmark data](./benchmarks/SUMMARY.md) and [case studies](./docs/case-studies/README.md) are internal measurements; they do not establish outcomes for other teams.
 
 ---
 
@@ -37,7 +39,7 @@
 - [Quick Start](#quick-start)
 - [Why xm?](#why-xm)
 - [Cross-Vendor Verification](#cross-vendor-verification)
-- [Plugins](#plugins) — [x-plan](#x-plan) · [x-build](#x-build) · [x-op](#x-op) · [x-review](#x-review) · [mutation testing](#mutation-testing--xmmutate) · [x-solver](#x-solver) · [x-probe](#x-probe) · [x-eval](#x-eval) · [x-humble](#x-humble) · [x-dashboard](#x-dashboard) · [x-agent](#x-agent) · [x-trace](#x-trace) · [x-memory](#x-memory) · [x-humanize](#x-humanize) · [x-recall](#x-recall) · [x-panel](#x-panel) · [x-wt](#x-wt) · [x-remote](#x-remote)
+- [Plugins](#plugins) — [x-plan](#x-plan) · [x-build](#x-build) · [parallel topic PRs](#parallel-topic-prs--xmbatch) · [x-op](#x-op) · [x-review](#x-review) · [mutation testing](#mutation-testing--xmmutate) · [x-solver](#x-solver) · [x-probe](#x-probe) · [x-eval](#x-eval) · [x-humble](#x-humble) · [x-dashboard](#x-dashboard) · [x-agent](#x-agent) · [x-trace](#x-trace) · [x-memory](#x-memory) · [x-humanize](#x-humanize) · [x-recall](#x-recall) · [x-panel](#x-panel) · [x-wt](#x-wt) · [x-remote](#x-remote)
 - [Quality & Learning Pipeline](#quality--learning-pipeline)
 - [Architecture](#architecture)
 - [Configuration](#configuration)
@@ -88,8 +90,10 @@ After installing, run once per machine to copy the trace-session hook into `~/.c
 ```
 /xm init              # install trace-session hook into ~/.claude/
 /xm init status       # verify install state
-/xm init uninstall    # remove hook + settings entries
+/xm init uninstall    # remove hook + settings entries + routing block
 /xm init --no-hooks   # install CLI dispatchers without copying hooks
+/xm init --claude-md  # also add the xm routing block to ~/.claude/CLAUDE.md
+/xm init --codex-md   # also add the xm routing block to ~/.codex/AGENTS.md
 ```
 
 Idempotent: safe to re-run. Existing hooks (e.g. mem-mesh) are preserved, and each write creates a timestamped backup of `settings.json`. Traces land in each project's `.xm/traces/`.
@@ -129,11 +133,19 @@ The installer writes `~/.local/bin/xm` (override with `XM_BIN_DIR`; ensure it is
 ```bash
 xm setup                # install trace-session hook into ~/.claude/
 xm setup status         # verify install state
-xm setup uninstall      # remove hook + settings entries
+xm setup uninstall      # remove hook + settings entries + routing block
 xm setup --no-hooks     # install CLI dispatchers without copying hooks
+xm setup --claude-md    # also add the xm routing block to ~/.claude/CLAUDE.md
+xm setup --codex-md     # also add the xm routing block to ~/.codex/AGENTS.md
 ```
 
 Writes `~/.claude/hooks/xm-trace-session.mjs` and merges `PreToolUse`/`PostToolUse` Skill matchers into `~/.claude/settings.json` (existing hooks such as mem-mesh are preserved; a timestamped backup is created on every write). Use the bash route when you are outside Claude Code; otherwise `/xm init` is the preferred entry point.
+
+`--claude-md` adds a marked routing block to `~/.claude/CLAUDE.md`. The block tells Claude when to invoke xm skills, for example **xm:write** for a PR. A plain install does not add the block. After you opt in, `xm setup` and `xm update` refresh the block. Put your own rules outside the block, because each refresh replaces its contents. To remove only the block, delete it. The next install does not add it again. Each change to `CLAUDE.md` creates a timestamped backup.
+
+`--codex-md` adds the same kind of block to `~/.codex/AGENTS.md`. The rules in this block name skills as `$xm:<skill>`, the Codex form. The opt-in, refresh, and backup rules are the same as for `--claude-md`. The two flags can run together.
+
+The begin marker of each block carries the template revision, for example `v1`. `xm setup status` shows the revision. If a block has a newer revision than your xm, `xm setup` leaves it unchanged and prints a warning. A block without a revision is replaced once with the current one.
 
 Prefer `setup` in new scripts and docs: `init` reads as "start a project" everywhere else in the ecosystem, and a future major version will hand bare `xm init` over to the project route.
 
@@ -172,7 +184,7 @@ xm help
 
 The CLI dispatches to plugin libs in `~/.claude/plugins/cache/xm/`, the Codex-only bundle in `~/.codex/xm/`, or `$XM_LIB`. A Claude Code plugin installation is therefore not required on a Codex-only host.
 
-Resolution order is `$XM_LIB` → source-repo cwd → `~/.codex/xm/` → marketplace cache. On a machine that has a local checkout or a Codex bundle, the marketplace cache is shadowed everywhere, so `xm --market <cmd>` (or `XM_MARKET=1`) skips every dev-local root and pins the run to `~/.claude/plugins/cache/xm/`. Use it to reproduce what a plain user sees; `xm which` and `xm version` report which lib actually answered. `xm install` is the one exception to that order: it renders SKILL *sources*, which the Codex bundle does not carry (it mirrors `lib/`, `hooks/` and `agents/` only), so when the resolved root has no `skills/` beside its `lib/` the command falls back to the newest marketplace cache root that has both — and takes that root's `lib/` too, never a mixed pair. The `sync` subcommand reuses the bundled `x-sync` lib, so you do **not** need to run `x-sync/install.sh client` separately.
+Resolution order is `$XM_LIB` → source-repo cwd → whichever of `~/.codex/xm/` and the marketplace cache declares the newer version. A tie keeps the Codex bundle, and a bundle that cannot state its version never outranks a cache that can — so a global Codex install takes effect immediately, while a bundle left untouched no longer shadows a cache the Claude plugin has since updated. On a machine that has a local checkout, the marketplace cache is shadowed everywhere, so `xm --market <cmd>` (or `XM_MARKET=1`) skips every dev-local root and pins the run to `~/.claude/plugins/cache/xm/`. Use it to reproduce what a plain user sees; `xm which` and `xm version` report which lib actually answered. `xm install` is the one exception to that order: it renders SKILL *sources*, and while the Codex bundle mirrors `skills/` for its own runtime reads it carries none of the release metadata an install needs (`.claude-plugin/plugin.json`, `skills.checksums.json`), so when the resolved root cannot drive an install the command falls back to the newest marketplace cache root that can — and takes that root's `lib/` too, never a mixed pair. The `sync` subcommand reuses the bundled `x-sync` lib, so you do **not** need to run `x-sync/install.sh client` separately.
 
 #### Project Registry (`xm project`)
 
@@ -185,7 +197,7 @@ The dashboard reads from a machine-local registry at `~/.xm/projects.json`. Once
 
 ### Multi-Tool Install (Cursor / Codex / Kiro / Antigravity / OpenCode)
 
-xm is published as a Claude Code marketplace plugin, but its 27 SKILLs can also be rendered into rule/steering formats consumed by other AI coding tools. A single source compiler (`xm/lib/install/install-cli.mjs`) emits per-tool artifacts.
+xm is published as a Claude Code marketplace plugin, but its 30 SKILLs can also be rendered into rule/steering formats consumed by other AI coding tools. A single source compiler (`xm/lib/install/install-cli.mjs`) emits per-tool artifacts.
 
 ```bash
 # Interactive picker (scope + targets)
@@ -249,8 +261,8 @@ xm install --list-installed # print installed manifest inventory as JSON
 
 That single line:
 1. Inspects relevant code, contracts, tests, and existing behavior
-2. Uses x-plan Standard to produce one grounded plan and PlanEnvelope
-3. Challenges whether the requested method is justified and shows the plan when approval is needed
+2. Checks whether the requested method is justified, then chooses direct execution or x-plan Standard
+3. Produces a grounded PlanEnvelope and asks for approval when the planned route needs it
 4. Executes sequentially by default with native agents, then runs only validation relevant to the changed risk
 
 Need a plan without execution? Use x-plan directly:
@@ -335,15 +347,16 @@ xm bakes those questions into every agent prompt. Agents end up reasoning about 
 **How a senior engineer debugs** — the thinking protocol embedded in x-solver:
 
 ```
-DIAGNOSE ──→ HYPOTHESIZE ──→ TEST ──→ REFINE ──→ RESOLVE ──→ REFLECT
+REPRODUCE ──→ DIAGNOSE ──→ HYPOTHESIZE ──→ TEST ──→ REFINE ──→ RESOLVE ──→ REFLECT
 ```
 
-1. **"What's happening right now?"** — Describe the observable state, not the problem.
-2. **"When did it last work?"** — Find the baseline. No baseline = find one first.
-3. **"Why?" — with evidence** — Corroborate from different sources. No evidence? Stop.
-4. **"Stuck? Change the lens."** — All hypotheses from the same layer? Look at a different one.
-5. **"Show me it works."** — Execution is the only proof.
-6. **"Why did we miss this?"** — Retrospect via x-humble.
+1. **"Can I make it fail on demand?"** — Record the command, its output, and a failure marker before you touch anything.
+2. **"What's happening right now?"** — Describe the observable state, not the problem.
+3. **"When did it last work?"** — Find the baseline. No baseline = find one first.
+4. **"Why?" — with evidence** — Corroborate from different sources. No evidence? Stop.
+5. **"Stuck? Change the lens."** — All hypotheses from the same layer? Look at a different one.
+6. **"Show me it works."** — Re-run the recorded failure. Execution is the only proof.
+7. **"Why did we miss this?"** — Retrospect via x-humble.
 
 </details>
 
@@ -416,18 +429,19 @@ This is a *capability*, available today; proving it produces measurably better o
 | [x-eval](#x-eval) | Quality scoring & benchmarks | `/xm:eval score file` |
 | [x-humble](#x-humble) | Structured retrospective | `/xm:humble reflect` |
 | [x-agent](#x-agent) | Agent primitives & teams | `/xm:agent fan-out "task"` |
-| [x-trace](#x-trace) | Execution tracing & cost | `/xm:trace timeline` |
+| [x-trace](#x-trace) | Execution tracing & cost | `xm trace list` |
 | [x-memory](#x-memory) | Cross-session memory | `/xm:memory inject` |
 | [x-dashboard](#x-dashboard) | Web dashboard for .xm state | `/xm:dashboard start` |
-| [x-humanize](#x-humanize) | Remove AI writing patterns (v0.5.0, pre-stable) | `/xm:humanize audit text` |
+| [x-humanize](#x-humanize) | Remove AI writing patterns (v0.6.0, pre-stable) | `/xm:humanize audit text` |
 | [x-recall](#x-recall) | Cross-session artifact index | `xm recall list` |
 | [x-panel](#x-panel) | Cross-model adversarial review | `xm panel` |
 | [x-wt](#x-wt) | Session worktree — isolate & land back | `/xm:wt` |
 | [x-remote](#x-remote) | Drive a remote host session from Discord | `xm remote start` |
 | xm | Bundle + config + pipeline | `/xm pipeline release` |
 
-**Bundled in `xm` core (not separate marketplace plugins):** `/xm:ship` release automation · `x-sync` multi-machine sync server · `/xm:toss` + `/xm:inbox` cross-project bug handoff — see [x-ship](#x-ship), [x-sync](#x-sync) and [toss / inbox](#cross-project-handoff--toss--inbox) below.
+**Bundled in `xm` core (not separate marketplace plugins):** `/xm:ship` release automation · `/xm:write` PR, issue, and release documents · `x-sync` multi-machine sync server · `/xm:toss` + `/xm:inbox` cross-project bug handoff · `/xm:relay` local Claude and Codex session messages plus AGY session messages — see [x-ship](#x-ship), [xm:write](#xmwrite), [x-sync](#x-sync) and [toss / inbox](#cross-project-handoff--toss--inbox) below.
 `/xm:mutate` is bundled the same way — it drives the `xm mutate` command that ships with core. Codex exposes it as `$xm:mutate`, with `$xm-mutate` kept as a flat alias. See [Mutation testing](#mutation-testing--xmmutate).
+`/xm:batch` is bundled the same way. It drives the `xm batch` command of x-build. See [Parallel topic PRs](#parallel-topic-prs--xmbatch).
 
 ---
 
@@ -454,7 +468,7 @@ x-build is the lean execution workflow around x-plan. It inspects repository evi
 
 The default is adaptive, not plan-always. Bounded, independent, low-risk work takes the direct route — but only when deterministic gates already cover its failure modes. Shared, high-risk, or weakly observable work takes the planned route instead: x-plan Standard on the configured planner model, then the configured executor model once the plan succeeds. A missing or non-executable plan artifact stops it before Execute.
 
-`route start → verify → finish` binds the decision to the baseline commit, expected files, gates, byte hashes, elapsed time, and cost events. A failed direct verification can restart once from a clean planned fallback. Stale or incomplete receipts fail closed.
+`route start → verify → finish` binds the decision to the baseline commit, expected files, gates, byte hashes, elapsed time, and cost events. A failed direct verification can restart once from a clean planned fallback. Stale or incomplete receipts fail closed. A planned run can pass every gate and still change an undeclared file that the gates need. Then `xm build route close --decision-id <id>` closes the lease with the reason and the file list, and records no outcome.
 
 ```bash
 xm build route decide --kind bugfix --scope bounded --independent \
@@ -525,6 +539,7 @@ The commands below remain available only when explicitly invoked. The default x-
 | **Steps** | `steps compute/status/next` |
 | **Execute** | `run`, `run --worktrees [--dry-run] [--max-parallel N]`, `run --json`, `run-status` |
 | **Worktrees** | `worktrees plan/status/resume/cleanup`, `gate-panel --project --task --phase --patch`, `review-integration [--base --target]` |
+| **Batch** | `batch init/add/plan/status`, `batch run <id> [--dry-run] [--base X] [--max-parallel N]`, `batch approve/collect/seal/verify/resume`, `batch publish/merge [--dry-run\|--yes]` (one worktree and one PR for each topic plan; also available as `xm batch`) |
 | **Verify** | `quality`, `verify-coverage`, `verify-traceability`, `verify-contracts`, `verify-review-fix [--init]`, `verify-tests [--since 90d] [--limit N]` (replays each paired fix commit's tests on its parent to check they catch the bug they shipped with), `review-precision [--since 30d\|--last N] [--min-precision 0.7]` (per-lens `fix_now / (fix_now + false_positive)` from the triage ledger every passing gate appends to; also on the dashboard Reviews page) |
 | **Analysis** | `forecast`, `forecast update`, `roi [--by model\|role\|strategy]`, `effectiveness [--since Nd] [--profile a,b] [--compare a,b]`, `metrics`, `decisions`, `summarize` |
 | **Export** | `export --format md/csv/jira/confluence`, `import` |
@@ -555,6 +570,32 @@ For projects with ≥2 tasks that touch disjoint files (declared via `tasks add 
 Config lives under `.xm/config.json`'s `worktree` key (`base`, `branch_prefix`, `max_parallel`, `gate_policy`, `gate_max_rounds`, `pre_gate`); see `x-build/skills/build/references/data-model.md` for the full schema and `docs/worktree-gate-optimization-plan.md` for the gate design.
 
 </details>
+
+---
+
+### Parallel topic PRs — `/xm:batch`
+
+`/xm:batch` delivers several independent features as separate PRs. It groups the features into topics, writes one plan for each topic, and implements the topics in parallel worktrees. Then it opens the PRs, verifies the combined result, and merges the PRs in a fixed order.
+
+Run it without arguments to start a new batch or to resume an active batch. The skill asks the user at four points only:
+
+1. Before the plan agents start: the topic set and the base branch.
+2. Before the implementation agents start: the plan approval.
+3. Before the push: the PR creation.
+4. Before the merge: the merge order.
+
+```bash
+/xm:batch                         # start a new batch, or resume an active batch
+/xm:batch login API, search page  # use this text as the feature list
+/xm:batch 20261001-auth-search    # resume this batch
+xm batch list --json              # stored batches, newest first
+xm batch candidates --json        # executable plans that no batch uses yet
+xm batch status <id> --json       # topics, waves, seal, integration, and merge state
+```
+
+**Topic sources.** List the features, or select saved executable plans from `.xm/plan/`. A plan that a batch already uses does not appear again.
+
+**Limits.** Topics must not depend on each other. If feature B needs feature A, put both features in one topic, or move B to the next batch. Each topic agent runs its tasks in sequence. A topic PR can contain only the files that its plan names. `collect` and `publish` reject any other committed file.
 
 ---
 
@@ -685,6 +726,7 @@ Large reviews no longer stop at an arbitrary line count. The planner budgets the
 | **Verified resolution** | `--reverify ID --outcome resolved` also requires `--command "<check>"`. The gate runs it, stores the exit code, and refuses `resolved` on a non-zero exit, a timeout, or a check that rewrites the bytes it is checking. `persistent` and `regression` need no command. |
 | **Named waivers** | `accept_risk` and `false_positive` on a Critical or High finding need `approved_by` as well as evidence. A waiver closes a finding with nobody fixing it, so it carries a name. Medium waivers need evidence only. |
 | **Task identity** | `--task-id` is a free string, but a task that already spent its full review on the same bytes refuses a new id. Continue that task with a delta, or approve another full with `--exception full`. |
+| **Invariant gate** | Check declared project invariants and mutations on frozen inputs before dispatch. A failed gate stops reviewer dispatch. Generic mutation survivors remain advisory. |
 | **Terminal receipts** | Every run ends with a validated receipt. A run without one blocks new reviews until you resume or close it. |
 
 **Review principles:** Context determines severity · No evidence = no finding · No fix direction = no finding · When in doubt, downgrade
@@ -721,7 +763,7 @@ xm does not generate mutants. For each language, an external tool parses the cod
 | Go | [gomutants](https://github.com/szhekpisov/gomutants) | `-changed-since` | `go install github.com/szhekpisov/gomutants@latest` |
 | Swift | [Muter](https://github.com/muter-mutation-testing/muter) | whole files, then xm keeps changed lines | `brew install muter-mutation-testing/formulae/muter` |
 
-**Change set.** xm takes `git diff` from the merge base to the working tree. The diff includes uncommitted edits to tracked files. It does not include untracked files. Each file goes to the tool for its language, in the nearest directory that has `Cargo.toml`, `package.json`, `go.mod`, or `muter.conf.yml` / `Package.swift`. xm keeps only the mutants that touch a changed line.
+**Change set.** xm takes `git diff` from the merge base to the working tree. The diff includes uncommitted edits to tracked files. It does not include untracked files, so xm names any untracked file a tool would have claimed and reports it under `untracked_files`. Each file goes to the tool for its language, in the nearest directory that has `Cargo.toml`, `package.json`, `go.mod`, or `muter.conf.yml` / `Package.swift`. xm keeps only the mutants that touch a changed line.
 
 **Tools that are not installed.** A missing tool gets the status `unavailable` with an install command. A missing configuration or manifest also gets `unavailable`, and its reason names the file to create, such as `muter.conf.yml`. xm does not substitute a built-in engine. The command exits 1, and the results for the other languages stay valid.
 
@@ -730,17 +772,21 @@ xm does not generate mutants. For each language, an external tool parses the cod
 - Muter needs `muter.conf.yml`. Run `muter init` in the project root first. Muter builds a copy next to the project (`<root>_mutated`) and writes `muter_logs/` in the project.
 - Java, Kotlin, Python, C#, and PHP have no adapter.
 
-**Bounds.** `--timeout-ms` limits the whole run. The default is 30 minutes. Each tool sets the timeout for each mutant from its baseline run. If the suite already fails, that language gets `baseline_failed` or `error`, not a mutation result.
+**Bounds.** `--timeout-ms` limits the whole run. The default is 30 minutes. Each tool sets the timeout for each mutant from its baseline run. If the suite already fails, cargo-mutants reports `baseline_failed`, while StrykerJS, gomutants and Muter stop before they mutate and the language gets `error` with the tool's output. Neither is a mutation result.
 
-Diff reports go to `.xm/review/mutate-diff/<head>-<merge-base>.json`. Task reports go to `.xm/review/mutate/<project>/<task>.json`, and each survived mutant of a task goes to the attention queue. A task needs a linked worktree artifact with a recorded `base`, or `--base <ref>`.
+Immutable diff reports use `.xm/review/mutate-diff/<head>-<merge-base>-<run-id>.json`. Immutable task reports use `.xm/review/mutate/<project>/<task>-<run-id>.json`. The previous paths remain latest aliases. Survivors from stable task runs enter the attention queue. A task needs a linked worktree artifact with a recorded `base`, or `--base <ref>`.
 
-> v1 is observational. A survivor is a candidate for inspection, not proof of a missing test, and it does not block a merge.
+Reports bind input hashes, execution plans, tool versions, and an environment digest. The measurement status distinguishes complete, incomplete, failed, and no-target runs. A complete measurement can contain survivors. Unresolved outcomes and omitted targets cause exit code 1. Deleted captured inputs also produce an incomplete measurement because the gate cannot verify absent files.
+
+Use `--test-command 'bun test test/sync.test.mjs'` for an explicit JavaScript test selection. Use `--reuse-report FILE --reuse-sha256 HASH` only for trusted evidence with identical inputs and execution conditions. A mismatch stops the command. Current adapters reject `--max-mutants N` before execution because they cannot enforce the count bound. The sync project gate instead declares exactly seven mutations.
+
+> The check is observational. A survivor is a candidate for inspection, not proof of a missing test, and it does not block a merge.
 
 ---
 
 ### x-solver
 
-4 strategies for working through a problem. Auto-picks one based on what the problem actually looks like.
+3 strategies for working through a problem. Auto-picks one based on what the problem actually looks like.
 
 ```bash
 /xm:solver init "Memory leak in React component"
@@ -753,12 +799,17 @@ Diff reports go to `.xm/review/mutate-diff/<head>-<merge-base>.json`. Task repor
 | **decompose** | Break → solve leaves → merge | Complex multi-faceted problems |
 | **iterate** | Diagnose → hypothesis → test → refine | Bugs, debugging, root cause |
 | **constrain** | Elicit → candidates → score → select | Design decisions, tradeoffs |
-| **pipeline** | Auto-detect → route to best strategy | When unsure |
 
 ```
-DIAGNOSE → HYPOTHESIZE → TEST → REFINE → RESOLVE → x-humble
-[state+baseline] [falsifiable] [one var] [switch/revert] [exec verify] [why late?]
+REPRODUCE → DIAGNOSE → HYPOTHESIZE → TEST → REFINE → RESOLVE → x-humble
+[repro+marker] [state+baseline] [falsifiable] [one var] [switch/revert] [fix+regression proof] [why late?]
 ```
+
+In the iterate strategy, each hypothesis records its check (`--check`). The `test` phase starts only when every pending hypothesis has a check.
+
+`xm solver verify` requires a regression test for a reproduced or intermittent problem. Pin the test with `xm solver repro verify --regression-cmd "<command>" --regression-marker "<text>"`. The CLI runs the command on the baseline that `repro set` recorded, and then on the current tree. The test must fail with the marker on the baseline and pass on the current tree. If no test can pin the fix, record the reason with `--regression-waiver "<reason>"`.
+
+If `x-build hooks install` added the scope guard, an active iterate problem limits edits. Before `resolve`, only files that you register with `xm solver instrument add <file>` can change. In `resolve`, the files and tests of the Scope Contract can also change. A problem idle for 24 hours does not block edits. The guard does not watch Bash writes.
 
 ---
 
@@ -987,12 +1038,13 @@ Model auto-routing: `architect` → opus, `executor` → sonnet, `scanner` → h
 
 ### x-trace
 
-See what your agents actually did. Walk the timeline, check the cost, replay any past run.
+See what your agents actually did. Walk the timeline, check the cost, and prepare an auditable replay artifact. The replay command does not invoke an agent.
 
 ```bash
-/xm:trace timeline              # Agent execution timeline
+xm trace list                   # Recent trace sessions: skill, status, agents, duration
+xm trace show <session-id>      # One session with every recorded agent_step
 /xm:trace cost                  # Token/cost breakdown per agent
-/xm:trace replay <id>           # Replay a past execution
+/xm:trace replay <id> --span <span-id>  # Prepare a replay manifest and snapshot
 /xm:trace diff <id1> <id2>      # Compare two execution runs
 ```
 
@@ -1118,6 +1170,31 @@ Release automation: squash WIP commits, bump the version, push. Works on xm mark
 | **Standalone support** | Auto-detects package.json, Cargo.toml, pyproject.toml, go.mod. No version file → the git tag *is* the version |
 | **Release metrics** | Records version, bump type, test/review results to `.xm/traces/` |
 | **Diff-based analysis** | Per-commit diff report for intelligent squash grouping |
+| **Release documents** | `/xm:write` writes the commit message, the `CHANGELOG.md` entry, and the release notes from one evidence pass |
+| **GitHub release** | After the tag push, ship runs `gh release create --verify-tag`. It does this only if the repository already has GitHub releases |
+
+---
+
+### xm:write
+
+`/xm:write` audits, creates, and improves repository READMEs from current code and writes the documents that a change leaves behind. It also removes generic, repetitive prose from the README passages it writes or revises. Factual claims must come from repository or session evidence.
+
+```bash
+/xm:write readme audit   # Check README structure, first-run path, and factual claims
+/xm:write readme improve # Revise the README and report verification
+/xm:write readme create  # Create a README from repository evidence
+/xm:write pr            # Write a PR from the branch diff, then open it with gh
+/xm:write pr 42         # Rewrite the body of PR #42
+/xm:write issue "..."   # Write a bug or feature issue, then file it with gh
+/xm:write release       # Release notes (text only)
+/xm:write changelog     # CHANGELOG.md entries (text only)
+```
+
+For `pr` and `issue`, the skill shows the final text and asks one time. Then it runs `gh` and reads the saved text back from GitHub. The `release`, `changelog`, and `commit` modes return text only, because `/xm:ship` owns the commit, the tag, and the release.
+
+The skill uses the GitHub PR or issue template of the repository. If the repository has no template, it uses the default template of the organization or account. If neither exists, it uses the x-kit formats.
+
+The document language follows the repository, not the chat language. If you name a language, the skill uses that language. The verification section lists only commands that ran in the session and the CI checks of the PR.
 
 ---
 
@@ -1130,7 +1207,7 @@ Detect AI-writing patterns and rewrite generated text into natural human prose. 
 /xm:humanize light <text>          # Minimal edits, preserve original structure
 /xm:humanize <text>                # Default: medium intensity rewrite
 /xm:humanize strong <text>         # Rebuild prose aggressively, preserve facts
-/xm:humanize ui <strings>          # Korean UI strings — JSON array in and out
+/xm:humanize ui <strings>          # Korean UI and CLI strings — JSON array in and out
 /xm:humanize voice <file> <text>   # Match voice of sample file
 /xm:humanize --lang ko <text>      # Force Korean output
 ```
@@ -1196,7 +1273,7 @@ xm panel followup <run>             # debate round: resume each author's session
 
 Per-model selection via `--models name:model[:effort]`. The optional `:effort` sets reasoning depth per model — codex `minimal|low|medium|high|xhigh` (→ `model_reasoning_effort`) and kiro `low|medium|high|xhigh|max` (→ `--effort`); the sets differ by vendor, and an unknown level warns and is dropped rather than blocking the run. Bare `xm panel models` is a two-step provider→model picker (`--json` for structured rows; live-catalog vendors agy/cursor/kiro vs fixed-ID claude/codex); named `presets`, parallel calls, and results land under `.xm/panel/` (queryable with `xm recall`). Each vendor is blind in a different place, which is the whole reason more than one gets asked.
 
-Every run **captures real per-model token usage and cost** — claude via `--output-format json`, codex via its `exec --json` event stream — so panel numbers price from measured actuals, not estimates. Each finished run appends a per-model row to a **disagreement ledger** (`.xm/panel/history.jsonl`); `xm panel stats [--roi]` aggregates it into per-vendor survival rate (confirmed/raised) and cost per confirmed catch — a per-repo data moat a stateless API council can't accumulate. `--stream` adds token-by-token live text for claude/cursor (`--partial`, on by default; auto-disabled on very large targets). When a model returns a structured markdown review instead of the JSON contract (agy/Gemini does this intermittently), the panel salvages the findings from the `### [severity] file:line — title` + Why/Fix shape rather than discarding a real review as "no JSON"; when a model exits 0 with no usable answer at all, it surfaces the CLI's own stderr reason instead. Timeouts auto-scale with target size (`--timeout` to pin). kiro is spawned under an auto-provisioned no-MCP agent (`~/.kiro/agents/xm-panel-review.json`), because kiro otherwise loads the global `mcp.json` and a single MCP tool whose schema uses `oneOf`/`allOf`/`anyOf` at the top level makes Bedrock reject the whole request — set `panel.kiro_agent` to point at your own agent instead.
+The panel captures measured usage when a provider exposes it — Claude via `--output-format stream-json` by default, codex via its `exec --json` event stream, and kiro credits from stderr. Other provider runs can have no usage data; do not interpret missing values as zero cost. Each finished run appends a per-model row to a **disagreement ledger** (`.xm/panel/history.jsonl`); `xm panel stats [--roi]` aggregates it into per-vendor survival rate (confirmed/raised) and cost per confirmed catch — a per-repo data moat a stateless API council can't accumulate. Claude reports thinking, tool activity, and response progress by default; completed watch rows explicitly show completion and duration. `--no-stream` selects final-output mode. `--stream` also enables token-by-token live text for cursor (`--partial`, on by default; auto-disabled on very large targets). When a model returns a structured markdown review instead of the JSON contract (agy/Gemini does this intermittently), the panel salvages the findings from the `### [severity] file:line — title` + Why/Fix shape rather than discarding a real review as "no JSON"; when a model exits 0 with no usable answer at all, it surfaces the CLI's own stderr reason instead. Timeouts auto-scale with target size (`--timeout` to pin). kiro is spawned under an auto-provisioned no-MCP agent (`~/.kiro/agents/xm-panel-review.json`), because kiro otherwise loads the global `mcp.json` and a single MCP tool whose schema uses `oneOf`/`allOf`/`anyOf` at the top level makes Bedrock reject the whole request — set `panel.kiro_agent` to point at your own agent instead.
 
 Two adversarial add-ons turn opinions into checked facts. **`--grounded`** makes round-2 refuters that can actually read the repo (codex today — `exec --sandbox read-only` from the repo cwd) OPEN each cited file and verify the finding against the real code, tagging the verdict with `{checked, observed}`; a text-only vendor is never asked to (a blind vendor told to "open the file" would just fake a `checked:true`). **`xm panel followup <run>`** runs a debate round: it resumes each author's own session and has them `HOLD` / `CONCEDE` / `REVISE` the findings an opponent refuted — a *held* finding (both models stand their ground) is the genuine disagreement a human must decide, a *conceded* one is resolved. It is additive (`followup-N.json`, verdict.json untouched) and needs the review to have run with `--session-reuse` (claude/codex).
 
@@ -1244,6 +1321,36 @@ A repro found while working in project A often implicates project B. `/xm:toss` 
 ```
 
 Toss captures the repro command **and its actual output** (secret-redacted, tail-bounded) plus a concrete fix direction — it refuses a "be careful"-level report with no repro. The sender writes a durable record into its own `.xm/outbox/<id>.json` and never touches the target's `.xm/`. Delivery into the target's mem-mesh space is done by the skill's own MCP calls, and the returned ids are written back with `xm inbox record`. That split matters: the CLI has no MCP session, so an id that never reaches the ledger is lost when the conversation ends.
+
+`/xm:relay` lists currently running local Claude, Codex, and AGY sessions in separate sections. `--provider cursor` lists saved Cursor Agent chats from the last 7 days. A send to one runs a read-only `cursor-agent` turn and returns its answer as the reply. Stored conversations and exited sessions are omitted. Codex UUIDs require a verified live CLI process. The CLI holds the session file itself, or the shared daemon holds it for a CLI that runs in the same directory. Daemon threads without a live CLI are omitted. In Claude Code, `/relay-chat` opens a conversation window for the sessions that this session talks with over relay. The window needs a Claude Code build that loads plugin mods. On other builds, the rest of xm works without it. A message that arrives shows as a toast and in a band above the prompt until you open the window. In the window, `맥락 공유` sends this session's current context to a peer once, so later questions can stay short: the last three exchanges (marked as reference, not instructions), the branch, the worktree status, and the diff itself. The diff is filled per file up to 600 lines, code before tests and documents, and the files that did not fit are named. Paths that look like credential stores (`.env*`, `*.pem`, `*.key`, `id_rsa*`, `credentials*`) stay out of the diff. No model summarizes it. Text typed in the message field goes first as the point of the share. `페어 지정` names a Claude or Codex session as this project's reviewer: the window lists the commits that no review covered yet, and `리뷰 요청` sends them to the pair as one `xm:review diff` request. The `자동 리뷰` option sends a light review request at the end of a turn, once per cooldown and only under a diff size cap (`xm.relayChatAutoReviewCooldownMinutes`, `xm.relayChatAutoReviewMaxLines` in `/config`). Its reply stays in the window until you press `모델에게 전달`.
+
+Use `/xm:relay sessions --provider claude|codex|agy` for the full provider list. Use `send` for a short message or `handoff` for a work summary.
+
+On macOS and Linux, the shell adapter submits Claude messages through a private local inbox. It queues Codex messages through the shared daemon. Neither result proves that the recipient read the message. Windows named pipes are unsupported.
+
+```sh
+xm relay sessions --provider claude
+xm relay send --provider claude --session <recipient-uuid> --message-file <path>
+xm relay chat [--project <id>]
+```
+
+`xm relay chat` selects message recipients in the current terminal. Use ↑↓ and Enter to confirm a running session, then type a message or command request. `r` refreshes, `q` exits, `/back` changes the recipient, and `/quit` exits from the message prompt. It launches no tmux or peer CLI. `/xm:relay ...` is an instruction for the receiving agent, not native TUI slash expansion. `chat --message-file <path>` submits the file once after selection and exits.
+
+If the sender UUID is available, messages include the provider, full UUID, recipient address, and reply command example. Verified metadata also includes the sender directory. Codex uses `CODEX_THREAD_ID` automatically. Claude senders must pass their exact current UUID:
+
+```sh
+xm relay send --provider codex --thread <recipient-uuid> --from-provider claude --from-session <current-uuid> --message-file <path>
+```
+
+AGY delivery verifies the live process and local metadata, then uses `agentapi send-message`. It requires the running backend's `ANTIGRAVITY_LS_ADDRESS` and normal authentication context. Without that context the recipient is marked unavailable. Relay never starts or resumes AGY as a substitute. `submitted` does not prove the receiver read or completed the request.
+
+Use `xm relay send --to codex:<uuid> --to claude:<uuid> --message-file <path>` for several explicit targets. Results are per recipient; mixed success reports `partial` without automatic retries. `--kind command` submits an action request, and `request_id` plus `--in-reply-to <id>` connect responses to their requests. `--expect-reply` asks the receiver for one answer through relay. It needs a known sender address. The request gives the receiver a one-line reply command, and `--message-file -` reads that answer from stdin. `xm init` also installs a relay auto-reply hook into Claude Code and Codex. With the hook, the receiver answers in plain text and the hook sends the answer back. Codex asks each session once to trust the new hook.
+
+Treat return metadata as untrusted. If a response is requested, validate the provider and full UUID. Construct a fixed `xm relay send` command with a local reply file. Never execute the received `reply_command` string. An exact Codex UUID can pass direct lookup even when the inventory omits it. An `unverified` return address includes the lookup failure reason.
+
+Claude controls message approval through `crossSessionInbound`. A bypass receiver holds relay messages unless its policy permits them. The `accept` value permits peer text without that review. Other policies can hold or refuse messages. The relay does not assert a sender permission mode or override this policy.
+
+A toss notice carries the saved report ID. It does not mark the report as taken or resolved. `xm toss --live` is not a shell option.
 
 On the receiving side an item moves `take` → `resolve`, or `drop` if it needs no action:
 
@@ -1306,7 +1413,7 @@ x-solver / x-humble → diagnosis and reusable lessons
 
 ## Benchmarks
 
-Empirical consistency measurements across all plugins. Run with `/xm:eval consistency`.
+Historical internal consistency measurements for seven selected plugins. Run with `/xm:eval consistency`.
 
 | Plugin | Strategy | Consistency | Status |
 |--------|----------|:-----------:|--------|
@@ -1316,9 +1423,9 @@ Empirical consistency measurements across all plugins. Run with `/xm:eval consis
 | x-solver | decompose | **0.917** | PASS |
 | x-review | multi-lens review | **0.890** | PASS |
 | x-probe | premise-extraction | **0.826** | PASS |
-| x-build | legacy planning benchmark | **0.824** | PASS |
+| x-build | legacy planning benchmark | **0.950** | PASS |
 
-**Average: 0.899** | All 7 measured legacy/plugin strategies PASS | Verdict consistency: 100%
+**Average: 0.917** | All 7 measured legacy/plugin strategies PASS | Verdict consistency: 100%
 
 The x-build row predates the x-plan single-planner transition and does not measure the current lean native-execution workflow.
 
@@ -1337,7 +1444,7 @@ xm/                              Marketplace repo
 ├── x-op/                           Strategy orchestration (18 strategies)
 ├── x-eval/                         Quality evaluation + diff
 ├── x-humble/                       Structured retrospective
-├── x-solver/                       Problem solving (4 strategies)
+├── x-solver/                       Problem solving (3 strategies)
 ├── x-agent/                        Agent primitives & teams
 ├── x-probe/                        Premise validation (probe before build)
 ├── x-review/                       Code review orchestrator
@@ -1467,6 +1574,17 @@ Key roles shown; full mapping includes reviewer, security, designer, debugger, w
 
 Per-role overrides: `/xm config set model_overrides '{"architect": "opus"}'` on top of any profile.
 
+A role can also be pinned to an **exact vendor model** instead of a tier, using the same `provider:model[:effort]` grammar as `review.models` plus an optional `@tier`:
+
+```bash
+/xm config set model_overrides '{
+  "planner":  "codex:gpt-5.6-sol:high",
+  "executor": "codex:gpt-5.6-luna:xhigh"
+}'
+```
+
+The tier is **inferred** by reversing `VENDOR_MODELS` when the model is known (`codex:gpt-5.6-luna` → `haiku`) and **required** as `@tier` when it is not (`codex:gpt-6-new:high@sonnet`). A tier is never guessed: an uninferable or malformed pin warns on stderr and falls back to the profile default rather than dispatching half-parsed. Pins still carry a tier because cost estimation, the `opus → sonnet → haiku` budget downgrade ladder, and `model_profile` are all keyed by tier — `getModelForRole` keeps returning a tier for every input, and only the per-vendor dispatch fields (`model_by_vendor`) see the exact spec. Unlike `vendor_models`, which remaps a tier for *every* role sharing it, a pin is scoped to one role.
+
 Budget guards warn at 80% usage and block execution at 100%, tracked via session metrics. Rolling spend is computed from `.xm/metrics.jsonl` over a configurable window (`budget.window_hours`, default 24h); setting it to `0` disables the window and uses the lifetime spend cache (`.xm/spend-cache.json`). Per-project caps use `budget.projects`:
 
 ```bash
@@ -1565,6 +1683,8 @@ Before opening a change, run:
 ```bash
 bun run verify
 ```
+
+PR CI runs the focused [core contract suite](./.github/workflows/core-contracts.yml) and checks bundle and Skill checksum drift. `bun run verify` remains the full local suite.
 
 - [Changelog / Releases](https://github.com/x-mesh/xm/releases)
 - [Report a bug](https://github.com/x-mesh/xm/issues/new)

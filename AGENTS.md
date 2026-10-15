@@ -1,6 +1,6 @@
 # xm Agent Directory
 
-xm is a Claude Code plugin marketplace providing 5 tools for structured multi-agent orchestration.
+xm is a Claude Code plugin marketplace of tools for structured multi-agent orchestration (current plugin list: `.claude-plugin/marketplace.json`).
 Agent primitives are handled by `x-agent`; strategies by `x-op`; project lifecycle by `x-build`.
 
 ## Agent Tiers
@@ -30,33 +30,12 @@ Agent primitives are handled by `x-agent`; strategies by `x-op`; project lifecyc
 | test-engineer | sonnet | Test strategy, TDD, coverage, flaky test hardening |
 | build-fixer | sonnet | Build/type error resolution, minimal diffs |
 
-## OMC Integration
-
-When oh-my-claudecode is installed, x-build maps agent types to OMC agents:
-
-| x-agent Preset | OMC Agent (`oh-my-claudecode:*`) | Fallback |
-|-----------------|----------------------------------|----------|
-| explorer | explore | Inline preset |
-| se / executor | executor | Inline preset |
-| architect | architect | Inline preset |
-| reviewer | code-reviewer | Inline preset |
-| security | security-reviewer | Inline preset |
-| debugger | debugger | Inline preset |
-| documenter | writer | Inline preset |
-| verifier | verifier | Inline preset |
-| planner | planner | Inline preset |
-| critic | critic | Inline preset |
-| test-engineer | test-engineer | Inline preset |
-| build-fixer | build-fixer | Inline preset |
-
-When OMC is NOT installed, x-agent inline presets provide equivalent behavior.
-
 ## Development Conventions
 
 - Plugin skill development: `sonnet` tier by default
 - Architecture decisions and planning: `opus` tier
 - Exploration and documentation: `haiku` tier
-- x-build `run` auto-selects tier by task size (small/medium -> sonnet, large -> opus)
+- x-build `run` picks each role's model from `model_overrides` -> profile (`economy`/`default`/`max`) -> fallback, and warns when a large task is routed to haiku
 - Always verify with `verifier` preset before claiming completion
 
 ## Review-Fix Gate
@@ -68,7 +47,11 @@ Required sequence:
 2. Triage every Medium+ finding as `fix_now`, `backlog`, `accept_risk`, or `false_positive`.
 3. Never move Critical/High findings to `backlog`; fix them now or provide concrete evidence for `accept_risk` / `false_positive`.
 4. Limit review-fix edits to `fix_now` findings and files listed in `fix_scope.allowed_files`.
-5. Run `x-build verify-review-fix`, then quality checks, then re-run x-review before claiming completion.
+5. Run `x-build verify-review-fix`, then quality checks, then re-run x-review once as the delta review.
+6. Limit each task to one full review, one approved fix pass, and one delta review. If the delta adds any finding, report it and stop at every severity.
+7. Read the terminal action before any follow-up. A stop action never authorizes automatic fixes or another review, even when the verdict is LGTM.
+8. If review preparation fails, report the error and stop. Do not dispatch reviewers directly or reset the budget to bypass the lifecycle.
+9. Continue beyond the budget only after explicit user approval for a one-time exception. Keep the same operation identity across the approved sequence.
 
 This gate prevents review feedback from becoming an unbounded rewrite loop.
 

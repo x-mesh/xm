@@ -10,6 +10,60 @@ bumps shipped in each marketplace release.
 
 ## [Unreleased]
 
+## [2.34.0] - 2026-10-04
+
+### Added
+
+- **xm:** `xm relay chat` switches between existing Codex threads and background Claude CLI sessions through tmux.
+- **xm:** relay messages include sender addresses and reply command examples. Exact Codex UUIDs use direct lookup.
+
+### Fixed
+
+- **xm:** relay validates daemon responses, deduplicates thread inventories, and preserves messages that start with hyphens.
+- **xm:** chat detaches only the client that presses `q`.
+- **xm:** reply instructions validate addresses and construct fixed commands instead of executing received command strings.
+- **xm:** trace hooks serialize abandoned session claim recovery.
+- **x-build:** optional Low review fixes require verification against the current file bytes.
+- **x-build:** batch verification detects incompatible merge responses before topic merges and records Git diagnostics and recovery instructions.
+- **x-humanize, xm:** Korean prose guidance preserves meaning, tense, and uncertainty.
+
+Plugin versions: xm 2.34.0, x-build 3.17.0, x-humanize 0.6.0.
+
+## [2.32.1] - 2026-10-02
+
+### Fixed
+
+- **xm:** README writing now checks for generic, repetitive prose and mismatched opening headings such as `Why` / `왜 필요한가`; `audit` reports them, while `create` and `improve` use headings that fit the actual content.
+
+## [2.32.0] - 2026-10-02
+
+### Added
+
+- **xm:** `/xm:write readme audit|create|improve` checks README structure, first-run guidance, and factual claims against repository evidence, then creates or revises repository README files when requested.
+
+## [2.27.1] - 2026-09-17
+
+### Fixed
+
+- **xm:** the dispatcher picks the newer of the Codex global bundle and the Claude marketplace cache instead of always preferring the bundle. A bundle left untouched while the Claude plugin updated on its own shadowed the newer cache for every cwd outside the source repo, so the terminal CLI silently ran code several releases old. A tie keeps the bundle, and a bundle that cannot state its version no longer outranks a cache that can
+- **xm:** every cache lookup in the dispatcher picks the highest version directory instead of the most recently modified one. `ls -td | head -1` answers "most recently touched," which matches "newest release" only by luck: `xm update` rewrites files inside cache directories and a filesystem restore rewrites mtimes wholesale, and either can promote an older version. The two orderings happen to agree on the caches checked, so this closes a latent mismatch rather than an observed one
+- **xm:** `xm install` requires a root to carry the plugin manifest and the SKILL checksum registry beside `skills/`, not just `skills/` itself. The Codex bundle now mirrors `skills/` for its own runtime reads, and without this the dispatcher would have handed install-cli a root missing the release metadata it reads from there
+- **install:** the vendor bundle mirrors `xm/skills/` beside `xm/lib/`, so an installed target has the same two-tree layout as the Claude plugin cache. Mirroring only `lib/` left `review-lifecycle.mjs` importing `../skills/review/scripts/*.mjs` from a directory that was never created — every `xm review` invocation resolved through a vendor bundle died with `ERR_MODULE_NOT_FOUND`, and the lens prompts it reads by path were missing for the same reason
+
+## [2.27.0] - 2026-09-16
+
+### Added
+
+- **build:** `xm mutate --diff` names any untracked file a supported tool would have claimed, in the output and under `untracked_files` in the report, because a diff cannot see a new file and it would otherwise drop out of a run that looks complete
+- **build:** `xm mutate --diff` records surviving mutants in the attention queue against HEAD, but only when every changed file is committed; with uncommitted edits in the change set it records nothing and says so, because the row would otherwise name a commit that does not contain the mutated code
+- **recall:** `xm recall list --type mutate` indexes mutation reports from both paths — diff runs under `.xm/review/mutate-diff/` and task runs under `.xm/review/mutate/<project>/` — and marks a run `partial` when any language could not run
+
+### Fixed
+
+- **build:** a surviving mutant keeps its column in the attention-queue operator, so two mutants on one line no longer collapse into a single row (cargo-mutants reports both `&&` → `||` and `>` → `>=` as `BinaryOperator`)
+
+## [2.26.0] - 2026-09-16
+
 ### Added
 
 - **build:** `xm mutate --diff <base>` — mutation testing on the lines a branch changed, run by one external tool per language: cargo-mutants (Rust), StrykerJS (JS/TS), gomutants (Go), Muter (Swift). Outcomes normalize to `killed` / `survived` / `timeout` / `unviable` / `no_coverage`, and reports land in `.xm/review/mutate-diff/`

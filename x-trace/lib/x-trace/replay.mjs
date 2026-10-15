@@ -490,6 +490,7 @@ export function createReplay(traceId, spanId, options = {}) {
       overrides: { model: modelOverride, prompt_override_sha256: promptOverride.sha256 },
       source: { trace_id: traceId, span_id: spanId, trace_sha256: createHash('sha256').update(trace.raw).digest('hex') },
       fork: { id: fork.id, index: fork.index ?? null, max_per_trace: MAX_FORK_POINTS },
+      execution: { agent_invoked: false, result_source: replayResult ? 'provided_metadata' : 'none' },
       deterministic_context: safeContext(span, trace.entries),
       // Four-axis comparison is metadata-only. In particular, output text is
       // never persisted: hashes and byte counts are sufficient to detect a

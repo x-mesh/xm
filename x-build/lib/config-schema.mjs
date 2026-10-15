@@ -89,7 +89,7 @@ export const SCHEMA = [
     type: 'object',
     scope: 'global',
     default: {},
-    description: '역할별 모델 오버라이드 { role: model }',
+    description: '역할별 모델 오버라이드 { role: tier | [vendor:]model[:effort][@tier] } — tier는 haiku/sonnet/opus/fable/inherit, 뒤쪽은 codex:gpt-5.6-luna:xhigh 같은 직접 핀',
   },
 
   // ── vendor (harness) model mapping ──

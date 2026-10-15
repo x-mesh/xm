@@ -1,17 +1,18 @@
 import { describe, test, expect, beforeEach, afterEach } from 'bun:test';
 import { spawnSync } from 'node:child_process';
 import { dirname, join } from 'node:path';
-import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs';
+import { mkdirSync, mkdtempSync, rmSync, utimesSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { fileURLToPath } from 'node:url';
 
 // `xm install` renders SKILL *sources* into other tools' formats, so it needs a
-// root that actually carries skills/. resolve_lib, however, prefers the Codex
-// global bundle (~/.codex/xm) over the marketplace cache, and that bundle has
-// no skills/ — it mirrors lib/, hooks/ and agents/ only, because its SKILLs are
-// rendered output. The dispatcher used to paper over the miss with
-// `$PLUGIN_ROOT/xm/skills`, which on that bundle assembles the nonexistent
-// ~/.codex/xm/xm/skills and fails as `scan failed: skillsDir not found`.
+// complete root: skills/ plus the release metadata beside it. The Codex global
+// bundle (~/.codex/xm), which resolve_lib can select over the marketplace
+// cache, mirrors lib/ and skills/ for lib's own runtime reads and carries
+// neither the plugin manifest nor the checksum registry. The dispatcher used to
+// paper over the miss with `$PLUGIN_ROOT/xm/skills`, which on that bundle
+// assembles the nonexistent ~/.codex/xm/xm/skills and fails as
+// `scan failed: skillsDir not found`.
 const REPO = join(dirname(fileURLToPath(import.meta.url)), '..');
 const DISPATCHER = join(REPO, 'xm', 'scripts', 'xm');
 
@@ -27,18 +28,24 @@ function stubCli(path) {
   writeFileSync(path, 'console.log(JSON.stringify(process.argv.slice(2)));\n');
 }
 
-/** A marketplace cache root: lib/ + (optionally) the skills/ sources beside it. */
+/** A marketplace cache root: lib/ + (optionally) an installable skills/ tree. */
 function cacheRoot(version, { skills = true } = {}) {
   const root = join(home, '.claude', 'plugins', 'cache', 'xm', 'xm', version);
   stubCli(join(root, 'lib', 'install', 'install-cli.mjs'));
-  if (skills) mkdirSync(join(root, 'skills', 'build'), { recursive: true });
+  if (skills) {
+    mkdirSync(join(root, 'skills', 'build'), { recursive: true });
+    mkdirSync(join(root, '.claude-plugin'), { recursive: true });
+    writeFileSync(join(root, '.claude-plugin', 'plugin.json'), `${JSON.stringify({ name: 'xm', version })}\n`);
+    writeFileSync(join(root, 'skills.checksums.json'), '{}\n');
+  }
   return root;
 }
 
-/** The Codex global bundle: one flat lib/, deliberately no skills/. */
+/** The Codex global bundle: lib/ and a runtime skills/ mirror, no release metadata. */
 function codexBundle() {
   const root = join(home, '.codex', 'xm');
   stubCli(join(root, 'lib', 'install', 'install-cli.mjs'));
+  mkdirSync(join(root, 'skills', 'review', 'lenses'), { recursive: true });
   mkdirSync(join(root, 'hooks'), { recursive: true });
   return root;
 }
@@ -69,7 +76,7 @@ afterEach(() => {
 });
 
 describe('xm install — skills-dir resolution', () => {
-  test('reaches past the skills-less Codex bundle to the marketplace cache', () => {
+  test('reaches past the Codex bundle to the marketplace cache', () => {
     codexBundle();
     const root = cacheRoot('2.0.0');
 
@@ -112,6 +119,18 @@ describe('xm install — skills-dir resolution', () => {
       .toBe(join(withSkills, 'skills'));
   });
 
+  test('takes lib/ from the highest cache version, not the most recently touched', () => {
+    cacheRoot('1.0.0');
+    const newest = cacheRoot('2.0.0');
+    // Re-touching an older version dir must not promote it: `xm update` and a
+    // filesystem copy both rewrite mtimes without changing what shipped.
+    const stale = new Date();
+    utimesSync(join(home, '.claude', 'plugins', 'cache', 'xm', 'xm', '1.0.0', 'lib'), stale, stale);
+
+    expect(flags(xmInstall('--target', 'codex', '--global').stdout).libDir)
+      .toBe(join(newest, 'lib'));
+  });
+
   test('uses the sibling skills/ when the cache itself answers', () => {
     const root = cacheRoot('2.0.0');   // no Codex bundle: the cache wins resolve_lib
 
@@ -121,7 +140,7 @@ describe('xm install — skills-dir resolution', () => {
     });
   });
 
-  test('fails with an actionable message when no SKILL source exists anywhere', () => {
+  test('fails with an actionable message when no root can drive an install', () => {
     codexBundle();
 
     const r = xmInstall('--target', 'codex', '--global');

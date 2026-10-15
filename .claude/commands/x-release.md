@@ -89,7 +89,7 @@ release: x-build@1.16.2, x-dashboard@0.4.2
 
 ### Step 5.5: Source Integrity Check (mandatory)
 
-Before committing, verify the source actually contains what the commit message claims. Step 3 runs `bun test`, which has historically left silent stashes behind — see mem-mesh `2089a55f` (X-9 incident): `gitRollbackTask` previously called `git stash push` without sha validation, so any test passing an invalid sha pocketed the working tree into a stash and the next commit captured the *pre-stash* (HEAD) state of the files. This produced a release `v2.1.0` whose commit message claimed an X-8 fix that wasn't actually in the code.
+Before committing, verify the source actually contains what the commit message claims. Step 3 runs `bun test`, and a test that stashes the working tree can leave that stash behind, so the files about to be committed may be the pre-stash (HEAD) state while the message describes the fix.
 
 **Guard 1 — Stash leak detector (automated, halt on non-empty)**:
 
@@ -121,7 +121,7 @@ If any claim is unbacked by visible code, either (a) drop the claim from the com
 
 ### Step 6: Commit, Tag & Push
 
-Step 3 prints the tag to use (`Tag with the release commit: ... --tag vX.Y.Z --push`). Pass it. `--tag` is not optional polish: without it the release commit is pushed untagged, nothing errors, and the tag list simply stops — that is how `2.22.0`, `2.23.0` and `2.23.1` all shipped with no tag. The tag is always `v<xm meta version>`, the same version as `package.json` and the `xm` entry in `marketplace.json`.
+Step 3 prints the tag to use (`Tag with the release commit: ... --tag vX.Y.Z --push`). Pass it. `--tag` is not optional polish: without it the release commit is pushed untagged, nothing errors, and the tag list silently stops. The tag is always `v<xm meta version>`, the same version as `package.json` and the `xm` entry in `marketplace.json`.
 
 ```bash
 $XMB release commit --msg "release: ..." --tag v<META_VERSION> --push

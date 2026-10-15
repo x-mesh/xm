@@ -1,12 +1,20 @@
 #!/usr/bin/env node
 // .claude/hooks/trace-session.mjs
 //
-// Auto-record session_start (PreToolUse) and session_end (PostToolUse) for xm skills.
-// Semantic trace entries (agent_call, fan_out, etc.) remain LLM best-effort via SKILL.md.
+// Auto-record an xm skill session: session_start when the Skill tool is invoked
+// (PreToolUse), one agent_step per Agent tool call made while it is open, and
+// session_end at the Stop hook. PostToolUse(Skill) is deliberately not the close:
+// it fires as soon as the skill's instructions are loaded, before the skill's own
+// Agent calls. A background Agent call is recorded when its SubagentStop arrives,
+// and Stop leaves the session open while one of them still runs. An xm skill a
+// subagent invokes becomes a skill_step of the open session. Other semantic
+// entries (fan_out, synthesize) remain LLM best-effort via SKILL.md.
 //
-// Usage in settings.json:
-//   PreToolUse  → node trace-session.mjs pre
-//   PostToolUse → node trace-session.mjs post
+// Usage in settings.json (all point at the same file):
+//   PreToolUse   matcher Skill|Agent → node trace-session.mjs pre
+//   PostToolUse  matcher Skill|Agent → node trace-session.mjs post
+//   Stop         (no matcher)        → node trace-session.mjs stop
+//   SubagentStop (no matcher)        → node trace-session.mjs stop
 //
 // This hook is a STANDALONE file — it is copied to ~/.claude/hooks/ by `xm init`
 // and must run without the xm plugin lib on disk. It therefore cannot import
@@ -136,6 +144,30 @@ function readStdin() {
 
 function pad2(n) { return String(n).padStart(2, '0'); }
 
+// `.active` names the open session. Current hooks store {session_id, tool_use_id,
+// opened_at, claude_session_id}; older installs stored the bare id, so both parse.
+function readActive(activeFile) {
+  if (!fs.existsSync(activeFile)) return null;
+  let raw;
+  try { raw = fs.readFileSync(activeFile, 'utf8').trim(); } catch { return null; }
+  if (!raw) return null;
+  if (!raw.startsWith('{')) return { session_id: raw, tool_use_id: null, opened_at: null, claude_session_id: null };
+  try {
+    const parsed = JSON.parse(raw);
+    if (typeof parsed?.session_id !== 'string' || !parsed.session_id) return null;
+    return {
+      session_id: parsed.session_id,
+      tool_use_id: typeof parsed.tool_use_id === 'string' ? parsed.tool_use_id : null,
+      opened_at: typeof parsed.opened_at === 'string' ? parsed.opened_at : null,
+      claude_session_id: typeof parsed.claude_session_id === 'string' ? parsed.claude_session_id : null,
+    };
+  } catch { return null; }
+}
+
+function hasAgentStep(traceFile, id) {
+  try { return fs.readFileSync(traceFile, 'utf8').includes(`"id":${JSON.stringify(id)}`); } catch { return false; }
+}
+
 function makeSessionId(skillName) {
   const now = new Date();
   const date = `${now.getFullYear()}${pad2(now.getMonth() + 1)}${pad2(now.getDate())}`;
@@ -144,8 +176,436 @@ function makeSessionId(skillName) {
   return `${skillName}-${date}-${time}-${hex}`;
 }
 
+const AGENT_TOOL_NAMES = new Set(['Agent']);
+const TOOL_USE_ID_RE = /^[A-Za-z0-9_-]{1,128}$/;
+// Pending background agent, keyed by the agent id that SubagentStop and Stop's
+// background_tasks report: .agents/bg-<agentId>.json.
+const BG_PREFIX = 'bg-';
+const STALE_MARKER_MS = 24 * 60 * 60 * 1000;
+// A session no Stop ever closed must not swallow the next turns' agents.
+const ACTIVE_MAX_AGE_MS = 6 * 60 * 60 * 1000;
+// A skill claim this old with no session behind it belongs to a hook that died mid-open.
+const CLAIM_STALE_MS = 5000;
+const CLAIM_POLL_MS = 25;
+const CLAIM_WAIT_MS = 250;
+
+// Create-exclusive claim. Two registrations of this hook (project settings and
+// global settings both wired, as in the x-kit repo) fire for the same tool call;
+// a check-then-write guard let both win, so every claim is a `wx` create.
+function claim(file, data) {
+  try { fs.writeFileSync(file, data, { flag: 'wx' }); return true; }
+  catch (err) { if (err.code === 'EEXIST') return false; throw err; }
+}
+
+// Take sole ownership of a file by renaming it to `target`; the loser gets false.
+function takeOver(file, target) {
+  try { fs.renameSync(file, target); return true; }
+  catch (err) { if (err.code === 'ENOENT') return false; throw err; }
+}
+
+function wait(ms) {
+  Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, ms);
+}
+
+function skillClaimData() {
+  return JSON.stringify({ pid: process.pid, created_at: new Date().toISOString() });
+}
+
+function claimOwner(file) {
+  const data = readJsonFile(file);
+  return Number.isSafeInteger(data?.pid) && data.pid > 0 ? data.pid : null;
+}
+
+function processAlive(pid) {
+  try { process.kill(pid, 0); return true; }
+  catch (err) { return err?.code === 'EPERM'; }
+}
+
+function replaceAbandonedClaim(claimFile, activeFile, toolUseId) {
+  const recoveryDir = `${claimFile}.recovering`;
+  const candidateDir = fs.mkdtempSync(`${recoveryDir}-`);
+  const ownerName = `${path.basename(candidateDir)}.json`;
+  let locked = false;
+  const abandoned = `${claimFile}.abandoned.${process.pid}.${crypto.randomBytes(3).toString('hex')}`;
+  try {
+    fs.writeFileSync(path.join(candidateDir, ownerName), skillClaimData());
+    for (let attempt = 0; attempt < 2; attempt++) {
+      try { fs.renameSync(candidateDir, recoveryDir); locked = true; break; }
+      catch (err) { if (err.code !== 'EEXIST' && err.code !== 'ENOTEMPTY') throw err; }
+      const names = fs.readdirSync(recoveryDir);
+      if (names.length !== 1) return false;
+      const ownerFile = path.join(recoveryDir, names[0]);
+      const owner = claimOwner(ownerFile);
+      if (!owner || processAlive(owner)) return false;
+      // Unique owner names and nonempty directories protect a successor's lock.
+      try { fs.unlinkSync(ownerFile); }
+      catch (err) { if (err.code !== 'ENOENT') throw err; }
+      try { fs.rmdirSync(recoveryDir); }
+      catch (err) { if (err.code !== 'ENOENT' && err.code !== 'ENOTEMPTY' && err.code !== 'EEXIST') throw err; }
+    }
+    if (!locked) return false;
+    if (readActive(activeFile)?.tool_use_id === toolUseId) return false;
+    const owner = claimOwner(claimFile);
+    let age = 0;
+    try { age = Date.now() - fs.statSync(claimFile).mtimeMs; }
+    catch (err) { if (err.code !== 'ENOENT') throw err; }
+    if ((!owner || processAlive(owner)) && age < CLAIM_STALE_MS) return false;
+    if (!takeOver(claimFile, abandoned)) return false;
+    return claim(claimFile, skillClaimData());
+  }
+  finally {
+    try { fs.unlinkSync(abandoned); } catch { /* best-effort */ }
+    if (locked) {
+      try { fs.unlinkSync(path.join(recoveryDir, ownerName)); } catch { /* best-effort */ }
+      try { fs.rmdirSync(recoveryDir); } catch { /* best-effort */ }
+    } else {
+      try { fs.rmSync(candidateDir, { recursive: true, force: true }); } catch { /* best-effort */ }
+    }
+  }
+}
+
+function acquireSkillClaim(claimFile, activeFile, toolUseId) {
+  if (claim(claimFile, skillClaimData())) return true;
+  if (readActive(activeFile)?.tool_use_id === toolUseId) return false;
+  const owner = claimOwner(claimFile);
+  let age = 0;
+  try { age = Date.now() - fs.statSync(claimFile).mtimeMs; } catch { /* claim vanished */ }
+  if ((owner && !processAlive(owner)) || age >= CLAIM_STALE_MS) {
+    return replaceAbandonedClaim(claimFile, activeFile, toolUseId);
+  }
+  const deadline = Date.now() + CLAIM_WAIT_MS;
+  while (Date.now() < deadline) {
+    if (readActive(activeFile)?.tool_use_id === toolUseId) return false;
+    if (!fs.existsSync(claimFile) && claim(claimFile, skillClaimData())) return true;
+    const currentOwner = claimOwner(claimFile);
+    if (currentOwner && !processAlive(currentOwner)) return replaceAbandonedClaim(claimFile, activeFile, toolUseId);
+    wait(Math.min(CLAIM_POLL_MS, deadline - Date.now()));
+  }
+  if (readActive(activeFile)?.tool_use_id === toolUseId) return false;
+  let finalAge = 0;
+  try { finalAge = Date.now() - fs.statSync(claimFile).mtimeMs; } catch { /* claim vanished */ }
+  const finalOwner = claimOwner(claimFile);
+  if ((finalOwner && !processAlive(finalOwner)) || finalAge >= CLAIM_STALE_MS) {
+    return replaceAbandonedClaim(claimFile, activeFile, toolUseId);
+  }
+  return !fs.existsSync(claimFile) && claim(claimFile, skillClaimData());
+}
+
+function readJsonFile(file) {
+  try { return JSON.parse(fs.readFileSync(file, 'utf8')); } catch { return null; }
+}
+
+function appendRow(traceFile, entry) {
+  fs.appendFileSync(traceFile, JSON.stringify(entry) + '\n');
+}
+
+function countAgentSteps(traceFile) {
+  try { return fs.readFileSync(traceFile, 'utf8').split('\n').filter((l) => l.includes('"agent_step"')).length; }
+  catch { return 0; }
+}
+
+function toolUseIdOf(input) {
+  return typeof input.tool_use_id === 'string' && TOOL_USE_ID_RE.test(input.tool_use_id) ? input.tool_use_id : null;
+}
+
+function agentFields(toolInput) {
+  const fields = {
+    role: typeof toolInput.subagent_type === 'string' && toolInput.subagent_type ? toolInput.subagent_type : 'agent',
+    model: typeof toolInput.model === 'string' && toolInput.model ? toolInput.model : 'inherit',
+  };
+  if (typeof toolInput.description === 'string' && toolInput.description) fields.description = toolInput.description.slice(0, 120);
+  return fields;
+}
+
+// A background dispatch answers with an acknowledgement (agent id / "launched"),
+// not a result; the request flag alone is not reliable because it can be omitted.
+function looksLaunched(response) {
+  if (response == null) return false;
+  if (typeof response === 'object' && response.status === 'running') return true;
+  const text = typeof response === 'string' ? response : JSON.stringify(response).slice(0, 2000);
+  return /agentId|Async agent launched|running in the background/i.test(text);
+}
+
+// Outcome as far as the PostToolUse payload shows it. An error marker wins even
+// for a background dispatch; a dispatch acknowledgement is 'launched', not
+// 'success' (the agent has not run yet and duration_ms is launch latency); no
+// response at all stays 'unknown'. The post hook arriving never means success.
+// Claude Code answers a background dispatch with {isAsync, status: 'async_launched', agentId}.
+function launchedAgentId(input) {
+  const response = input.tool_response;
+  if (!response || typeof response !== 'object') return null;
+  if (response.status !== 'async_launched' && response.isAsync !== true) return null;
+  return typeof response.agentId === 'string' && TOOL_USE_ID_RE.test(response.agentId) ? response.agentId : null;
+}
+
+function agentStatus(input, toolInput) {
+  const response = input.tool_response ?? input.tool_output;
+  if (typeof response === 'string' && /^\s*error\b/i.test(response)) return 'error';
+  if (response && typeof response === 'object' && (response.is_error === true || response.error)) return 'error';
+  if (toolInput.run_in_background === true || looksLaunched(response)) return 'launched';
+  if (response == null) return 'unknown';
+  return 'success';
+}
+
+function purgeOld(dir, suffixes) {
+  let names;
+  try { names = fs.readdirSync(dir); } catch { return; }
+  const cutoff = Date.now() - STALE_MARKER_MS;
+  for (const name of names) {
+    if (!suffixes.some((s) => name.endsWith(s))) continue;
+    const file = path.join(dir, name);
+    try { if (fs.statSync(file).mtimeMs < cutoff) fs.unlinkSync(file); } catch { /* best-effort */ }
+  }
+}
+
+// The open session, or null. A session past ACTIVE_MAX_AGE_MS, or one opened in
+// a different Claude conversation, is closed as stale instead of inherited.
+function currentSession(tracesDir, base, input) {
+  const active = readActive(path.join(tracesDir, '.active'));
+  if (!active) return null;
+  const openedAt = Date.parse(active.opened_at);
+  const tooOld = Number.isFinite(openedAt) && Date.now() - openedAt > ACTIVE_MAX_AGE_MS;
+  const otherConversation = Boolean(active.claude_session_id && typeof input.session_id === 'string' && input.session_id && active.claude_session_id !== input.session_id);
+  if (tooOld || otherConversation) {
+    closeSession(tracesDir, base, 'stale');
+    return null;
+  }
+  return active;
+}
+
+// Agent tool spans. Only while an xm skill session is open: x-trace tracks xm
+// tool executions, not every subagent in every project, and writing outside a
+// session would create .xm/ in repositories that never opted in. The pre marker
+// names the session the call started in, so the post attaches to that session
+// even if another skill opened a new one in between. Every hand-over is a
+// rename or a `wx` create, and the artifact is kept (.done / .abandoned / .post)
+// so a second hook registration finds it and writes nothing.
+function agentSpan(tracesDir, phase, input, base) {
+  const toolInput = input.tool_input && typeof input.tool_input === 'object' ? input.tool_input : {};
+  const toolUseId = toolUseIdOf(input);
+  const pendingDir = path.join(tracesDir, '.agents');
+  const marker = toolUseId ? path.join(pendingDir, `${toolUseId}.json`) : null;
+  const active = currentSession(tracesDir, base, input);
+
+  if (phase === 'pre') {
+    if (!active) { debug('agent span skipped: no open xm session'); return; }
+    if (!marker) { debug('agent span: no tool_use_id on pre — duration will be null'); return; }
+    fs.mkdirSync(pendingDir, { recursive: true });
+    const data = JSON.stringify({ session_id: active.session_id, ts: new Date().toISOString(), ...agentFields(toolInput) });
+    if (!claim(marker, data)) debug(`agent span ${toolUseId} already opened by another hook registration`);
+    return;
+  }
+  if (phase !== 'post') return;
+
+  let started = null;
+  if (marker) {
+    const done = path.join(pendingDir, `${toolUseId}.done`);
+    if (takeOver(marker, done)) {
+      started = readJsonFile(done);
+    } else if (fs.existsSync(done) || fs.existsSync(path.join(pendingDir, `${toolUseId}.abandoned`))) {
+      debug(`agent span ${toolUseId} already recorded (done or abandoned)`);
+      return;
+    }
+  }
+  const sessionId = started?.session_id || active?.session_id;
+  if (!sessionId) { debug('agent span skipped: no session to attach to'); return; }
+  const traceFile = path.join(tracesDir, `${sessionId}.jsonl`);
+  if (!fs.existsSync(traceFile)) return;
+  if (!started && toolUseId) {
+    // No pre ever ran for this id: one registration wins the post claim.
+    fs.mkdirSync(pendingDir, { recursive: true });
+    if (!claim(path.join(pendingDir, `${toolUseId}.post`), new Date().toISOString())) {
+      debug(`agent span ${toolUseId} already recorded by another hook registration`);
+      return;
+    }
+  }
+
+  const backgroundId = started && toolUseId ? launchedAgentId(input) : null;
+  if (backgroundId) {
+    // Only dispatched so far: SubagentStop writes the row with the real duration.
+    claim(path.join(pendingDir, `${BG_PREFIX}${backgroundId}.json`), JSON.stringify({ ...started, tool_use_id: toolUseId }));
+    return;
+  }
+
+  const startedAt = started ? Date.parse(started.ts) : NaN;
+  appendRow(traceFile, {
+    type: 'agent_step',
+    session_id: sessionId,
+    ts: new Date().toISOString(),
+    v: 1,
+    id: toolUseId || `agent-${crypto.randomBytes(3).toString('hex')}`,
+    parent_id: null,
+    ...agentFields(toolInput),
+    duration_ms: Number.isFinite(startedAt) ? Math.max(0, Date.now() - startedAt) : null,
+    status: agentStatus(input, toolInput),
+    source: 'hook',
+  });
+}
+
+// SubagentStop of a background agent this hook saw dispatched: write its row.
+// A foreground subagent has no bg marker, and a second registration loses the rename.
+function finishBackgroundAgent(tracesDir, input) {
+  const agentId = typeof input.agent_id === 'string' && TOOL_USE_ID_RE.test(input.agent_id) ? input.agent_id : null;
+  if (!agentId) return;
+  const pendingDir = path.join(tracesDir, '.agents');
+  const done = path.join(pendingDir, `${BG_PREFIX}${agentId}.done`);
+  if (!takeOver(path.join(pendingDir, `${BG_PREFIX}${agentId}.json`), done)) return;
+  const started = readJsonFile(done);
+  const traceFile = started?.session_id ? path.join(tracesDir, `${started.session_id}.jsonl`) : null;
+  if (!traceFile || !fs.existsSync(traceFile)) return;
+  const startedAt = Date.parse(started.ts);
+  appendRow(traceFile, {
+    type: 'agent_step', session_id: started.session_id, ts: new Date().toISOString(), v: 1,
+    id: started.tool_use_id || agentId, parent_id: null,
+    role: started.role || 'agent', model: started.model || 'inherit', ...(started.description ? { description: started.description } : {}),
+    duration_ms: Number.isFinite(startedAt) ? Math.max(0, Date.now() - startedAt) : null,
+    // SubagentStop reports that the agent finished, not whether it succeeded.
+    status: 'completed', source: 'hook',
+  });
+}
+
+// Stop fires at every turn end. While an agent this session dispatched in the
+// background still runs, the work continues in later turns, so the session stays open.
+function backgroundAgentRunning(tracesDir, input) {
+  if (!Array.isArray(input.background_tasks)) return false;
+  const pendingDir = path.join(tracesDir, '.agents');
+  return input.background_tasks.some((task) => task?.type === 'subagent' && task.status === 'running'
+    && typeof task.id === 'string' && TOOL_USE_ID_RE.test(task.id)
+    && fs.existsSync(path.join(pendingDir, `${BG_PREFIX}${task.id}.json`)));
+}
+
+// Close the open session: one owner (rename-claim on .active), leftover agent
+// markers become 'abandoned' rows so an agent still running at turn end is
+// visible instead of silently dropped, then session_end with the agent count.
+// The closing claim survives until session_end is on disk; a failure puts
+// .active back so the next Stop retries.
+function closeSession(tracesDir, base, reason) {
+  const activeFile = path.join(tracesDir, '.active');
+  const owned = `${activeFile}.closing.${process.pid}`;
+  if (!takeOver(activeFile, owned)) return false;
+  try {
+    const active = readActive(owned);
+    const traceFile = active?.session_id ? path.join(tracesDir, `${active.session_id}.jsonl`) : null;
+    if (!traceFile || !fs.existsSync(traceFile)) { fs.unlinkSync(owned); return false; }
+
+    const pendingDir = path.join(tracesDir, '.agents');
+    let markers = [];
+    try { markers = fs.readdirSync(pendingDir).filter((n) => n.endsWith('.json')); } catch { markers = []; }
+    for (const name of markers) {
+      const id = name.replace(/\.json$/, '');
+      const abandonedFile = path.join(pendingDir, `${id}.abandoned`);
+      // Rename first: only the owner of the marker writes the row, so a post
+      // racing this close cannot record the same call twice.
+      if (!takeOver(path.join(pendingDir, name), abandonedFile)) continue;
+      const data = readJsonFile(abandonedFile);
+      if (data && data.session_id && data.session_id !== active.session_id) continue;
+      const startedAt = Date.parse(data?.ts);
+      // A background agent's dispatch is known but its end was never seen.
+      const background = name.startsWith(BG_PREFIX);
+      appendRow(traceFile, {
+        type: 'agent_step', session_id: active.session_id, ts: new Date().toISOString(), v: 1,
+        id: background && data?.tool_use_id ? data.tool_use_id : id, parent_id: null,
+        role: data?.role || 'agent', model: data?.model || 'inherit', ...(data?.description ? { description: data.description } : {}),
+        duration_ms: !background && Number.isFinite(startedAt) ? Math.max(0, Date.now() - startedAt) : null,
+        status: background ? 'launched' : 'abandoned', source: 'hook',
+      });
+    }
+    purgeOld(pendingDir, ['.abandoned', '.done', '.post']);
+    purgeOld(path.join(tracesDir, '.claims'), ['.skill', '.nested']);
+
+    let durationMs = 0;
+    try {
+      const start = JSON.parse(fs.readFileSync(traceFile, 'utf8').split('\n')[0]);
+      durationMs = Date.now() - new Date(start.ts).getTime();
+    } catch (err) { debug(`duration calc failed: ${err.message}`); }
+
+    const entry = {
+      type: 'session_end',
+      session_id: active.session_id,
+      ts: new Date().toISOString(),
+      v: 1,
+      // The hook cannot observe the skill's real outcome — a Block/error verdict
+      // is not surfaced to it — so it records 'unknown' rather than asserting
+      // success. (trace-writer.sessionEnd sets a real status because it runs at
+      // the true end of a known operation.)
+      status: 'unknown',
+      total_duration_ms: durationMs,
+      agent_count: countAgentSteps(traceFile),
+    };
+    if (reason !== 'stop') entry.close_reason = reason;
+    const git = gitSnapshot(base);
+    if (git.head) entry.git = git;
+    appendRow(traceFile, entry);
+    fs.unlinkSync(owned);
+    return true;
+  } catch (err) {
+    try { fs.renameSync(owned, activeFile); } catch { /* best-effort */ }
+    throw err;
+  }
+}
+
+async function openSession(tracesDir, base, input, skillName) {
+  fs.mkdirSync(tracesDir, { recursive: true });
+  const activeFile = path.join(tracesDir, '.active');
+  const toolUseId = toolUseIdOf(input);
+  const parent = typeof input.agent_id === 'string' && input.agent_id ? currentSession(tracesDir, base, input) : null;
+  if (parent) {
+    // A skill a subagent invokes belongs to the session that dispatched the
+    // subagent; opening a new one would close that session as superseded.
+    if (toolUseId) {
+      fs.mkdirSync(path.join(tracesDir, '.claims'), { recursive: true });
+      if (!claim(path.join(tracesDir, '.claims', `${toolUseId}.nested`), new Date().toISOString())) return;
+    }
+    appendRow(path.join(tracesDir, `${parent.session_id}.jsonl`), {
+      type: 'skill_step', session_id: parent.session_id, ts: new Date().toISOString(), v: 1,
+      skill: skillName, args: input.tool_input?.args || '', agent_id: input.agent_id, source: 'hook',
+    });
+    return;
+  }
+  const git = gitSnapshot(base);
+  let claimFile = null;
+  if (toolUseId) {
+    const claimsDir = path.join(tracesDir, '.claims');
+    fs.mkdirSync(claimsDir, { recursive: true });
+    claimFile = path.join(claimsDir, `${toolUseId}.skill`);
+    if (!acquireSkillClaim(claimFile, activeFile, toolUseId)) {
+      debug(`session for ${toolUseId} already opened by another hook registration`);
+      return;
+    }
+  }
+  try {
+    // A session left open by a turn that never reached Stop is closed here so the
+    // new one does not inherit its agents; the row says why it closed.
+    if (readActive(activeFile)) closeSession(tracesDir, base, 'superseded');
+
+    const sessionId = makeSessionId(skillName);
+    const entry = {
+      type: 'session_start',
+      session_id: sessionId,
+      ts: new Date().toISOString(),
+      v: 1,
+      skill: skillName,
+      args: input.tool_input?.args || '',
+    };
+    // Optional git snapshot — omit outside a git repo so the schema stays clean.
+    // Same event type, same v:1: dashboard session-boundary parsing is unaffected.
+    if (git.head) entry.git = git;
+    appendRow(path.join(tracesDir, `${sessionId}.jsonl`), entry);
+    fs.writeFileSync(activeFile, JSON.stringify({
+      session_id: sessionId,
+      tool_use_id: toolUseId,
+      opened_at: new Date().toISOString(),
+      claude_session_id: typeof input.session_id === 'string' && input.session_id ? input.session_id : null,
+    }));
+    await ensureProjectRegistered(base);
+  } catch (err) {
+    if (claimFile) { try { fs.unlinkSync(claimFile); } catch { /* best-effort */ } }
+    throw err;
+  }
+}
+
 async function main() {
-  const phase = process.argv[2]; // 'pre' or 'post'
+  const phase = process.argv[2]; // 'pre' | 'post' | 'stop'
   if (!phase) process.exit(0);
 
   let input;
@@ -159,87 +619,43 @@ async function main() {
     process.exit(0);
   }
 
-  const skill = input.tool_input?.skill;
-  if (typeof skill !== 'string' || !isTracedSkill(skill)) {
-    process.exit(0);
-  }
-
   // Base = the directory the skill was invoked in; the .xm/ root is then resolved
   // worktree-aware so we write where the CLI writes.
   const base = process.env.CLAUDE_PROJECT_DIR || input.cwd || process.cwd();
   const tracesDir = path.join(resolveXmDir(base), 'traces');
-  const activeFile = path.join(tracesDir, '.active');
-  const skillName = skill.replace('xm:', '');
 
   try {
-    if (phase === 'pre') {
-      const sessionId = makeSessionId(skillName);
-      fs.mkdirSync(tracesDir, { recursive: true });
-      await ensureProjectRegistered(base);
-
-      const entry = {
-        type: 'session_start',
-        session_id: sessionId,
-        ts: new Date().toISOString(),
-        v: 1,
-        skill: skillName,
-        args: input.tool_input?.args || '',
-      };
-      // Optional git snapshot — omit outside a git repo so the schema stays clean.
-      // Same event type, same v:1: dashboard session-boundary parsing is unaffected.
-      const git = gitSnapshot(base);
-      if (git.head) entry.git = git;
-
-      fs.appendFileSync(path.join(tracesDir, `${sessionId}.jsonl`), JSON.stringify(entry) + '\n');
-      fs.writeFileSync(activeFile, sessionId);
-
-    } else if (phase === 'post') {
-      if (!fs.existsSync(activeFile)) process.exit(0);
-
-      const sessionId = fs.readFileSync(activeFile, 'utf8').trim();
-      if (!sessionId) process.exit(0);
-
-      const traceFile = path.join(tracesDir, `${sessionId}.jsonl`);
-      if (!fs.existsSync(traceFile)) process.exit(0);
-
-      // Read session_start to calculate duration
-      let durationMs = 0;
-      try {
-        const first = fs.readFileSync(traceFile, 'utf8').split('\n')[0];
-        const start = JSON.parse(first);
-        durationMs = Date.now() - new Date(start.ts).getTime();
-      } catch (err) { debug(`duration calc failed: ${err.message}`); }
-
-      // Count agent_step entries for agent_count
-      let agentCount = 0;
-      try {
-        const lines = fs.readFileSync(traceFile, 'utf8').split('\n').filter(Boolean);
-        agentCount = lines.filter((l) => l.includes('"agent_step"')).length;
-      } catch (err) { debug(`agent count failed: ${err.message}`); }
-
-      const entry = {
-        type: 'session_end',
-        session_id: sessionId,
-        ts: new Date().toISOString(),
-        v: 1,
-        // The hook fires on PostToolUse but cannot observe the skill's real
-        // outcome — a Block/error verdict is not surfaced to the hook — so we
-        // record 'unknown' rather than asserting success. (The CLI writer,
-        // trace-writer.sessionEnd, sets a real status because it runs at the
-        // true end of a known operation.) Key kept for schema parity;
-        // analyze-traces already maps a missing/unknown status to 'unknown'.
-        status: 'unknown',
-        total_duration_ms: durationMs,
-        agent_count: agentCount,
-      };
-      const git = gitSnapshot(base);
-      if (git.head) entry.git = git;
-
-      try { fs.appendFileSync(traceFile, JSON.stringify(entry) + '\n'); } catch (err) { debug(`append session_end failed: ${err.message}`); }
-      try { fs.unlinkSync(activeFile); } catch (err) { debug(`unlink active failed: ${err.message}`); }
+    if (phase === 'stop') {
+      if (input.hook_event_name === 'SubagentStop') {
+        finishBackgroundAgent(tracesDir, input);
+        process.exit(0);
+      }
+      // Turn end is the only signal that arrives after the skill's own Agent
+      // calls; it closes whatever session the turn opened.
+      if (backgroundAgentRunning(tracesDir, input)) {
+        debug('stop: a background agent of this session still runs; session stays open');
+        process.exit(0);
+      }
+      closeSession(tracesDir, base, 'stop');
+      process.exit(0);
     }
+
+    if (AGENT_TOOL_NAMES.has(input.tool_name)) {
+      agentSpan(tracesDir, phase, input, base);
+      process.exit(0);
+    }
+
+    const skill = input.tool_input?.skill;
+    if (typeof skill !== 'string' || !isTracedSkill(skill)) process.exit(0);
+
+    if (phase === 'pre') {
+      await openSession(tracesDir, base, input, skill.replace('xm:', ''));
+    }
+    // PostToolUse(Skill) fires as soon as the skill's instructions are loaded —
+    // tens of milliseconds in, before any Agent call the skill makes — so it
+    // must not close the session. Stop does.
   } catch (err) {
-    // Trace is best-effort — never block skill execution.
+    // Trace is best-effort — never block tool execution.
     debug(`fatal (swallowed): ${err.message}`);
   }
 

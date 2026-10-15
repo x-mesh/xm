@@ -21,14 +21,15 @@ files the report directly into B without switching sessions or directories. It:
 
 Toss never touches the target project's `.xm/` directly (ownership invariant) — only its
 own outbox. **The CLI itself makes zero network calls** — it has no MCP session and no
-auth, so it cannot call mem-mesh. Delivery only happens when you, running inside Claude
-Code with a live MCP session, make the calls yourself.
+auth, so it cannot call mem-mesh. Delivery only happens when the Skill runs in Claude
+Code or Codex with live mem-mesh MCP tools and makes the calls itself.
 
 ## When to Use
 
 - "이거 우리 프로젝트 버그가 아니라 git-kit 버그 같은데 던져줘" / "toss this to git-kit"
 - A repro command's output implicates another **registered** project's code, not this one
 - You want the other project to see the report next session without opening this repo
+- The user explicitly asks to notify a Claude session or queue a Codex session about that same durable report
 
 ## Do NOT Use When
 
@@ -92,6 +93,29 @@ Code with a live MCP session, make the calls yourself.
    Run this even on a partial outcome (e.g. `pin_add` succeeded but `add` failed) —
    pass whichever id(s) you actually got; the CLI merges, it doesn't require both.
 
+5a. **Optional live notice, only when the user requested it:** after both the pin and memory
+   IDs have been recorded, use `/xm:relay sessions <project>` to find a recipient.
+   Claude's native route reaches independent local Claude sessions. On macOS and Linux, Codex
+   can target a local Claude session's inbox socket or list saved Codex threads on the shared App Server daemon;
+   a listed Codex thread is not proof its UI is open. In Claude Code, use `--provider codex`
+   when the user chooses a Codex thread; in Codex, use `--provider claude` for a local Claude
+   session. If more than one candidate matches, let the user choose; never guess from a name or
+   stale listing. If Claude
+   withholds working directories, ask the user to select a specific address and disclose that
+   its project affiliation is unverified. Use `/xm:relay send <session> <notice>` with the
+   selected provider to send the toss ID, redacted title, source
+   and target project IDs, and a pointer to `/xm:inbox`. The receiver's current task and
+   permissions remain its own. Claude reports the native delivery result; Codex-to-Codex
+   reports only that the message was queued and may run when its thread is next active;
+   Codex-to-Claude reports only that message bytes were submitted to the local socket, not that
+   Claude received them. Neither is an inbox
+   `take` or a fix receipt. If the selected provider is unavailable, no target matches, the
+   message is held/refused,
+   or either mem-mesh ID is missing, report that separately and keep the durable outbox state.
+   Do not send raw reproduction output or write the target project's `.xm/inbox/` directly.
+   This is a Skill-only option expressed in the user's request (for example "toss this and
+   notify the running session"); do not pass `--live` or `--notify-session` to `xm toss`.
+
 6. **Report the actual outcome, not an assumption:**
    - *Delivered* — relay the outbox path and the pin/memory ids you got back from MCP.
    - *No MCP tools available (plain shell, no Claude Code session)* — this is a DESIGNED
@@ -105,6 +129,9 @@ Code with a live MCP session, make the calls yourself.
      with the specific tool error.
    - *Target unregistered/ambiguous* — relay the exact message and candidate list;
      ask the user to re-run with the exact id. Never silently pick one.
+   - *Live notice requested* — report durable delivery and live message outcome on separate
+     lines. A successful Claude `SendMessage` or Codex queue does not prove the receiving
+     session took the report.
 
 7. **Check terminal receipts when you need to know whether the target acted.** A delivered
    toss is not proof of a fix. The receiving inbox sends an immutable `inbox-receipt`

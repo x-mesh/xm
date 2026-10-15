@@ -278,3 +278,93 @@ describe('getModelForRole — return vocabulary stays haiku/sonnet/opus/inherit'
     expect(model).toBe('sonnet'); // NOT 'gpt-5.6-terra'
   });
 });
+
+// ── 6. parseModelPin — direct [vendor:]model[:effort][@tier] pins (t1) ────────
+
+describe('parseModelPin', () => {
+  test('a bare tier (no colon, no @) is not a pin', () => {
+    for (const bare of ['sonnet', 'opus', 'haiku', 'fable', 'inherit']) {
+      expect(ce.parseModelPin(bare)).toEqual({
+        isPin: false, vendor: null, model: null, effort: null, tier: null, warning: null,
+      });
+    }
+  });
+
+  test('non-string input is not a pin', () => {
+    for (const bad of [null, undefined, 123, {}, []]) {
+      expect(ce.parseModelPin(bad)).toEqual({
+        isPin: false, vendor: null, model: null, effort: null, tier: null, warning: null,
+      });
+    }
+  });
+
+  test('codex:gpt-5.6-luna:xhigh — vendor/model/effort split, tier inferred from the builtin table', () => {
+    const r = ce.parseModelPin('codex:gpt-5.6-luna:xhigh');
+    expect(r).toEqual({ isPin: true, vendor: 'codex', model: 'gpt-5.6-luna', effort: 'xhigh', tier: 'haiku', warning: null });
+  });
+
+  test('codex:gpt-6-new:high — unknown model with no @tier is uninferable: warning + null tier', () => {
+    const r = ce.parseModelPin('codex:gpt-6-new:high');
+    expect(r.isPin).toBe(true);
+    expect(r.vendor).toBe('codex');
+    expect(r.model).toBe('gpt-6-new');
+    expect(r.effort).toBe('high');
+    expect(r.tier).toBeNull();
+    expect(r.warning).toContain('could not infer a tier');
+  });
+
+  test('codex:gpt-6-new:high@sonnet — explicit @tier always wins over inference', () => {
+    const r = ce.parseModelPin('codex:gpt-6-new:high@sonnet');
+    expect(r).toEqual({ isPin: true, vendor: 'codex', model: 'gpt-6-new', effort: 'high', tier: 'sonnet', warning: null });
+  });
+
+  test('claude:fable — tier resolved via MODEL_COSTS key identity (not in VENDOR_MODELS.claude)', () => {
+    const r = ce.parseModelPin('claude:fable');
+    expect(r).toEqual({ isPin: true, vendor: 'claude', model: 'fable', effort: null, tier: 'fable', warning: null });
+  });
+
+  test('a cfg.vendor_models value carrying its own :effort still matches on the model part alone', () => {
+    const cfg = { vendor_models: { codex: { opus: 'gpt-5.6-sol:high' } } };
+    const r = ce.parseModelPin('codex:gpt-5.6-sol:xhigh', cfg);
+    expect(r).toEqual({ isPin: true, vendor: 'codex', model: 'gpt-5.6-sol', effort: 'xhigh', tier: 'opus', warning: null });
+  });
+
+  test("boundary: 'a@b@c' — a second '@' is rejected, not trimmed away", () => {
+    const r = ce.parseModelPin('a@b@c');
+    expect(r.isPin).toBe(true);
+    expect(r.tier).toBeNull();
+    expect(r.warning).toContain("more than one '@'");
+  });
+
+  test('boundary: effort and tier together resolve independently', () => {
+    const r = ce.parseModelPin('codex:gpt-5.6-luna:xhigh@opus');
+    expect(r).toEqual({ isPin: true, vendor: 'codex', model: 'gpt-5.6-luna', effort: 'xhigh', tier: 'opus', warning: null });
+  });
+
+  test('trailing @ with no tier is rejected', () => {
+    const r = ce.parseModelPin('codex:gpt-5.6-luna@');
+    expect(r.isPin).toBe(true);
+    expect(r.tier).toBeNull();
+    expect(r.warning).toContain("trailing '@'");
+  });
+
+  test('an invalid effort makes the whole pin unusable (R6: no half-parsed dispatch)', () => {
+    const r = ce.parseModelPin('codex:gpt-5.6-luna:xhi');
+    expect(r.isPin).toBe(true);
+    expect(r.tier).toBeNull();
+    expect(r.warning).toContain('parseModelSpec');
+  });
+
+  test('empty vendor prefix is rejected', () => {
+    const r = ce.parseModelPin(':gpt-5.6-luna');
+    expect(r.isPin).toBe(true);
+    expect(r.tier).toBeNull();
+    expect(r.warning).toContain('empty vendor');
+  });
+
+  test('vendor defaults to claude when no vendor prefix is present', () => {
+    const r = ce.parseModelPin('fable@fable');
+    expect(r.vendor).toBe('claude');
+    expect(r.tier).toBe('fable');
+  });
+});

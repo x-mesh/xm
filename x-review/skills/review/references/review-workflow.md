@@ -33,7 +33,10 @@ gh pr view --json number -q .number 2>/dev/null
 
 ### file <path>
 
-Read the file directly via Read tool. If the path is a directory, list child files and read each one (non-recursive, respecting .gitignore).
+Read the file directly via Read tool. For a directory target, the lifecycle freezes its immediate
+files that Git tracks or permits under its ignore rules. It does not recurse.
+Parent-repository snapshots record submodule commit pointers and dirty state, not submodule source coverage.
+Review submodule source from its own repository. An empty directory target fails before dispatch.
 Store the result as `{diff_content}`.
 
 ### full
@@ -158,6 +161,8 @@ Fan-out — send the diff + dedicated perspective prompt to each agent simultane
 ### Run identity and result files (mandatory)
 
 Call `prepare` before native dispatch. Use the returned logical report ID and attempt ID for each worker.
+If preparation fails, report the command-failure action and recovery guidance, then stop.
+Never dispatch reviewers outside the lifecycle to bypass a preparation error.
 Read `run.json` for the frozen target, prompt, hashes, wave, and source coverage.
 The lifecycle captures Phase-1 target bytes before dispatch and refuses stale findings at the Review-Fix Gate.
 Append the lens report contract to each worker prompt with these exact values.

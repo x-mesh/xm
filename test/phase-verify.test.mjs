@@ -1023,6 +1023,39 @@ describe('verify-review-fix', () => {
     }
   });
 
+  test('LGTM authorizes an explicitly selected Low fix and requires byte-bound reverification', () => {
+    const tmp = mkdtempSync(join(tmpdir(), 'xb-low-fix-'));
+    try {
+      setupProject(tmp);
+      writeReviewResult(tmp, { verdict: 'lgtm', findings: [
+        { severity: 'low', file: 'src/x.ts', line: 1, summary: 'optional correction' },
+      ] });
+      initAndEditTriage(tmp, triage => {
+        triage.target_findings[0].decision = 'fix_now';
+        triage.target_findings[0].evidence = 'User requested this correction';
+        triage.fix_scope.allowed_files = ['src/x.ts'];
+      });
+      expect(run(['verify-review-fix', '--init'], { cwd: tmp }).exitCode).toBe(0);
+      expect(run(['verify-review-fix'], { cwd: tmp }).exitCode).toBe(0);
+      const triagePath = join(tmp, '.xm', 'review', 'triage.json');
+      const triage = readJSON(triagePath);
+      triage.target_findings[0].decision = 'fix_now';
+      triage.target_findings[0].evidence = 'User requested this correction';
+      triage.fix_scope.allowed_files = ['src/x.ts'];
+      writeFileSync(triagePath, JSON.stringify(triage));
+      expect(run(['verify-review-fix'], { cwd: tmp }).exitCode).toBe(0);
+      expect(readJSON(join(tmp, '.xm', 'review', 'review-fix-gate.json')).stage).toBe('ready_for_fix');
+      writeFileSync(join(tmp, 'src', 'x.ts'), 'corrected bytes\n');
+      expect(run(['verify-review-fix'], { cwd: tmp }).exitCode).not.toBe(0);
+      const verified = run(['verify-review-fix', '--reverify', 'F1', '--outcome', 'resolved',
+        '--evidence', 'Corrected optional finding', '--command', 'node -e "process.exit(0)"'], { cwd: tmp });
+      expect(verified.exitCode).toBe(0);
+      expect(readJSON(join(tmp, '.xm', 'review', 'finding-lifecycle.json')).findings[0].state).toBe('reverified');
+    } finally {
+      rmSync(tmp, { recursive: true, force: true });
+    }
+  });
+
   test('a freshly initialized LGTM review closes the preceding lifecycle', () => {
     const tmp = mkdtempSync(join(tmpdir(), 'xb-test-'));
     try {

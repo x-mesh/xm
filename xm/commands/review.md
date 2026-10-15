@@ -7,7 +7,7 @@ User provided: $ARGUMENTS
 Tool-neutral executable lifecycle:
 
 ```bash
-xm review run [target.patch] --cross-vendor [--models claude,codex] [--lenses correctness,risk]
+xm review run [target.patch|git-ref] --cross-vendor [--models claude,codex] [--lenses correctness,risk]
 xm review resume <run-id>
 ```
 

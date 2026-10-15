@@ -14,6 +14,13 @@ grows). `solve.md` keeps decompose, constrain and pipeline, and points here.
 > [repro+marker] [state+baseline] [falsifiable] [one var] [switch/revert] [fix+regression proof] [why late?]
 > ```
 
+> **Edit guard.** Where `x-build hooks install` armed the PreToolUse scope guard, an active
+> iterate problem also limits Edit/Write. Before `resolve`, only files registered with
+> `$XMS instrument add <file>` (a repro test, temporary logging) may change. In `resolve`, the
+> Scope Contract's `--files` and `--tests` may change too; widen it with `scope expand`.
+> `repro verify` refuses while a registered file outside the contract differs from its
+> registered content. A problem idle for 24 hours stops guarding. Bash writes are not watched.
+
 #### Phase: reproduce
 
 > **MUST — the iterate strategy always starts here. A fix you cannot see fail is a fix you cannot prove.**
@@ -145,6 +152,10 @@ The Fishbone result feeds into hypothesize: agent prompts include "Focus hypothe
 
 After completion, run without fail:
 ```bash
+# Scope Contract — the symptom and marker come from the repro record, the invariant from the Delta.
+# `solve` returns it as `scope` from here on; resolve warns when it is missing.
+$XMS scope set --symptom "<one observed symptom>" --invariant "<root invariant this pass repairs>" \
+  --files <authority files, comma-separated> --tests <focused tests> --non-goals "<backlog items>"
 # [REQUIRED] diagnose complete — advance to next phase
 $XMS solve-advance --phase hypothesize
 ```
@@ -153,6 +164,7 @@ $XMS solve-advance --phase hypothesize
 > - [ ] delegate agent called
 > - [ ] Current State / Baseline / Delta information collected
 > - [ ] (If Delta = unknown or multiple layers) Fishbone analysis complete
+> - [ ] `$XMS scope set` recorded (expand later only with `scope expand --justification "<execution evidence>"`)
 > - [ ] AskUserQuestion called
 > - [ ] `$XMS solve-advance --phase hypothesize` called
 
@@ -192,14 +204,19 @@ Order by likelihood descending. Output in JSON format.
 
 After completion, run without fail:
 ```bash
-$XMS hypotheses add "description"   # call once per hypothesis
-# [REQUIRED] hypothesize complete — advance to next phase
+# call once per hypothesis; each add is stamped with the current round
+$XMS hypotheses add "description" --likelihood high|medium|low --check "<verification method>"
+# [REQUIRED] hypothesize complete — advance to next phase (refused while a pending hypothesis has no --check)
 $XMS solve-advance --phase test
 ```
 
+On a retry the CLI compares this round's hypotheses with the last round's. Restating them in new
+words trips the convergence stop (`Early stop (converged|stagnant|oscillating)`), which cannot be
+extended — change the layer or the variable, not the wording.
+
 > Checklist:
 > - [ ] delegate agent called
-> - [ ] `$XMS hypotheses add` called (once per hypothesis)
+> - [ ] `$XMS hypotheses add` called (once per hypothesis, with `--likelihood` and `--check`)
 > - [ ] AskUserQuestion called
 > - [ ] `$XMS solve-advance --phase test` called
 
@@ -223,7 +240,10 @@ Each agent's prompt:
 Verify the following hypothesis:
 
 Hypothesis: {hypothesis.description}
+Planned check: {hypothesis.check}
 Problem: {problem_context}
+
+Run the planned check first. If you verify by another method, state why the planned check was not enough.
 
 Verification principles:
 - One variable at a time — each test should check one thing. If you change two variables, you can't attribute the result.
@@ -236,14 +256,20 @@ Result: confirmed / refuted / inconclusive + concrete evidence (paste the releva
 
 After all agents complete, run without fail:
 ```bash
-$XMS hypotheses update <id> --status confirmed|refuted|inconclusive  # once per hypothesis
+$XMS hypotheses update <id> --status confirmed|refuted|inconclusive \
+  --evidence-for "<the pasted output that supports it>" --source-kind code|log|command|metric|test \
+  [--evidence-against "<what argued the other way>"]   # once per hypothesis
 # [REQUIRED] test complete — advance to next phase
 $XMS solve-advance --phase refine
 ```
 
+`solve-advance --phase refine` refuses a `confirmed` hypothesis with no `--evidence-for`: the refuter
+in the next phase is handed that evidence verbatim, and after the AskUserQuestion turn boundary the
+state file is the only place it still exists.
+
 > Checklist:
 > - [ ] Agent fan-out complete (one per hypothesis — direct verification forbidden)
-> - [ ] `$XMS hypotheses update` called (once per hypothesis)
+> - [ ] `$XMS hypotheses update` called (once per hypothesis, with `--evidence-for` + `--source-kind`)
 > - [ ] AskUserQuestion called
 > - [ ] `$XMS solve-advance --phase refine` called
 
@@ -264,7 +290,7 @@ You are an INDEPENDENT REFUTER. Another agent concluded this hypothesis is CONFI
 Your job is not to agree. Your job is to find the reading of the evidence in which it is wrong.
 
 Hypothesis: {hypothesis.description}
-Verifier's evidence (verbatim): {evidence_for}
+Verifier's evidence (verbatim, from `$XMS hypotheses list`): {evidence_for}
 Repro: {repro.command} — status {repro.status}{, observed rate N/M}
 
 In order:
@@ -290,10 +316,15 @@ Then decide:
 
 | Refuter verdict | Next |
 |---|---|
-| SURVIVED | `solve-advance --phase resolve` — root-cause mode |
+| SURVIVED | `solve-advance --phase resolve` — root-cause mode (refused while the survivor has no recorded `evidence_for`) |
 | SINGLE-SIGNAL | Find the second source, or take the narrow exit below. A single source cannot carry a root-cause claim |
 | FALSIFIED | Back to hypothesize (iteration++), or **Switch or Revert** |
 | None confirmed | **Switch or Revert** first: 1) switch layer (app code → infra/config/network) 2) revert to the diagnose baseline and isolate with minimal changes 3) if both fail, back to hypothesize |
+
+**Diagnosis only (Review-Fix Gate 4b).** When this problem exists to return a cause, not a fix, stop
+after SURVIVED: `$XMS close --diagnosis-only --summary "<cause> — handed to triage"`. It records the
+problem as `diagnosed` with the hypothesis, its evidence and its refuter — not `abandoned`, which is
+the word for a diagnosis that failed. Do not advance to resolve.
 
 **When iterations run out**, resolving on the most likely unconfirmed hypothesis is a guess, not a
 fix. Pick one of three exits — all of them terminate:
@@ -352,17 +383,41 @@ evidence-gathering changes — logging, assertions, a test that captures the sym
 speculative fix; the close summary will state the cause is still unknown.
 
 ```bash
-$XMS repro verify --output-file <after> --exit-code 0 [--runs 0/9] [--regression-test <path>]
+$XMS repro verify --output-file <after> --exit-code 0 [--runs 0/9] [--regression-test <path>] \
+  [--regression-cmd "<runs that test>" --regression-marker "<literal from its failing output>" \
+   [--regression-setup "<install deps>"] [--regression-timeout <seconds, default 300>]]
+# or, when no test can pin the fix (infra, environment, data):
+$XMS repro verify --output-file <after> --exit-code 0 --regression-waiver "<why, and what watches for it instead>"
 ```
+
+`x-solver verify` requires one of the two for a `reproduced` or `intermittent` problem: a test
+pinned with `--regression-cmd`, or a written waiver. Without either it stays `unverified`
+(`reason: regression_test_absent`), and `--manual` does not override it.
+
+`--regression-test` alone only checks that the file exists. With `--regression-cmd`, the CLI proves
+the test pins the bug: it rebuilds the code the failure was recorded on (the `repro set` baseline:
+HEAD plus the uncommitted patch) in a temporary worktree, copies only the test file into it, and
+requires the command to fail there with the marker. It then requires the same command to pass in the
+current tree. A test that passes on the baseline is refused. If it fails there for an unrelated reason
+(a dependency the fresh worktree lacks), pass `--regression-setup`; `node_modules` is linked already.
+
+`verify` also scans the lines added since the baseline for shapes that usually hide a symptom: an
+empty catch, a raised timeout or retry count, a new skip or mock, an `is not None` assert. It warns
+and records them in `repro.after.workaround_signals`; it does not refuse. Explain each intended one
+in the close summary, or review it with the x-review silent-failures lens.
 
 `verify` reads this record: a `reproduced` problem whose regression proof is missing comes back
 `unverified` (`reason: regression_proof_absent`) and cannot be closed. `--manual` is not a way around
-it — a re-run is checkable by execution, which is exactly what `--manual` is not for.
+it — a re-run is checkable by execution, which is exactly what `--manual` is not for. The reverse
+also holds: with no hard constraint declared, the proof plus a pinned or waived regression test
+passes `verify` (`status: passed, reason: regression_proof`). A declared hard constraint still needs
+`candidates score`.
 >
 > **Exception — diagnosis only.** If this problem came from the Review-Fix Gate (root `CLAUDE.md` step
-> 4b), stop at the confirmed cause and hand it back to triage. Do not edit: `x-build hooks install`
-> arms a PreToolUse scope guard that blocks writes outside `fix_scope.allowed_files`, and widening
-> that scope on a guess is the thing the gate exists to prevent.
+> 4b), stop at the confirmed cause and hand it back to triage with
+> `$XMS close --diagnosis-only --summary "..."` from the refine phase (see above). Do not edit:
+> `x-build hooks install` arms a PreToolUse scope guard that blocks writes outside
+> `fix_scope.allowed_files`, and widening that scope on a guess is the thing the gate exists to prevent.
 
 **delegate** (executor, sonnet):
 ```
@@ -397,9 +452,10 @@ $XMS close --summary "..."
 ```
 
 > Checklist:
+> - [ ] Scope Contract on file (`$XMS scope show`) — edits stay inside `scope.files`, or `scope expand` first
 > - [ ] delegate agent called (including fix + exec proof)
 > - [ ] Execution evidence confirmed (paste command output)
-> - [ ] `$XMS repro verify --output-file <after> --exit-code 0 [--regression-test <path>]` accepted
+> - [ ] `$XMS repro verify --output-file <after> --exit-code 0 [--regression-test <path> --regression-cmd "..." --regression-marker "..."]` accepted
 > - [ ] `$XMS candidates add` + `select` called
 > - [ ] `$XMS verify` called
 > - [ ] `git diff --stat` checked — this phase edits code, and the check is mandatory

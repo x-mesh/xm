@@ -94,6 +94,19 @@ beforeAll(() => {
   // review markdown sibling for `show`
   writeText(join(XM, 'review', 'last-result.md'), '# x-review: HEAD~1..HEAD — LGTM\n\nVerdict: lgtm\n');
 
+  // mutate: one diff run and one task run (nested under its project)
+  writeJSON(join(XM, 'review', 'mutate-diff', 'abc123def456-0011223344ff.json'), {
+    schema_v: 2, mode: 'diff', base: 'main', head: 'abc123def456aaaa', merge_base: '0011223344ff',
+    languages: [{ language: 'rust', tool: 'cargo-mutants', status: 'ran', counts: {} }],
+    mutants: [{ file: 'src/lib.rs', line: 4, status: 'survived' }, { file: 'src/lib.rs', line: 9, status: 'killed' }],
+    counts: { survived: 1, killed: 1 }, ts: '2026-09-16T01:00:00.000Z',
+  });
+  writeJSON(join(XM, 'review', 'mutate', 'cost-engine-v2', 'T7.json'), {
+    schema_v: 2, mode: 'task', project: 'cost-engine-v2', task_id: 'T7',
+    languages: [{ language: 'javascript', tool: 'StrykerJS', status: 'unavailable', counts: {} }],
+    mutants: [], counts: { survived: 0 }, ts: '2026-09-16T02:00:00.000Z',
+  });
+
   // eval
   writeJSON(join(XM, 'eval', 'results', '20260410-221027-score.json'), {
     type: 'score', timestamp: '2026-04-10T22:12:00Z', rubric: 'code-quality',
@@ -123,7 +136,7 @@ beforeAll(() => {
     v: 1, saved_at: '2026-04-11T03:44:25.191Z', handoff_generation: 4,
     where: { branch: 'develop', last_commits: ['aaa1234 first', 'bbb5678 second'], uncommitted_files: ['x.mjs'] },
     what_done: ['shipped X'],
-    what_remains: { active_projects: [{ name: 'p1', phase: 'Plan' }] },
+    what_remains: { active_projects: [{ name: 'p1', phase: 'Plan', pending: [] }, { name: 'p2', phase: 'Execute', pending: ['t1', 't2'] }] },
     decisions: [{ what: 'use recall', why: 'cross-session' }],
     narrative: { intent: 'build recall', open_questions: ['naming?'], rejected_alternatives: ['rules-only'], next_session_should_know: ['dedup matters'] },
     why_stopped: 'PRD done',
@@ -170,6 +183,18 @@ describe('list', () => {
     const r = run(['list', '--type', 'eval', '--json']);
     const parsed = JSON.parse(r.stdout);
     expect(parsed.every(a => a.type === 'eval')).toBe(true);
+  });
+
+  test('indexes mutation reports from both the diff and the task path', () => {
+    const r = run(['list', '--type', 'mutate', '--json']);
+    const parsed = JSON.parse(r.stdout);
+    expect(parsed.map(a => a.id).sort()).toEqual(['mutate:abc123def456-0011223344ff', 'mutate:cost-engine-v2/T7']);
+    const diff = parsed.find(a => a.id === 'mutate:abc123def456-0011223344ff');
+    expect(diff).toMatchObject({ type: 'mutate', status: 'ran', project: null, meta: { mode: 'diff', survived: 1, mutants: 2 } });
+    expect(diff.title).toContain('1 survived / 2 mutants');
+    // A language that could not run leaves the result partial, not clean.
+    const task = parsed.find(a => a.id === 'mutate:cost-engine-v2/T7');
+    expect(task).toMatchObject({ status: 'partial', project: 'cost-engine-v2', meta: { mode: 'task' } });
   });
 
   test('indexes standalone .xm/plan artifacts', () => {
@@ -295,6 +320,8 @@ describe('handoff-md', () => {
     expect(md).toContain('naming?');               // open question
     expect(md).toContain('use recall');            // decision
     expect(md).toContain('do not re-litigate');    // rejected alternatives heading
+    expect(md).toContain('- p1 (Plan)\n');
+    expect(md).toContain('- p2 (Execute) — 2 pending');
   });
 });
 

@@ -21,7 +21,7 @@ import {
   PANEL_DIR, XM_ROOT, C, provColor, join, existsSync, ensureDir, writeJSON, readText, runId,
   loadPanelConfig, savePanelConfig,
 } from './x-panel/core.mjs';
-import { invokeProviderAsync, invokeProviderText, probeProvider, isAvailable, knownProviders, autodetectModels, providerMeta, checkAuth, providerReady, listModels, parseModelIds, supportsResume, supportsPromptStdin, proseOutsideJSON, groundCapable, terminateProviderChildren, RETRY_FLOOR_MS } from './x-panel/adapters.mjs';
+import { invokeProviderAsync, invokeProviderText, probeProvider, isAvailable, knownProviders, autodetectModels, providerMeta, checkAuth, providerReady, listModels, parseModelIds, supportsResume, supportsStream, supportsPromptStdin, proseOutsideJSON, groundCapable, terminateProviderChildren, RETRY_FLOOR_MS } from './x-panel/adapters.mjs';
 import { randomUUID } from 'node:crypto';
 import { normalizeFindings, normalizeVerdicts, synthesize, synthesizeRound1, normalizeResponses, followupDelta } from './x-panel/synth.mjs';
 import { mergePolicy, evaluateVerdict, resolvePolicyForPhase, GATE_PHASES, DEFAULT_POLICY } from './x-panel/gate.mjs';
@@ -610,7 +610,7 @@ function gateReadiness(entries, cfg, { fresh = false } = {}) {
 // instead of appending a line each time.
 // stdout/stderr are kept (raw mode is coarse: 1–2 chunks, not the bloat source).
 // The high-frequency stream-mode deltas (text/thinking) are deliberately absent.
-const MILESTONE = new Set(['spawn', 'exit', 'timeout', 'error', 'json_parsed', 'json_missing', 'usage_final', 'lifecycle', 'stdout', 'stderr']);
+const MILESTONE = new Set(['activity', 'spawn', 'exit', 'timeout', 'error', 'json_parsed', 'json_missing', 'usage_final', 'lifecycle', 'stdout', 'stderr']);
 
 // Sequenced, redacted, tail-bounded appender for a run's events.jsonl. One factory for
 // review AND cross so both namespaces get identical forensics (cross had none — the
@@ -650,7 +650,7 @@ function sev(s) {
 // not a deterministic failure like bad auth or a missing CLI, so it's worth ONE fresh retry.
 // Run one round across all models in parallel, reporting start/heartbeat/elapsed
 // on stderr so a long round (large diff) isn't a silent black box.
-async function runRound(roundLabel, usable, makePrompt, timeoutMs, onUpdate, onResult, onProviderEvent, stream = false, partial = true, expectKeys = null, maxTimeoutMs = null, commandBudget = null, isolate = false, slotDeadlines = null) {
+async function runRound(roundLabel, usable, makePrompt, timeoutMs, onUpdate, onResult, onProviderEvent, stream = null, partial = true, expectKeys = null, maxTimeoutMs = null, commandBudget = null, isolate = false, slotDeadlines = null) {
   process.stderr.write(`${C.dim}${roundLabel} — ${usable.length} models in parallel…${C.reset}\n`);
   const pending = new Set(usable.map((e) => e.label));
   const t0 = Date.now();
@@ -915,9 +915,7 @@ async function cmdReview(pos, flags) {
   // Per-model timeout base (large diffs + many parallel models need headroom). The
   // effective timeout is auto-raised for large targets below (after the target is known).
   const baseTimeoutS = flags.timeout || cfg.timeout_s || 600;
-  // Structured streaming (live tokens/cost) is opt-in until dogfooded — default off
-  // keeps the proven raw flow intact. Enable per-run with --stream or config panel.stream.
-  const stream = (flags.stream != null) ? flags.stream : !!cfg.stream;
+  const stream = (flags.stream != null) ? flags.stream : (cfg.stream ?? null);
   // Grounded refutation (빅뱃3): round-2 refuters that CAN read the repo open the
   // cited files and verify each finding against the real code. Opt-in per run
   // (--grounded) or per repo (panel.grounded); only groundCapable vendors get the
@@ -1022,7 +1020,7 @@ async function cmdReview(pos, flags) {
   // observed: a 1600-line diff timed out claude under partial). --partial forces it on;
   // --no-partial / config panel.stream_partial:false turn it off.
   let partial = (flags.partial != null) ? flags.partial : (cfg.stream_partial !== false);
-  if (stream && partial && flags.partial == null) {
+  if (stream !== false && partial && flags.partial == null) {
     const PARTIAL_MAX = cfg.partial_max_chars || 50000;
     const tlen = (target.text || '').length;
     if (tlen > PARTIAL_MAX) {
@@ -1066,7 +1064,7 @@ async function cmdReview(pos, flags) {
   const zeroTokens = () => ({ input: 0, output: 0, cached: 0, reasoning: 0 });
   const status = {
     run, started_at: new Date().toISOString(), updated_at: new Date().toISOString(),
-    phase: 'starting', rounds, target_kind: target.kind, target_title: targetTitle(target), stream, partial: stream ? partial : false, timeout_s: timeoutS, timeout_max_s: timeoutMaxS,
+    phase: 'starting', rounds, target_kind: target.kind, target_title: targetTitle(target), stream: !!stream, stream_providers: usable.filter(e => stream === true ? supportsStream(e.name) : stream == null && e.name === 'claude').map(e => e.label), partial: stream !== false ? partial : false, timeout_s: timeoutS, timeout_max_s: timeoutMaxS,
     // x-review runs ONE panel PER LENS, so several runs of the same project/target are live at
     // once and the board rendered them as identical rows — they read as a duplicate (or a
     // double-spend) when they are actually different lenses. The tag is what tells them apart.
@@ -1191,6 +1189,7 @@ async function cmdReview(pos, flags) {
       m.updated_at = new Date().toISOString();
       if (type === 'spawn') {
         m.pid = ev.pid;
+        m.output_mode = ev.mode || 'final';
         m.last_event = (ev.mode === 'stream' || ev.mode === 'stream-partial') ? `spawned (${ev.mode})` : 'spawned';
       } else if (rawStream) {
         const bytesKey = `${rawStream}_bytes`;
@@ -1199,12 +1198,16 @@ async function cmdReview(pos, flags) {
         m[bytesKey] = (m[bytesKey] || 0) + (ev.bytes || Buffer.byteLength(text));
         if (text) m[tailKey] = tailText(`${m[tailKey] || ''}${text}`, 4000);
         m.last_event = `${rawStream} +${ev.bytes || Buffer.byteLength(text)} bytes`;
+      } else if (type === 'activity') {
+        m.phase_label = ev.phase;
+        m.last_event = ev.phase;
       } else if (type === 'thinking') {
         m.phase_label = 'thinking';
         m.last_event = 'thinking';
       } else if (type === 'text') {
         m.phase_label = 'responding';
         const text = redactPanelText(ev.delta || '');
+        m.stdout_bytes += Buffer.byteLength(text);
         if (text) m.stdout_tail = tailText(`${m.stdout_tail || ''}${text}`, 4000);
         m.last_event = 'responding';
       } else if (type === 'usage') {
@@ -1225,6 +1228,7 @@ async function cmdReview(pos, flags) {
         m.last_event = 'usage final';
       } else if (type === 'json_parsed') {
         m.last_event = 'json parsed';
+        m.contract_state = 'complete';
       } else if (type === 'semantic_progress') {
         if (Number.isInteger(ev.commands_used)) m.commands_used = ev.commands_used;
         if (ev.contract_state === 'complete' || ev.contract_state === 'incomplete') m.contract_state = ev.contract_state;
@@ -1253,13 +1257,14 @@ async function cmdReview(pos, flags) {
         phase: status.phase,
         model: entry.label,
         provider: entry.name,
+        mode: ev.mode || null,
         bytes: ev.bytes || null,
         pid: ev.pid || null,
         code: ev.code ?? null,
         tokens: ev.tokens || (ev.usage ? { input: ev.usage.input, output: ev.usage.output, cached: ev.usage.cached, reasoning: ev.usage.reasoning } : null),
         cost_usd: (ev.cost_usd != null) ? ev.cost_usd : (ev.usage && ev.usage.cost_usd != null ? ev.usage.cost_usd : null),
         credits: (ev.usage && ev.usage.credits != null) ? ev.usage.credits : null,
-        note: ev.note || null,
+        note: ev.note || ev.phase || null,
         error: ev.error || null,
         text: ev.text || null,
       });
@@ -1295,8 +1300,7 @@ async function cmdReview(pos, flags) {
 
   // t5 session reuse: round 1 creates a provider session (claude: caller uuid;
   // codex: id captured from the run banner), round 2 resumes it with only the
-  // refute delta — the target never travels twice. Raw path only (--stream keeps
-  // its dogfooded argv).
+  // refute delta — the target never travels twice. Claude supports streaming sessions.
   // Opt out: --no-session-reuse / panel.session_reuse:false.
   const sessionReuse = !stream && (flags.sessionReuse != null ? flags.sessionReuse : cfg.session_reuse !== false);
   for (const e of usable) {
@@ -1358,7 +1362,7 @@ async function cmdReview(pos, flags) {
     if (contextMismatch) r1Status[e.label] = { status: 'failed', error: 'context_hash missing or mismatched' };
     else if (res.partial) r1Status[e.label] = { status: 'partial', error: res.error || 'wall-clock cap reached after contract completion' };
     else if (!res.ok) r1Status[e.label] = { status: 'failed', error: res.error || 'failed' };
-    else if (!findings.length && proseOutsideJSON(res.raw || '').length >= SUSPECT_PROSE_MIN) r1Status[e.label] = { status: 'suspect_empty' };
+    else if (!findings.length && proseOutsideJSON(res.answer_text ?? res.raw ?? '').length >= SUSPECT_PROSE_MIN) r1Status[e.label] = { status: 'suspect_empty' };
     const r1 = r1Status[e.label] ? r1Status[e.label].status : 'ok';
     writeJSON(join(dir, `${safeLabel(e.label)}.r1.json`), { model: e.label, ok: res.ok, error: res.error, r1_status: r1, findings, usage: res.usage || null, raw: res.raw });
     writeEvent({ type: 'round_file_written', phase: status.phase, model: e.label, round: 1, ok: res.ok, r1_status: r1, count: findings.length, error: res.error || null });
@@ -1470,8 +1474,9 @@ async function cmdReview(pos, flags) {
     ...(reviewContext.status === 'bound' ? { context_hash: reviewContext.hash } : {}),
     judge: 'rule',
     rounds,
-    stream,
-    partial: stream ? partial : false,
+    stream: !!stream,
+    stream_providers: status.stream_providers,
+    partial: stream !== false ? partial : false,
     // Grounding provenance (빅뱃3): whether the run asked for grounded refutation and
     // which participating vendors were actually capable of reading the repo. A verdict
     // whose grounded_models is empty carried no file-verified refutations regardless of
@@ -1668,13 +1673,18 @@ async function cmdCross(pos, flags) {
   // and milestone events → events.jsonl (spawn/stdout/stderr/timeout/error/exit).
   const onProviderEvent = (m) => (ev) => {
     m.updated_at = nowISO();
-    if (ev.type === 'spawn') { m.pid = ev.pid; m.last_event = 'spawned'; }
+    if (ev.type === 'spawn') { m.pid = ev.pid; m.output_mode = ev.mode || 'final'; m.last_event = 'spawned'; }
     else if (ev.type === 'stdout' || ev.type === 'stderr') {
       const text = redactPanelText(ev.text || '');
       m[`${ev.type}_bytes`] = (m[`${ev.type}_bytes`] || 0) + (ev.bytes || Buffer.byteLength(text));
       if (text) m[`${ev.type}_tail`] = tailText(`${m[`${ev.type}_tail`] || ''}${text}`, 4000);
       m.last_event = `${ev.type} +${ev.bytes || 0} bytes`;
-    } else if (ev.type === 'timeout') { m.last_event = 'timeout'; m.error = ev.error || 'timeout'; }
+    } else if (ev.type === 'activity') { m.phase_label = ev.phase; m.last_event = ev.phase; }
+    else if (ev.type === 'thinking') { m.phase_label = 'thinking'; m.last_event = 'thinking'; }
+    else if (ev.type === 'text') { m.phase_label = 'responding'; m.last_event = 'responding'; if (ev.delta) m.stdout_bytes += Buffer.byteLength(ev.delta); if (ev.delta) m.stdout_tail = tailText(`${m.stdout_tail || ''}${redactPanelText(ev.delta)}`, 4000); }
+    else if (ev.type === 'usage') { m.tokens = ev.tokens; m.cost_usd = ev.cost_usd; m.last_event = 'usage'; }
+    else if (ev.type === 'json_parsed') { m.contract_state = 'complete'; m.last_event = 'json parsed'; }
+    else if (ev.type === 'timeout') { m.last_event = 'timeout'; m.error = ev.error || 'timeout'; }
     else if (ev.type === 'error') { m.last_event = 'process error'; m.error = ev.error || 'process error'; }
     else if (ev.type === 'exit') { m.last_event = ev.code === 0 ? 'process exited' : `exit ${ev.code}`; }
     if (MILESTONE.has(ev.type)) {
@@ -1683,10 +1693,11 @@ async function cmdCross(pos, flags) {
         phase: status.phase,
         model: m.label,
         provider: m.provider,
+        mode: ev.mode || null,
         bytes: ev.bytes || null,
         pid: ev.pid || null,
         code: ev.code ?? null,
-        note: ev.note || null,
+        note: ev.note || ev.phase || null,
         error: ev.error || null,
         text: ev.text || null,
       });
@@ -1712,7 +1723,7 @@ async function cmdCross(pos, flags) {
         && !supportsPromptStdin(e.name) && !useAgyFile;
       let res = argvTooLarge
         ? { ok: false, output: '', error: `prompt ${promptBytes} bytes exceeds the safe argv limit ${DIFF_INLINE_MAX_BYTES}; provider has no stdin/file transport`, nonRetryable: true }
-        : await invokeProviderText(e.name, sendPrompt, { timeout: timeoutMs, model: e.model, onEvent, providerArgs });
+        : await invokeProviderText(e.name, sendPrompt, { timeout: timeoutMs, model: e.model, onEvent, providerArgs, stream: flags.stream });
       // One retry on a TRANSIENT failure (exit-0-empty / exit-N): cursor and other gateway CLIs
       // intermittently return an empty/failed result that succeeds on a second try. Do NOT retry a
       // timeout/stall — it already burned the full (600s+) window, so a retry just doubles the
@@ -1727,7 +1738,7 @@ async function cmdCross(pos, flags) {
         m.last_event = 'retrying';
         m.error = null;
         flushStatus({ force: true });
-        const retry = await invokeProviderText(e.name, sendPrompt, { timeout: timeoutMs, model: e.model, onEvent, providerArgs });
+        const retry = await invokeProviderText(e.name, sendPrompt, { timeout: timeoutMs, model: e.model, onEvent, providerArgs, stream: flags.stream });
         if (retry.ok) res = retry;
         else res = { ...res, error: `${res.error} (retried once, still failed: ${retry.error})` };
       }
@@ -2129,7 +2140,7 @@ Commands:
                                 effective timeout and includes retries; panel.timeout_max_s
                                 (default 1200) can lower that cap.
     --stream | --no-stream      Structured streaming: live token/cost per model (claude/cursor/codex).
-                                Opt-in (default off; config: panel.stream). kiro/agy stay raw.
+                                Claude streams by default; --no-stream disables it. --stream also enables cursor/codex.
     --tm-events | --no-tm-events  Live xk_run telemetry to a term-mesh daemon when one is detected
                                 (default on; config: panel.tm_events). Best-effort — never blocks a run.
     --grounded | --no-grounded  Round-2 refuters that can read the repo OPEN each cited file and
@@ -2392,7 +2403,8 @@ function fmtTokens(t) {
 // lifecycle event when none of the live signals exist (raw mode before first output).
 function modelProgress(m) {
   const parts = [];
-  if (m.phase_label) parts.push(m.phase_label);
+  if (m.phase_label) parts.push(({ thinking: '분석 중', responding: '응답 작성 중' })[m.phase_label] || m.phase_label);
+  else if (m.vendor === 'claude' && m.output_mode === 'final') parts.push('진행 정보 미수집 · 최종 결과 대기');
   if (m.stdout_bytes) parts.push(`↑${m.stdout_bytes >= 1000 ? (m.stdout_bytes / 1000).toFixed(1) + 'k' : m.stdout_bytes}`);
   const tok = fmtTokens(m.tokens);
   if (tok) parts.push(tok);
@@ -2820,6 +2832,7 @@ function watchModelJSON(m, linesN, run = null) {
     state: m.state,
     elapsed_s: m.elapsed_s ?? null,
     phase_label: m.phase_label || null,
+    output_mode: m.output_mode || (run?.stream || run?.stream_providers?.includes(m.label) ? 'stream' : 'final'),
     last_event: m.last_event || null,
     error: m.error || null,
     stdout_bytes: m.stdout_bytes || 0,
@@ -2946,20 +2959,20 @@ function renderStatusWatch(flags) {
     // The short run id rides along dim: several runs of one project/target can be live at once
     // (x-review fans a panel out per lens), and rows that differ in nothing visible read as a bug.
     const shortRun = C.dim + String(r.run).replace(/^panel-\d{8}-/, '') + C.reset;
-    console.log(`\n${C.bold}▸ ${r.project}${C.reset}  ${C.cyan}${r.source}${C.reset}  ${r.title || r.run}  ${shortRun}   ${C.yellow}${r.phase}${C.reset} · ${r.progress.done}/${r.progress.total} done · ${r.elapsed_s}s`);
+    console.log(`\n${C.bold}▸ ${r.project}${C.reset}  ${C.cyan}${r.source}${C.reset}  ${r.title || r.run}  ${shortRun}   ${C.yellow}${r.phase}${C.reset} · 종료 ${r.progress.done}/${r.progress.total} · 진행 ${r.models.filter(m => m.state === 'running').length} · ${r.elapsed_s}s`);
     for (const m of r.models) {
       const glyph = m.state === 'done' ? `${C.green}✓${C.reset} ` : m.state === 'failed' ? `${C.red}✗${C.reset} `
         : m.state === 'running' ? `${C.yellow}⏳${C.reset}` : `${C.dim}·${C.reset} `;
-      const el = m.elapsed_s != null ? `${m.elapsed_s}s` : '';
-      const hint = m.state === 'failed' ? `${C.red}${m.error || 'failed'}${C.reset}`
+      const el = m.elapsed_s != null ? `${m.state === 'done' || m.state === 'failed' ? '소요 ' : '경과 '}${formatDuration(m.elapsed_s)}` : '';
+      const hint = m.state === 'failed' ? `${C.red}실패 · ${m.error || 'failed'}${C.reset}`
         : m.state === 'running' ? modelProgress(m).join(' · ')
         : (m.unmatched_refs || m.invalid_stances)
-          ? `${C.yellow}⚠ ${m.unmatched_refs || 0} unmatched ref(s) · ${m.invalid_stances || 0} invalid stance(s)${C.reset}` : '';
+          ? `${C.green}완료${C.reset} · ${C.yellow}⚠ ${m.unmatched_refs || 0} unmatched ref(s) · ${m.invalid_stances || 0} invalid stance(s)${C.reset}` : (m.state === 'done' ? `${C.green}완료${C.reset}` : '대기 중');
       // Keep the full slot label in view when one provider fronts several models.
       // Showing only `codex` makes concurrent `codex:gpt-5.6-sol` / `codex:glm-5`
       // rows indistinguishable. padEnd is a minimum width and never truncates labels.
       const slotLabel = m.label || m.vendor;
-      console.log(`    ${glyph} ${provColor(m.vendor)}${slotLabel.padEnd(8)}${C.reset} ${el.padEnd(5)} ${hint}`);
+      console.log(`    ${glyph} ${provColor(m.vendor)}${slotLabel.padEnd(8)}${C.reset} ${m.state === 'done' || m.state === 'failed' ? hint + ' · ' + el : (m.state === 'running' ? '진행 중' : '대기 중') + ' · ' + el + ' · ' + hint}`);
       // Content lines (opt-in via --lines N / panel.watch_lines): what this agent's output
       // MEANS — findings/verdicts summarized, prompt echo dropped — not a raw JSON dump.
       // Only the gutter bar is dim; the content itself stays full-contrast.

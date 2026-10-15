@@ -104,6 +104,7 @@ x-mesh Toolkit (xm) — pick a tool by what you're doing ("쓸 때")
 
 Plan & build:
   /xm:build     PRD → tasks → DAG 실행·비용예측    쓸 때: 멀티스텝 기능을 계획·관리
+  /xm:batch     topic별 병렬 PR (plan→구현→merge)   쓸 때: 독립 기능 여러 개를 PR 여러 개로 한 번에
   /xm:op        17 전략 오케스트레이션              쓸 때: 한 문제를 여러 전략으로(refine/debate/tournament…)
   /xm:agent     fan-out · delegate · consensus      쓸 때: 에이전트 여러 개를 직접 오케스트레이션
   /xm:solver    decompose · iterate · constrain     쓸 때: 막힌 문제를 구조적으로 분해
@@ -115,6 +116,7 @@ Review & quality:
   /xm:plan      구현 계획 작성·검증                    쓸 때: lifecycle 없이 계획을 만들고 `.xm/plan/`에 저장
   /xm:probe     전제 검증 — 나쁜 아이디어 조기 사살   쓸 때: 만들기 전에 가정이 맞는지
   /xm:mutate    mutation testing — 기존 test 탐지력 확인 쓸 때: test 사각지대 후보를 찾기
+  /xm:gate      불변식 기반 게이트 생성·확장           쓸 때: 규칙을 검증하는 테스트와 변이 게이트를 만들기
 
 Knowledge & memory:
   /xm:recall    과거 산출물 인덱스 (review/op/plan…)  쓸 때: 지난 세션의 리뷰/op/plan을 찾기
@@ -123,6 +125,7 @@ Knowledge & memory:
 
 Writing & retro:
   /xm:humanize  AI 글투 제거 (EN+KO)                 쓸 때: AI스러운 텍스트를 자연스럽게
+  /xm:write     PR·issue·릴리스 문서 작성             쓸 때: diff 근거로 PR/issue 올리기
   /xm:humble    구조적 회고 — 실패 근본원인          쓸 때: 실패를 함께 돌아보고 배우기
 
 Ops:

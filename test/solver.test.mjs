@@ -82,7 +82,8 @@ describe('x-solver CLI contracts', () => {
       setupProblem(tmp, 'hi');
       const result = run(['strategy', 'set', 'direct'], { cwd: tmp });
       expect(result.exitCode).toBe(1);
-      expect(result.stderr).toContain('decompose|iterate|constrain|pipeline');
+      expect(result.stderr).toContain('decompose|iterate|constrain');
+      expect(result.stderr).not.toContain('pipeline');
     } finally {
       rmSync(tmp, { recursive: true, force: true });
     }
@@ -525,9 +526,11 @@ describe('x-solver reproduce gate', () => {
       if (p === phase) return;
     }
     // refine -> resolve now requires a hypothesis that survived an independent
-    // refuter, so a test that wants the resolve phase has to earn it.
-    step(tmp, ['hypotheses', 'add', 'the recorded cause']);
-    step(tmp, ['hypotheses', 'update', 'h1', '--status', 'confirmed']);
+    // refuter, with its evidence on file, so a test that wants the resolve phase has
+    // to earn it.
+    step(tmp, ['hypotheses', 'add', 'the recorded cause', '--check', 'rerun the repro']);
+    step(tmp, ['hypotheses', 'update', 'h1', '--status', 'confirmed',
+      '--evidence-for', 'bun test -> AssertionError x != y', '--source-kind', 'command']);
     step(tmp, ['hypotheses', 'update', 'h1', '--refutation', 'survived', '--refuted-by', 'refuter-1']);
     step(tmp, ['solve-advance', '--phase', 'resolve']);
   }
@@ -675,7 +678,7 @@ describe('x-solver refutation gate and iteration exits', () => {
     for (const p of ['diagnose', 'hypothesize', 'test', 'refine']) {
       run(['solve-advance', '--phase', p], { cwd: tmp });
     }
-    run(['hypotheses', 'add', 'cache is stale'], { cwd: tmp });
+    run(['hypotheses', 'add', 'cache is stale', '--check', 'rerun the repro'], { cwd: tmp });
     return problem;
   }
 
@@ -719,7 +722,8 @@ describe('x-solver refutation gate and iteration exits', () => {
     const tmp = mkdtempSync(join(tmpdir(), 'xs-refute-'));
     try {
       const problem = atRefine(tmp, 'survived');
-      run(['hypotheses', 'update', 'h1', '--status', 'confirmed'], { cwd: tmp });
+      run(['hypotheses', 'update', 'h1', '--status', 'confirmed',
+        '--evidence-for', 'cache.log: hit ratio 0% after deploy', '--source-kind', 'log'], { cwd: tmp });
       run(['hypotheses', 'update', 'h1', '--refutation', 'survived', '--refuted-by', 'refuter-1'], { cwd: tmp });
 
       expect(run(['solve-advance', '--phase', 'resolve'], { cwd: tmp }).exitCode).toBe(0);
@@ -831,17 +835,18 @@ describe('x-solver gate chain', () => {
     return tmp;
   }
 
-  function reproducedAtResolve(tmp) {
+  function reproducedAtResolve(tmp, opts = {}) {
     const problem = setupProblem(tmp, 'chain problem');
     run(['strategy', 'set', 'iterate'], { cwd: tmp });
     run(['repro', 'set', '--command', 'bun test', '--output', 'AssertionError x != y',
       '--exit-code', '1', '--failure-marker', 'AssertionError', '--status', 'reproduced'], { cwd: tmp });
     for (const p of ['diagnose', 'hypothesize', 'test', 'refine']) run(['solve-advance', '--phase', p], { cwd: tmp });
-    run(['hypotheses', 'add', 'stale cache'], { cwd: tmp });
-    run(['hypotheses', 'update', 'h1', '--status', 'confirmed'], { cwd: tmp });
+    run(['hypotheses', 'add', 'stale cache', '--check', 'rerun the repro'], { cwd: tmp });
+    run(['hypotheses', 'update', 'h1', '--status', 'confirmed',
+      '--evidence-for', 'bun test -> AssertionError only with warm cache', '--source-kind', 'command'], { cwd: tmp });
     run(['hypotheses', 'update', 'h1', '--refutation', 'survived', '--refuted-by', 'refuter-1'], { cwd: tmp });
     run(['solve-advance', '--phase', 'resolve'], { cwd: tmp });
-    run(['constraints', 'add', 'must build', '--type', 'hard'], { cwd: tmp });
+    if (!opts.noConstraint) run(['constraints', 'add', 'must build', '--type', 'hard'], { cwd: tmp });
     run(['candidates', 'add', 'the fix', '--source', 'executor'], { cwd: tmp });
     run(['candidates', 'select', 'cand-1'], { cwd: tmp });
     run(['candidates', 'score', 'cand-1', '--constraint', 'c1', '--score', '8'], { cwd: tmp });
@@ -882,7 +887,7 @@ describe('x-solver gate chain', () => {
     try {
       const problem = reproducedAtResolve(tmp);
       writeFileSync(join(tmp, 'app.js'), 'const x = 2;\n'); // a real edit to a tracked file
-      expect(run(['repro', 'verify', '--output', '12 pass, 0 fail', '--exit-code', '0'], { cwd: tmp }).exitCode).toBe(0);
+      expect(run(['repro', 'verify', '--output', '12 pass, 0 fail', '--exit-code', '0', '--regression-waiver', 'fixture: no test file exists here'], { cwd: tmp }).exitCode).toBe(0);
 
       const verified = run(['verify'], { cwd: tmp });
       expect(parseLastJSON(verified.stdout).status).toBe('passed');
@@ -1052,6 +1057,1288 @@ describe('x-solver gate chain', () => {
       const again = run(['close', '--problem', problem, '--abandon', '--summary', 'again'], { cwd: tmp });
       expect(again.exitCode).toBe(1);
       expect(again.stderr).toContain('already abandoned');
+    } finally {
+      rmSync(tmp, { recursive: true, force: true });
+    }
+  });
+});
+
+// 2026-10 audit: runs that did their job were being recorded as failures, two
+// mechanisms the docs rely on never received input, and one strategy could not be
+// driven at all. These pin each contradiction to the CLI behaviour that fixes it.
+describe('x-solver audit fixes', () => {
+  function gitRepo(prefix) {
+    const tmp = mkdtempSync(join(tmpdir(), prefix));
+    spawnSync('git', ['init', '-q'], { cwd: tmp });
+    spawnSync('git', ['config', 'user.email', 't@t'], { cwd: tmp });
+    spawnSync('git', ['config', 'user.name', 't'], { cwd: tmp });
+    writeFileSync(join(tmp, 'app.js'), 'const x = 1;\n');
+    spawnSync('git', ['add', '-A'], { cwd: tmp });
+    spawnSync('git', ['commit', '-qm', 'init'], { cwd: tmp });
+    return tmp;
+  }
+
+  function readState(tmp, problem) {
+    return JSON.parse(readFileSync(
+      join(tmp, '.xm', 'solver', 'problems', problem, 'phases', '03-solve', 'strategy-state.json'), 'utf8',
+    ));
+  }
+
+  function readManifest(tmp, problem) {
+    return JSON.parse(readFileSync(join(tmp, '.xm', 'solver', 'problems', problem, 'manifest.json'), 'utf8'));
+  }
+
+  function readSummary(tmp, problem) {
+    return JSON.parse(readFileSync(
+      join(tmp, '.xm', 'solver', 'problems', problem, 'phases', '05-close', 'summary.json'), 'utf8',
+    ));
+  }
+
+  // iterate up to and including a survived refutation, with evidence on file.
+  function survivedAtRefine(tmp, description = 'audit chain') {
+    const problem = setupProblem(tmp, description);
+    run(['strategy', 'set', 'iterate'], { cwd: tmp });
+    run(['repro', 'set', '--command', 'bun test', '--output', 'AssertionError x != y',
+      '--exit-code', '1', '--failure-marker', 'AssertionError', '--status', 'reproduced'], { cwd: tmp });
+    for (const p of ['diagnose', 'hypothesize']) run(['solve-advance', '--phase', p], { cwd: tmp });
+    run(['hypotheses', 'add', 'stale cache after deploy', '--check', 'rerun the repro'], { cwd: tmp });
+    run(['solve-advance', '--phase', 'test'], { cwd: tmp });
+    run(['hypotheses', 'update', 'h1', '--status', 'confirmed',
+      '--evidence-for', 'cache.log shows 0% hit ratio after deploy', '--source-kind', 'log'], { cwd: tmp });
+    run(['solve-advance', '--phase', 'refine'], { cwd: tmp });
+    run(['hypotheses', 'update', 'h1', '--refutation', 'survived', '--refuted-by', 'refuter-1'], { cwd: tmp });
+    return problem;
+  }
+
+  // ── verify: the regression proof is execution evidence ───────────────────
+
+  test('iterate: a proven regression with no hard constraint passes verify on the proof', () => {
+    const tmp = gitRepo('xs-audit-');
+    try {
+      const problem = survivedAtRefine(tmp);
+      expect(run(['solve-advance', '--phase', 'resolve'], { cwd: tmp }).exitCode).toBe(0);
+      writeFileSync(join(tmp, 'app.js'), 'const x = 2;\n');
+      expect(run(['repro', 'verify', '--output', '12 pass, 0 fail', '--exit-code', '0', '--regression-waiver', 'fixture: no test file exists here'], { cwd: tmp }).exitCode).toBe(0);
+      run(['candidates', 'add', 'the fix', '--source', 'executor'], { cwd: tmp });
+      run(['candidates', 'select', 'cand-1'], { cwd: tmp });
+
+      const verified = run(['verify'], { cwd: tmp });
+      const json = parseLastJSON(verified.stdout);
+      expect(json.status).toBe('passed');
+      expect(json.reason).toBe('regression_proof');
+      expect(verified.exitCode).toBe(0);
+
+      expect(run(['close', '--summary', 'fixed'], { cwd: tmp }).exitCode).toBe(0);
+      expect(readManifest(tmp, problem).state).toBe('solved');
+    } finally {
+      rmSync(tmp, { recursive: true, force: true });
+    }
+  });
+
+  test('iterate: a declared hard constraint still has to be scored, proof or not', () => {
+    const tmp = gitRepo('xs-audit-');
+    try {
+      survivedAtRefine(tmp);
+      run(['solve-advance', '--phase', 'resolve'], { cwd: tmp });
+      writeFileSync(join(tmp, 'app.js'), 'const x = 2;\n');
+      run(['repro', 'verify', '--output', '12 pass, 0 fail', '--exit-code', '0'], { cwd: tmp });
+      run(['constraints', 'add', 'must build', '--type', 'hard'], { cwd: tmp });
+      run(['candidates', 'add', 'the fix', '--source', 'executor'], { cwd: tmp });
+      run(['candidates', 'select', 'cand-1'], { cwd: tmp });
+
+      const json = parseLastJSON(run(['verify'], { cwd: tmp }).stdout);
+      expect(json.status).toBe('unverified');
+      expect(json.reason).toBe('unscored_hard_constraints');
+    } finally {
+      rmSync(tmp, { recursive: true, force: true });
+    }
+  });
+
+  test('non-iterate: no hard constraint is still unverified (the 2.3.0 gate stays)', () => {
+    const tmp = mkdtempSync(join(tmpdir(), 'xs-audit-'));
+    try {
+      setupProblem(tmp, 'choose between cache options');
+      run(['strategy', 'set', 'constrain'], { cwd: tmp });
+      run(['candidates', 'add', 'redis', '--source', 'agent-1'], { cwd: tmp });
+      run(['candidates', 'select', 'cand-1'], { cwd: tmp });
+      const json = parseLastJSON(run(['verify'], { cwd: tmp }).stdout);
+      expect(json.status).toBe('unverified');
+      expect(json.reason).toBe('no_hard_constraints');
+    } finally {
+      rmSync(tmp, { recursive: true, force: true });
+    }
+  });
+
+  // ── close: diagnosis-only and direct answers get honest terminal states ───
+
+  test('close --diagnosis-only records diagnosed with the surviving hypothesis', () => {
+    const tmp = mkdtempSync(join(tmpdir(), 'xs-audit-'));
+    try {
+      const problem = survivedAtRefine(tmp);
+      expect(run(['close', '--diagnosis-only'], { cwd: tmp }).exitCode).toBe(1);
+
+      const closed = run(['close', '--diagnosis-only', '--summary', 'cause confirmed, handed to triage'], { cwd: tmp });
+      expect(closed.exitCode).toBe(0);
+      expect(readManifest(tmp, problem).state).toBe('diagnosed');
+      const summary = readSummary(tmp, problem);
+      expect(summary.diagnosed).toBe(true);
+      expect(summary.diagnosis[0].id).toBe('h1');
+      expect(summary.diagnosis[0].evidence_for[0]).toContain('cache.log');
+      expect(summary.diagnosis[0].refuted_by).toBe('refuter-1');
+      const history = run(['history'], { cwd: tmp }).stdout;
+      expect(history).toContain(problem);
+      expect(history).toContain('Cause: h1 stale cache after deploy');
+    } finally {
+      rmSync(tmp, { recursive: true, force: true });
+    }
+  });
+
+  test('close --diagnosis-only refuses without a surviving hypothesis', () => {
+    const tmp = mkdtempSync(join(tmpdir(), 'xs-audit-'));
+    try {
+      const problem = setupProblem(tmp, 'no survivor');
+      run(['strategy', 'set', 'iterate'], { cwd: tmp });
+      run(['repro', 'set', '--command', 'bun test', '--output', 'AssertionError x != y',
+        '--exit-code', '1', '--failure-marker', 'AssertionError', '--status', 'reproduced'], { cwd: tmp });
+      for (const p of ['diagnose', 'hypothesize']) run(['solve-advance', '--phase', p], { cwd: tmp });
+      run(['hypotheses', 'add', 'stale cache', '--check', 'rerun the repro'], { cwd: tmp });
+
+      const result = run(['close', '--diagnosis-only', '--summary', 'nothing confirmed'], { cwd: tmp });
+      expect(result.exitCode).toBe(1);
+      expect(result.stderr).toContain('--abandon');
+      expect(readManifest(tmp, problem).state).toBe('active');
+    } finally {
+      rmSync(tmp, { recursive: true, force: true });
+    }
+  });
+
+  test('close --diagnosis-only refuses once a fix was applied and re-run', () => {
+    const tmp = gitRepo('xs-audit-');
+    try {
+      survivedAtRefine(tmp);
+      run(['solve-advance', '--phase', 'resolve'], { cwd: tmp });
+      writeFileSync(join(tmp, 'app.js'), 'const x = 2;\n');
+      run(['repro', 'verify', '--output', '12 pass, 0 fail', '--exit-code', '0'], { cwd: tmp });
+
+      const result = run(['close', '--diagnosis-only', '--summary', 'just the cause'], { cwd: tmp });
+      expect(result.exitCode).toBe(1);
+      expect(result.stderr).toContain('verify');
+    } finally {
+      rmSync(tmp, { recursive: true, force: true });
+    }
+  });
+
+  test('a direct problem closes as answered with its summary', () => {
+    const tmp = mkdtempSync(join(tmpdir(), 'xs-audit-'));
+    try {
+      const problem = setupProblem(tmp, 'hi');
+      expect(parseLastJSON(run(['classify'], { cwd: tmp }).stdout).recommended_strategy).toBe('direct');
+
+      expect(run(['close'], { cwd: tmp }).exitCode).toBe(1);
+      const closed = run(['close', '--summary', 'answered in chat: use the dispatcher'], { cwd: tmp });
+      expect(closed.exitCode).toBe(0);
+      expect(readManifest(tmp, problem).state).toBe('answered');
+      const summary = readSummary(tmp, problem);
+      expect(summary.answered).toBe(true);
+      expect(summary.solution).toContain('dispatcher');
+      expect(parseLastJSON(run(['next'], { cwd: tmp }).stdout).recommendation).toBe('init');
+    } finally {
+      rmSync(tmp, { recursive: true, force: true });
+    }
+  });
+
+  test('next tells a direct problem how to close instead of demanding verify', () => {
+    const tmp = mkdtempSync(join(tmpdir(), 'xs-audit-'));
+    try {
+      setupProblem(tmp, 'hi');
+      run(['classify'], { cwd: tmp });
+      const atClassify = parseLastJSON(run(['next'], { cwd: tmp }).stdout);
+      expect(atClassify.recommendation).toBe('direct');
+      expect(atClassify.message).toContain('close --summary');
+
+      run(['phase', 'set', 'close'], { cwd: tmp });
+      const atClose = parseLastJSON(run(['next'], { cwd: tmp }).stdout);
+      expect(atClose.recommendation).toBe('close');
+      expect(atClose.message).toContain('--summary');
+    } finally {
+      rmSync(tmp, { recursive: true, force: true });
+    }
+  });
+
+  // ── convergence actually receives the rounds it compares ─────────────────
+
+  test('repeating the same hypotheses across rounds triggers the convergence stop', () => {
+    const tmp = mkdtempSync(join(tmpdir(), 'xs-audit-'));
+    try {
+      const problem = setupProblem(tmp, 'loop that repeats itself');
+      run(['strategy', 'set', 'iterate'], { cwd: tmp });
+      run(['repro', 'set', '--command', 'bun test', '--output', 'AssertionError x != y',
+        '--exit-code', '1', '--failure-marker', 'AssertionError', '--status', 'reproduced'], { cwd: tmp });
+      run(['solve-advance', '--phase', 'diagnose'], { cwd: tmp });
+
+      const round = (text) => {
+        run(['solve-advance', '--phase', 'hypothesize'], { cwd: tmp });
+        run(['hypotheses', 'add', text, '--check', 'rerun the repro'], { cwd: tmp });
+        run(['solve-advance', '--phase', 'test'], { cwd: tmp });
+        run(['solve-advance', '--phase', 'refine'], { cwd: tmp });
+      };
+
+      round('the cache is stale after every deploy');
+      // retry 1: one round on file, nothing to compare against yet
+      expect(run(['solve-advance', '--phase', 'hypothesize'], { cwd: tmp }).exitCode).toBe(0);
+      expect(readState(tmp, problem).iteration_outputs[0].output).toContain('stale');
+      run(['hypotheses', 'add', 'the cache is stale after every deploy', '--check', 'rerun the repro'], { cwd: tmp });
+      for (const p of ['test', 'refine']) run(['solve-advance', '--phase', p], { cwd: tmp });
+
+      // retry 2: round 2 restated round 1 — the loop is stalling and the CLI says so
+      const stopped = run(['solve-advance', '--phase', 'hypothesize'], { cwd: tmp });
+      expect(stopped.exitCode).toBe(1);
+      expect(stopped.stderr).toContain('Early stop');
+      expect(readState(tmp, problem).stop_reason).toBeDefined();
+    } finally {
+      rmSync(tmp, { recursive: true, force: true });
+    }
+  });
+
+  test('genuinely new hypotheses each round do not trip the convergence stop', () => {
+    const tmp = mkdtempSync(join(tmpdir(), 'xs-audit-'));
+    try {
+      const problem = setupProblem(tmp, 'loop that moves');
+      run(['strategy', 'set', 'iterate'], { cwd: tmp });
+      run(['repro', 'set', '--command', 'bun test', '--output', 'AssertionError x != y',
+        '--exit-code', '1', '--failure-marker', 'AssertionError', '--status', 'reproduced'], { cwd: tmp });
+      run(['solve-advance', '--phase', 'diagnose'], { cwd: tmp });
+      run(['solve-advance', '--phase', 'hypothesize'], { cwd: tmp });
+      run(['hypotheses', 'add', 'the cache is stale after every deploy', '--check', 'rerun the repro'], { cwd: tmp });
+      for (const p of ['test', 'refine']) run(['solve-advance', '--phase', p], { cwd: tmp });
+      expect(run(['solve-advance', '--phase', 'hypothesize'], { cwd: tmp }).exitCode).toBe(0);
+      run(['hypotheses', 'add', 'nginx keepalive drops the second request', '--check', 'rerun the repro'], { cwd: tmp });
+      for (const p of ['test', 'refine']) run(['solve-advance', '--phase', p], { cwd: tmp });
+
+      expect(run(['solve-advance', '--phase', 'hypothesize'], { cwd: tmp }).exitCode).toBe(0);
+      expect(readState(tmp, problem).stop_reason).toBeUndefined();
+      expect(readState(tmp, problem).hypotheses.map((h) => h.iteration)).toEqual([0, 1]);
+    } finally {
+      rmSync(tmp, { recursive: true, force: true });
+    }
+  });
+
+  // ── hypotheses carry their evidence, and the gates read it ───────────────
+
+  test('hypotheses update rejects an unknown status and an unknown source kind', () => {
+    const tmp = mkdtempSync(join(tmpdir(), 'xs-audit-'));
+    try {
+      setupProblem(tmp, 'status guard');
+      run(['strategy', 'set', 'iterate'], { cwd: tmp });
+      run(['hypotheses', 'add', 'something', '--check', 'rerun the repro'], { cwd: tmp });
+
+      const bad = run(['hypotheses', 'update', 'h1', '--status', 'maybe'], { cwd: tmp });
+      expect(bad.exitCode).toBe(1);
+      expect(bad.stderr).toContain('pending, confirmed, refuted, inconclusive');
+
+      const badKind = run(['hypotheses', 'update', 'h1', '--evidence-for', 'x', '--source-kind', 'vibes'], { cwd: tmp });
+      expect(badKind.exitCode).toBe(1);
+      expect(badKind.stderr).toContain('code, log, command, metric, test');
+    } finally {
+      rmSync(tmp, { recursive: true, force: true });
+    }
+  });
+
+  test('a confirmed hypothesis without recorded evidence cannot leave the test phase', () => {
+    const tmp = mkdtempSync(join(tmpdir(), 'xs-audit-'));
+    try {
+      setupProblem(tmp, 'evidence gate');
+      run(['strategy', 'set', 'iterate'], { cwd: tmp });
+      run(['repro', 'set', '--command', 'bun test', '--output', 'AssertionError x != y',
+        '--exit-code', '1', '--failure-marker', 'AssertionError', '--status', 'reproduced'], { cwd: tmp });
+      for (const p of ['diagnose', 'hypothesize']) run(['solve-advance', '--phase', p], { cwd: tmp });
+      run(['hypotheses', 'add', 'stale cache', '--check', 'rerun the repro'], { cwd: tmp });
+      run(['solve-advance', '--phase', 'test'], { cwd: tmp });
+      run(['hypotheses', 'update', 'h1', '--status', 'confirmed'], { cwd: tmp });
+
+      const refused = run(['solve-advance', '--phase', 'refine'], { cwd: tmp });
+      expect(refused.exitCode).toBe(1);
+      expect(refused.stderr).toContain('--evidence-for');
+
+      run(['hypotheses', 'update', 'h1', '--evidence-for', 'cache.log: 0% hits', '--source-kind', 'log'], { cwd: tmp });
+      expect(run(['solve-advance', '--phase', 'refine'], { cwd: tmp }).exitCode).toBe(0);
+    } finally {
+      rmSync(tmp, { recursive: true, force: true });
+    }
+  });
+
+  test('a survived hypothesis without evidence cannot enter resolve', () => {
+    const tmp = mkdtempSync(join(tmpdir(), 'xs-audit-'));
+    try {
+      setupProblem(tmp, 'late confirm');
+      run(['strategy', 'set', 'iterate'], { cwd: tmp });
+      run(['repro', 'set', '--command', 'bun test', '--output', 'AssertionError x != y',
+        '--exit-code', '1', '--failure-marker', 'AssertionError', '--status', 'reproduced'], { cwd: tmp });
+      for (const p of ['diagnose', 'hypothesize', 'test', 'refine']) run(['solve-advance', '--phase', p], { cwd: tmp });
+      run(['hypotheses', 'add', 'stale cache', '--check', 'rerun the repro'], { cwd: tmp });
+      run(['hypotheses', 'update', 'h1', '--status', 'confirmed'], { cwd: tmp });
+      run(['hypotheses', 'update', 'h1', '--refutation', 'survived', '--refuted-by', 'refuter-1'], { cwd: tmp });
+
+      const refused = run(['solve-advance', '--phase', 'resolve'], { cwd: tmp });
+      expect(refused.exitCode).toBe(1);
+      expect(refused.stderr).toContain('evidence');
+      expect(refused.stderr).not.toContain('independent refuter');
+    } finally {
+      rmSync(tmp, { recursive: true, force: true });
+    }
+  });
+
+  // ── scope contract has a home ────────────────────────────────────────────
+
+  test('scope set persists the contract, solve exposes it, expand needs a justification', () => {
+    const tmp = mkdtempSync(join(tmpdir(), 'xs-audit-'));
+    try {
+      const problem = setupProblem(tmp, 'scope home');
+      expect(run(['scope', 'set', '--symptom', 'x', '--invariant', 'y'], { cwd: tmp }).exitCode).toBe(1);
+      run(['strategy', 'set', 'iterate'], { cwd: tmp });
+      run(['repro', 'set', '--command', 'bun test', '--output', 'AssertionError x != y',
+        '--exit-code', '1', '--failure-marker', 'AssertionError', '--status', 'reproduced'], { cwd: tmp });
+
+      expect(run(['scope', 'set', '--symptom', 'login fails'], { cwd: tmp }).exitCode).toBe(1);
+      const set = run(['scope', 'set', '--symptom', 'login fails after deploy',
+        '--invariant', 'session cookie survives a deploy', '--non-goals', 'rate limiting,ui copy',
+        '--files', 'src/auth.js,src/session.js', '--tests', 'test/auth.test.js'], { cwd: tmp });
+      expect(set.exitCode).toBe(0);
+
+      const scope = readState(tmp, problem).scope;
+      expect(scope.repro_command).toBe('bun test');
+      expect(scope.failure_marker).toBe('AssertionError');
+      expect(scope.files).toEqual(['src/auth.js', 'src/session.js']);
+      expect(scope.non_goals).toEqual(['rate limiting', 'ui copy']);
+
+      expect(parseLastJSON(run(['solve'], { cwd: tmp }).stdout).scope.invariant).toContain('session cookie');
+      expect(parseLastJSON(run(['scope', 'show'], { cwd: tmp }).stdout).scope.symptom).toContain('login');
+
+      expect(run(['scope', 'expand', '--files', 'src/cookie.js'], { cwd: tmp }).exitCode).toBe(1);
+      expect(run(['scope', 'expand', '--files', 'src/cookie.js',
+        '--justification', 'repro still fails: cookie parser is the second file on the path'], { cwd: tmp }).exitCode).toBe(0);
+      const expanded = readState(tmp, problem).scope;
+      expect(expanded.files).toContain('src/cookie.js');
+      expect(expanded.expansions).toHaveLength(1);
+    } finally {
+      rmSync(tmp, { recursive: true, force: true });
+    }
+  });
+
+  test('a scope recorded before repro set picks up the command and marker', () => {
+    const tmp = mkdtempSync(join(tmpdir(), 'xs-audit-'));
+    try {
+      const problem = setupProblem(tmp, 'scope first');
+      run(['strategy', 'set', 'iterate'], { cwd: tmp });
+      expect(run(['scope', 'set', '--symptom', 'login fails', '--invariant', 'session survives deploy'], { cwd: tmp }).exitCode).toBe(0);
+      expect(readState(tmp, problem).scope.repro_command).toBeNull();
+
+      run(['repro', 'set', '--command', 'bun test', '--output', 'AssertionError x != y',
+        '--exit-code', '1', '--failure-marker', 'AssertionError', '--status', 'reproduced'], { cwd: tmp });
+      const scope = parseLastJSON(run(['scope', 'show'], { cwd: tmp }).stdout).scope;
+      expect(scope.repro_command).toBe('bun test');
+      expect(scope.failure_marker).toBe('AssertionError');
+    } finally {
+      rmSync(tmp, { recursive: true, force: true });
+    }
+  });
+
+  // ── pipeline is gone; classify stops recommending a strategy that cannot run ─
+
+  test('strategy set pipeline is refused as removed', () => {
+    const tmp = mkdtempSync(join(tmpdir(), 'xs-audit-'));
+    try {
+      setupProblem(tmp, 'no pipeline');
+      const result = run(['strategy', 'set', 'pipeline'], { cwd: tmp });
+      expect(result.exitCode).toBe(1);
+      expect(result.stderr).toContain('removed');
+    } finally {
+      rmSync(tmp, { recursive: true, force: true });
+    }
+  });
+
+  test('a signal-free problem gets a low-confidence recommendation, never pipeline', () => {
+    const tmp = mkdtempSync(join(tmpdir(), 'xs-audit-'));
+    try {
+      setupProblem(tmp, 'the quarterly summary document needs a new section about onboarding and the team '
+        + 'wants the tone consistent across every chapter so readers can follow along without extra effort '
+        + 'from the start of the year to the end');
+      const json = parseLastJSON(run(['classify'], { cwd: tmp }).stdout);
+      expect(json.recommended_strategy).not.toBe('pipeline');
+      expect(['decompose', 'iterate', 'constrain']).toContain(json.recommended_strategy);
+      expect(json.confidence).toBeLessThan(0.7);
+      expect(json.reasoning).toContain('LLM fallback');
+      expect(json.alternative_strategies).not.toContain('pipeline');
+    } finally {
+      rmSync(tmp, { recursive: true, force: true });
+    }
+  });
+
+  test('a legacy pipeline problem is refused with the reset path, not a crash', () => {
+    const tmp = mkdtempSync(join(tmpdir(), 'xs-audit-'));
+    try {
+      const problem = setupProblem(tmp, 'legacy pipeline');
+      const manifestPath = join(tmp, '.xm', 'solver', 'problems', problem, 'manifest.json');
+      const manifest = JSON.parse(readFileSync(manifestPath, 'utf8'));
+      writeFileSync(manifestPath, JSON.stringify({ ...manifest, strategy: 'pipeline', current_phase: '03-solve' }));
+      writeStrategyState(tmp, problem, { strategy: 'pipeline', current_phase: 'route', phases_completed: ['classify'] });
+
+      for (const args of [['solve'], ['solve-advance', '--phase', 'meta-verify'], ['solve-status']]) {
+        const result = run(args, { cwd: tmp });
+        expect(result.exitCode).toBe(1);
+        expect(result.stderr).toContain('--reset');
+      }
+      expect(run(['strategy', 'set', 'iterate', '--reset'], { cwd: tmp }).exitCode).toBe(0);
+    } finally {
+      rmSync(tmp, { recursive: true, force: true });
+    }
+  });
+
+  // ── phase next/set cannot skip an unfinished solve ───────────────────────
+
+  test('phase next refuses to leave an unfinished solve without --force --reason', () => {
+    const tmp = mkdtempSync(join(tmpdir(), 'xs-audit-'));
+    try {
+      const problem = setupProblem(tmp, 'phase guard');
+      run(['strategy', 'set', 'iterate'], { cwd: tmp });
+
+      const refused = run(['phase', 'next'], { cwd: tmp });
+      expect(refused.exitCode).toBe(1);
+      expect(refused.stderr).toContain('reproduce');
+      expect(readManifest(tmp, problem).current_phase).toBe('03-solve');
+
+      expect(run(['phase', 'set', 'close'], { cwd: tmp }).exitCode).toBe(1);
+      expect(run(['phase', 'set', 'verify', '--force'], { cwd: tmp }).exitCode).toBe(1);
+
+      const forced = run(['phase', 'set', 'verify', '--force', '--reason', 'legacy run, solve state lost'], { cwd: tmp });
+      expect(forced.exitCode).toBe(0);
+      const manifest = readManifest(tmp, problem);
+      expect(manifest.current_phase).toBe('04-verify');
+      expect(manifest.phase_overrides[0].reason).toContain('legacy');
+    } finally {
+      rmSync(tmp, { recursive: true, force: true });
+    }
+  });
+
+  test('phase next moves on once the last solve phase is reached, and never blocks going back', () => {
+    const tmp = mkdtempSync(join(tmpdir(), 'xs-audit-'));
+    try {
+      setupProblem(tmp, 'choose between cache options');
+      run(['strategy', 'set', 'constrain'], { cwd: tmp });
+      for (const p of ['generate', 'evaluate', 'select']) run(['solve-advance', '--phase', p], { cwd: tmp });
+      expect(run(['phase', 'next'], { cwd: tmp }).exitCode).toBe(0);
+      expect(run(['phase', 'set', 'solve'], { cwd: tmp }).exitCode).toBe(0);
+    } finally {
+      rmSync(tmp, { recursive: true, force: true });
+    }
+  });
+
+  // ── solve JSON carries what the leader otherwise has to go and look up ──
+
+  test('solve JSON resolves cross_vendor from flag, then shared config, then false', () => {
+    const tmp = mkdtempSync(join(tmpdir(), 'xs-audit-'));
+    try {
+      setupProblem(tmp, 'choose between cache options');
+      run(['strategy', 'set', 'constrain'], { cwd: tmp });
+      expect(parseLastJSON(run(['solve'], { cwd: tmp }).stdout).cross_vendor).toEqual({ effective: false, source: 'default' });
+
+      mkdirSync(join(tmp, '.xm'), { recursive: true });
+      writeFileSync(join(tmp, '.xm', 'config.json'), JSON.stringify({ cross_vendor: { solver: true } }));
+      expect(parseLastJSON(run(['solve'], { cwd: tmp }).stdout).cross_vendor).toEqual({ effective: true, source: 'config:cross_vendor.solver' });
+      expect(parseLastJSON(run(['solve', '--no-cross-vendor'], { cwd: tmp }).stdout).cross_vendor.effective).toBe(false);
+
+      writeFileSync(join(tmp, '.xm', 'config.json'), JSON.stringify({ cross_vendor: { default: true } }));
+      expect(parseLastJSON(run(['solve'], { cwd: tmp }).stdout).cross_vendor.source).toBe('config:cross_vendor.default');
+      writeFileSync(join(tmp, '.xm', 'config.json'), JSON.stringify({}));
+      expect(parseLastJSON(run(['solve', '--cross-vendor'], { cwd: tmp }).stdout).cross_vendor).toEqual({ effective: true, source: 'flag' });
+    } finally {
+      rmSync(tmp, { recursive: true, force: true });
+    }
+  });
+
+  test('setup does not pin parallel_agents, so the shared agent_max_count applies', () => {
+    const tmp = mkdtempSync(join(tmpdir(), 'xs-audit-'));
+    try {
+      const defaults = JSON.parse(readFileSync(join(__dirname, '..', 'x-solver', 'lib', 'default-config.json'), 'utf8'));
+      expect(defaults.solving.parallel_agents).toBeUndefined();
+
+      const setup = spawnSync('node', [join(__dirname, '..', 'x-solver', 'scripts', 'setup.mjs')], { cwd: tmp, encoding: 'utf8' });
+      expect(setup.status).toBe(0);
+      const written = JSON.parse(readFileSync(join(tmp, '.xm', 'solver', 'config.json'), 'utf8'));
+      expect(written.solving.parallel_agents).toBeUndefined();
+
+      writeFileSync(join(tmp, '.xm', 'config.json'), JSON.stringify({ agent_max_count: 9 }));
+      setupProblem(tmp, 'choose between cache options');
+      run(['strategy', 'set', 'constrain'], { cwd: tmp });
+      expect(parseLastJSON(run(['solve'], { cwd: tmp }).stdout).agent_count).toBe(9);
+    } finally {
+      rmSync(tmp, { recursive: true, force: true });
+    }
+  });
+
+  // ── PR #49 review findings ───────────────────────────────────────────────
+
+  function legacyPipeline(tmp) {
+    const problem = setupProblem(tmp, "legacy pipeline problem");
+    const manifestPath = join(tmp, ".xm", "solver", "problems", problem, "manifest.json");
+    const manifest = JSON.parse(readFileSync(manifestPath, "utf8"));
+    writeFileSync(manifestPath, JSON.stringify({ ...manifest, strategy: "pipeline", current_phase: "03-solve" }));
+    writeStrategyState(tmp, problem, { strategy: "pipeline", current_phase: "route", phases_completed: ["classify"] });
+    return problem;
+  }
+
+  test("review F1/F2: strategy show on a legacy pipeline problem refuses with the reset path", () => {
+    const tmp = mkdtempSync(join(tmpdir(), "xs-review-"));
+    try {
+      legacyPipeline(tmp);
+      for (const args of [["strategy", "show"], ["strategy"]]) {
+        const result = run(args, { cwd: tmp });
+        expect(result.exitCode).toBe(1);
+        expect(result.stderr).not.toContain("TypeError");
+        expect(result.stderr).toContain("--reset");
+      }
+    } finally {
+      rmSync(tmp, { recursive: true, force: true });
+    }
+  });
+
+  test("review F9: phase next on a legacy pipeline problem names the reset path, not a missing strategy", () => {
+    const tmp = mkdtempSync(join(tmpdir(), "xs-review-"));
+    try {
+      legacyPipeline(tmp);
+      const result = run(["phase", "next"], { cwd: tmp });
+      expect(result.exitCode).toBe(1);
+      expect(result.stderr).toContain("--reset");
+      expect(result.stderr).not.toContain("no strategy has been set");
+    } finally {
+      rmSync(tmp, { recursive: true, force: true });
+    }
+  });
+
+  test("review F3/F4: close --diagnosis-only needs recorded evidence, a named refuter, and the refine phase", () => {
+    const tmp = mkdtempSync(join(tmpdir(), "xs-review-"));
+    try {
+      const problem = setupProblem(tmp, "diagnosis shortcut");
+      run(["strategy", "set", "iterate"], { cwd: tmp });
+      run(["repro", "set", "--command", "bun test", "--output", "AssertionError x != y",
+        "--exit-code", "1", "--failure-marker", "AssertionError", "--status", "reproduced"], { cwd: tmp });
+      for (const p of ["diagnose", "hypothesize"]) run(["solve-advance", "--phase", p], { cwd: tmp });
+      run(["hypotheses", "add", "stale cache"], { cwd: tmp });
+      run(["hypotheses", "update", "h1", "--status", "confirmed", "--refutation", "survived"], { cwd: tmp });
+      const close = () => run(["close", "--diagnosis-only", "--summary", "cause handed to triage"], { cwd: tmp });
+
+      const noEvidence = close();
+      expect(noEvidence.exitCode).toBe(1);
+      expect(noEvidence.stderr).toContain("--evidence-for");
+
+      run(["hypotheses", "update", "h1", "--evidence-for", "cache.log: 0% hits", "--source-kind", "log"], { cwd: tmp });
+      const noRefuter = close();
+      expect(noRefuter.exitCode).toBe(1);
+      expect(noRefuter.stderr).toContain("--refuted-by");
+
+      run(["hypotheses", "update", "h1", "--refutation", "survived", "--refuted-by", "refuter-1"], { cwd: tmp });
+      const wrongPhase = close();
+      expect(wrongPhase.exitCode).toBe(1);
+      expect(wrongPhase.stderr).toContain("refine");
+      expect(readManifest(tmp, problem).state).toBe("active");
+
+      for (const p of ["test", "refine"]) expect(run(["solve-advance", "--phase", p], { cwd: tmp }).exitCode).toBe(0);
+      expect(close().exitCode).toBe(0);
+      expect(readManifest(tmp, problem).state).toBe("diagnosed");
+    } finally {
+      rmSync(tmp, { recursive: true, force: true });
+    }
+  });
+
+  test("review F5: classify --select direct lets a low-confidence problem close as answered", () => {
+    const tmp = mkdtempSync(join(tmpdir(), "xs-review-"));
+    try {
+      const problem = setupProblem(tmp, "the quarterly summary document needs a new section about onboarding and the team "
+        + "wants the tone consistent across every chapter so readers can follow along without extra effort");
+      expect(parseLastJSON(run(["classify"], { cwd: tmp }).stdout).recommended_strategy).not.toBe("direct");
+      expect(run(["close", "--summary", "answered in chat"], { cwd: tmp }).exitCode).toBe(2);
+
+      const solveChoice = run(["classify", "--select", "iterate"], { cwd: tmp });
+      expect(solveChoice.exitCode).toBe(1);
+      expect(solveChoice.stderr).toContain("strategy set");
+
+      expect(run(["classify", "--select", "direct", "--reason", "user chose to answer in chat"], { cwd: tmp }).exitCode).toBe(0);
+      expect(parseLastJSON(run(["next"], { cwd: tmp }).stdout).recommendation).toBe("direct");
+      expect(run(["close", "--summary", "answered in chat: use the dispatcher"], { cwd: tmp }).exitCode).toBe(0);
+      expect(readManifest(tmp, problem).state).toBe("answered");
+    } finally {
+      rmSync(tmp, { recursive: true, force: true });
+    }
+  });
+
+  test("review F7: an evidence flag whose value starts with -- is refused, not dropped", () => {
+    const tmp = mkdtempSync(join(tmpdir(), "xs-review-"));
+    try {
+      const problem = setupProblem(tmp, "dash evidence");
+      run(["strategy", "set", "iterate"], { cwd: tmp });
+      run(["hypotheses", "add", "a cause"], { cwd: tmp });
+
+      const result = run(["hypotheses", "update", "h1", "--status", "confirmed", "--evidence-for", "--- FAIL: TestX"], { cwd: tmp });
+      expect(result.exitCode).toBe(1);
+      expect(result.stderr).toContain("--evidence-for needs a value");
+      const h1 = readState(tmp, problem).hypotheses[0];
+      expect(h1.evidence_for).toEqual([]);
+      expect(h1.status).toBe("pending");
+    } finally {
+      rmSync(tmp, { recursive: true, force: true });
+    }
+  });
+
+  test("review F8: scope set refuses to overwrite an existing contract without --reset", () => {
+    const tmp = mkdtempSync(join(tmpdir(), "xs-review-"));
+    try {
+      const problem = setupProblem(tmp, "scope overwrite");
+      run(["strategy", "set", "iterate"], { cwd: tmp });
+      run(["scope", "set", "--symptom", "login fails", "--invariant", "session survives deploy", "--files", "src/a.js"], { cwd: tmp });
+
+      const again = run(["scope", "set", "--symptom", "login fails", "--invariant", "everything", "--files", "src/a.js,src/b.js"], { cwd: tmp });
+      expect(again.exitCode).toBe(1);
+      expect(again.stderr).toContain("scope expand");
+      expect(readState(tmp, problem).scope.files).toEqual(["src/a.js"]);
+
+      expect(run(["scope", "set", "--symptom", "login fails", "--invariant", "token refresh", "--files", "src/c.js", "--reset"], { cwd: tmp }).exitCode).toBe(0);
+      expect(readState(tmp, problem).scope.files).toEqual(["src/c.js"]);
+    } finally {
+      rmSync(tmp, { recursive: true, force: true });
+    }
+  });
+
+  // ── PR #49 delta review follow-ups ───────────────────────────────────────
+
+  test("follow-up: overriding a non-direct recommendation needs --reason, and close records it", () => {
+    const tmp = mkdtempSync(join(tmpdir(), "xs-followup-"));
+    try {
+      const problem = setupProblem(tmp, "the quarterly summary document needs a new section about onboarding and the team "
+        + "wants the tone consistent across every chapter so readers can follow along without extra effort");
+      const recommended = parseLastJSON(run(["classify"], { cwd: tmp }).stdout).recommended_strategy;
+      expect(recommended).not.toBe("direct");
+
+      const bare = run(["classify", "--select", "direct"], { cwd: tmp });
+      expect(bare.exitCode).toBe(1);
+      expect(bare.stderr).toContain("--reason");
+      expect(run(["classify", "--select", "direct", "--reason"], { cwd: tmp }).exitCode).toBe(1);
+
+      expect(run(["classify", "--select", "direct", "--reason", "LLM fallback: a wording question with no code path"], { cwd: tmp }).exitCode).toBe(0);
+      expect(run(["close", "--summary", "answered in chat"], { cwd: tmp }).exitCode).toBe(0);
+      const summary = readSummary(tmp, problem);
+      expect(summary.recommended_strategy).toBe(recommended);
+      expect(summary.selected_strategy).toBe("direct");
+      expect(summary.selected_reason).toContain("LLM fallback");
+    } finally {
+      rmSync(tmp, { recursive: true, force: true });
+    }
+  });
+
+  test("follow-up: confirming a rule-based direct needs no reason", () => {
+    const tmp = mkdtempSync(join(tmpdir(), "xs-followup-"));
+    try {
+      setupProblem(tmp, "hi");
+      expect(parseLastJSON(run(["classify"], { cwd: tmp }).stdout).recommended_strategy).toBe("direct");
+      expect(run(["classify", "--select", "direct"], { cwd: tmp }).exitCode).toBe(0);
+    } finally {
+      rmSync(tmp, { recursive: true, force: true });
+    }
+  });
+
+  test("follow-up: --refuted-by without a name is refused, so the refuter gate cannot pass on true", () => {
+    const tmp = mkdtempSync(join(tmpdir(), "xs-followup-"));
+    try {
+      const problem = setupProblem(tmp, "nameless refuter");
+      run(["strategy", "set", "iterate"], { cwd: tmp });
+      run(["hypotheses", "add", "stale cache"], { cwd: tmp });
+
+      for (const args of [
+        ["hypotheses", "update", "h1", "--refutation", "survived", "--refuted-by"],
+        ["hypotheses", "update", "h1", "--refutation", "survived", "--refuted-by", "--source-kind", "log"],
+      ]) {
+        const result = run(args, { cwd: tmp });
+        expect(result.exitCode).toBe(1);
+        expect(result.stderr).toContain("--refuted-by needs a value");
+        // The hint has to ask for a name. The evidence-flag hint ("output: --- FAIL ...")
+        // would put pasted output where the refuter belongs, and the gate reads only truthiness.
+        expect(result.stderr).toContain("agent name");
+        expect(result.stderr).not.toContain("output: --- FAIL");
+      }
+      const h1 = readState(tmp, problem).hypotheses[0];
+      expect(h1.refuted_by).toBeUndefined();
+      expect(h1.refutation).toBeUndefined();
+    } finally {
+      rmSync(tmp, { recursive: true, force: true });
+    }
+  });
+});
+
+describe('x-solver hypothesis plan', () => {
+  function atHypothesize(tmp) {
+    const problem = setupProblem(tmp, 'hypothesis plan');
+    run(['strategy', 'set', 'iterate'], { cwd: tmp });
+    run(['repro', 'set', '--command', 'bun test', '--output', 'AssertionError x != y',
+      '--exit-code', '1', '--failure-marker', 'AssertionError', '--status', 'reproduced'], { cwd: tmp });
+    for (const p of ['diagnose', 'hypothesize']) run(['solve-advance', '--phase', p], { cwd: tmp });
+    return problem;
+  }
+
+  function hypotheses(tmp, problem) {
+    return JSON.parse(readFileSync(
+      join(tmp, '.xm', 'solver', 'problems', problem, 'phases', '03-solve', 'strategy-state.json'), 'utf8',
+    )).hypotheses;
+  }
+
+  test('add stores the likelihood and the check', () => {
+    const tmp = mkdtempSync(join(tmpdir(), 'xs-hplan-'));
+    try {
+      const problem = atHypothesize(tmp);
+      const r = run(['hypotheses', 'add', 'stale cache', '--likelihood', 'high', '--check', 'grep miss cache.log'], { cwd: tmp });
+      expect(r.exitCode).toBe(0);
+      const [h] = hypotheses(tmp, problem);
+      expect(h.likelihood).toBe('high');
+      expect(h.check).toBe('grep miss cache.log');
+    } finally {
+      rmSync(tmp, { recursive: true, force: true });
+    }
+  });
+
+  test('add refuses an unknown likelihood and a check without a value', () => {
+    const tmp = mkdtempSync(join(tmpdir(), 'xs-hplan-'));
+    try {
+      const problem = atHypothesize(tmp);
+      const bad = run(['hypotheses', 'add', 'stale cache', '--likelihood', 'certain', '--check', 'x'], { cwd: tmp });
+      expect(bad.exitCode).not.toBe(0);
+      expect(bad.stderr).toContain('Unknown --likelihood "certain"');
+      // A "--"-prefixed value parses as the next flag and leaves --check `true`.
+      const empty = run(['hypotheses', 'add', 'stale cache', '--check', '--likelihood', 'low'], { cwd: tmp });
+      expect(empty.exitCode).not.toBe(0);
+      expect(empty.stderr).toContain('--check needs a value');
+      expect(hypotheses(tmp, problem) ?? []).toEqual([]);
+    } finally {
+      rmSync(tmp, { recursive: true, force: true });
+    }
+  });
+
+  test('test phase is refused while a pending hypothesis has no check', () => {
+    const tmp = mkdtempSync(join(tmpdir(), 'xs-hplan-'));
+    try {
+      atHypothesize(tmp);
+      run(['hypotheses', 'add', 'stale cache', '--check', 'rerun the repro'], { cwd: tmp });
+      run(['hypotheses', 'add', 'nginx keepalive drops the second request'], { cwd: tmp });
+      const refused = run(['solve-advance', '--phase', 'test'], { cwd: tmp });
+      expect(refused.exitCode).not.toBe(0);
+      expect(refused.stderr).toContain('No verification check on file: h2.');
+
+      expect(run(['hypotheses', 'update', 'h2', '--check', 'curl twice with keepalive'], { cwd: tmp }).exitCode).toBe(0);
+      expect(run(['solve-advance', '--phase', 'test'], { cwd: tmp }).exitCode).toBe(0);
+    } finally {
+      rmSync(tmp, { recursive: true, force: true });
+    }
+  });
+
+  test('a hypothesis that is no longer pending does not need a check', () => {
+    const tmp = mkdtempSync(join(tmpdir(), 'xs-hplan-'));
+    try {
+      atHypothesize(tmp);
+      run(['hypotheses', 'add', 'stale cache', '--check', 'rerun the repro'], { cwd: tmp });
+      run(['hypotheses', 'add', 'already ruled out'], { cwd: tmp });
+      run(['hypotheses', 'update', 'h2', '--status', 'refuted'], { cwd: tmp });
+      expect(run(['solve-advance', '--phase', 'test'], { cwd: tmp }).exitCode).toBe(0);
+    } finally {
+      rmSync(tmp, { recursive: true, force: true });
+    }
+  });
+
+  test('list shows the most likely hypothesis first', () => {
+    const tmp = mkdtempSync(join(tmpdir(), 'xs-hplan-'));
+    try {
+      atHypothesize(tmp);
+      run(['hypotheses', 'add', 'unlikely race', '--likelihood', 'low', '--check', 'a'], { cwd: tmp });
+      run(['hypotheses', 'add', 'no likelihood given', '--check', 'b'], { cwd: tmp });
+      run(['hypotheses', 'add', 'stale cache', '--likelihood', 'high', '--check', 'c'], { cwd: tmp });
+      const out = run(['hypotheses', 'list'], { cwd: tmp }).stdout;
+      const order = ['stale cache', 'unlikely race', 'no likelihood given'].map((s) => out.indexOf(s));
+      expect(order.every((i) => i >= 0)).toBe(true);
+      expect([...order].sort((a, b) => a - b)).toEqual(order);
+      expect(out).toContain('check: c');
+    } finally {
+      rmSync(tmp, { recursive: true, force: true });
+    }
+  });
+});
+
+describe('x-solver repro baseline', () => {
+  function gitRepo() {
+    const tmp = mkdtempSync(join(tmpdir(), 'xs-baseline-'));
+    spawnSync('git', ['init', '-q'], { cwd: tmp });
+    spawnSync('git', ['config', 'user.email', 't@t'], { cwd: tmp });
+    spawnSync('git', ['config', 'user.name', 't'], { cwd: tmp });
+    writeFileSync(join(tmp, 'app.js'), 'const x = 1;\n');
+    spawnSync('git', ['add', '-A'], { cwd: tmp });
+    spawnSync('git', ['commit', '-qm', 'init'], { cwd: tmp });
+    return tmp;
+  }
+
+  function reproSet(tmp) {
+    const problem = setupProblem(tmp, 'baseline');
+    run(['strategy', 'set', 'iterate'], { cwd: tmp });
+    const r = run(['repro', 'set', '--command', 'node app.js', '--output', 'AssertionError x != y',
+      '--exit-code', '1', '--failure-marker', 'AssertionError', '--status', 'reproduced'], { cwd: tmp });
+    const solve = join(tmp, '.xm', 'solver', 'problems', problem, 'phases', '03-solve');
+    return { r, solve, baseline: JSON.parse(readFileSync(join(solve, 'strategy-state.json'), 'utf8')).repro.baseline };
+  }
+
+  const headOf = (tmp) => spawnSync('git', ['rev-parse', 'HEAD'], { cwd: tmp, encoding: 'utf8' }).stdout.trim();
+
+  test('a clean tree records HEAD and no patch, and ignores .xm', () => {
+    const tmp = gitRepo();
+    try {
+      const { r, baseline } = reproSet(tmp);
+      expect(r.exitCode).toBe(0);
+      expect(baseline.head).toBe(headOf(tmp));
+      expect(baseline.patch_path).toBeNull();
+      expect(baseline.untracked).toEqual([]);
+    } finally {
+      rmSync(tmp, { recursive: true, force: true });
+    }
+  });
+
+  test('a dirty tree records the uncommitted patch and the untracked files', () => {
+    const tmp = gitRepo();
+    try {
+      writeFileSync(join(tmp, 'app.js'), 'const x = 2;\n');
+      writeFileSync(join(tmp, 'new.txt'), 'evidence\n');
+      const { solve, baseline } = reproSet(tmp);
+      expect(baseline.head).toBe(headOf(tmp));
+      expect(baseline.patch_path).toBe('repro/baseline.patch');
+      expect(baseline.untracked).toEqual(['new.txt']);
+
+      // The patch rebuilds the failing state from HEAD: revert app.js, then re-apply.
+      const patchFile = join(solve, baseline.patch_path);
+      spawnSync('git', ['checkout', '--', 'app.js'], { cwd: tmp });
+      expect(spawnSync('git', ['apply', patchFile], { cwd: tmp }).status).toBe(0);
+      expect(readFileSync(join(tmp, 'app.js'), 'utf8')).toBe('const x = 2;\n');
+    } finally {
+      rmSync(tmp, { recursive: true, force: true });
+    }
+  });
+
+  test('outside git the repro is still recorded and the missing baseline is reported', () => {
+    const tmp = mkdtempSync(join(tmpdir(), 'xs-baseline-nogit-'));
+    try {
+      const { r, baseline } = reproSet(tmp);
+      expect(r.exitCode).toBe(0);
+      expect(baseline).toBeNull();
+      expect(r.stderr).toContain('No baseline recorded');
+    } finally {
+      rmSync(tmp, { recursive: true, force: true });
+    }
+  });
+});
+
+describe('x-solver regression test on the baseline', () => {
+  const BUGGY = 'module.exports = (a, b) => a - b;\n';
+  const FIXED = 'module.exports = (a, b) => a + b;\n';
+  const CHECK = "const sum = require('./sum.js');\nif (sum(2, 3) !== 5) { console.error('REGRESSION: sum(2, 3) = ' + sum(2, 3)); process.exit(1); }\nconsole.log('ok');\n";
+
+  function gitRepo(committedSum) {
+    const tmp = mkdtempSync(join(tmpdir(), 'xs-regcmd-'));
+    spawnSync('git', ['init', '-q'], { cwd: tmp });
+    spawnSync('git', ['config', 'user.email', 't@t'], { cwd: tmp });
+    spawnSync('git', ['config', 'user.name', 't'], { cwd: tmp });
+    writeFileSync(join(tmp, 'sum.js'), committedSum);
+    spawnSync('git', ['add', '-A'], { cwd: tmp });
+    spawnSync('git', ['commit', '-qm', 'init'], { cwd: tmp });
+    return tmp;
+  }
+
+  // reproduce (with whatever sum.js is on disk now) up to the resolve phase.
+  function atResolve(tmp) {
+    const problem = setupProblem(tmp, 'sum is wrong');
+    run(['strategy', 'set', 'iterate'], { cwd: tmp });
+    run(['repro', 'set', '--command', 'node check.js', '--output', 'REGRESSION: sum(2, 3) = -1',
+      '--exit-code', '1', '--failure-marker', 'REGRESSION', '--status', 'reproduced'], { cwd: tmp });
+    for (const p of ['diagnose', 'hypothesize']) run(['solve-advance', '--phase', p], { cwd: tmp });
+    run(['hypotheses', 'add', 'sum subtracts', '--check', 'node check.js'], { cwd: tmp });
+    run(['solve-advance', '--phase', 'test'], { cwd: tmp });
+    run(['hypotheses', 'update', 'h1', '--status', 'confirmed', '--evidence-for', 'sum.js uses a - b', '--source-kind', 'code'], { cwd: tmp });
+    run(['solve-advance', '--phase', 'refine'], { cwd: tmp });
+    run(['hypotheses', 'update', 'h1', '--refutation', 'survived', '--refuted-by', 'refuter-1'], { cwd: tmp });
+    run(['solve-advance', '--phase', 'resolve'], { cwd: tmp });
+    return problem;
+  }
+
+  function verify(tmp, extra) {
+    return run(['repro', 'verify', '--output', 'ok', '--exit-code', '0', ...extra], { cwd: tmp });
+  }
+
+  const REG = ['--regression-test', 'check.js', '--regression-cmd', 'node check.js', '--regression-marker', 'REGRESSION'];
+
+  function afterRecord(tmp, problem) {
+    return JSON.parse(readFileSync(
+      join(tmp, '.xm', 'solver', 'problems', problem, 'phases', '03-solve', 'strategy-state.json'), 'utf8',
+    )).repro.after;
+  }
+
+  const worktrees = (tmp) => spawnSync('git', ['worktree', 'list'], { cwd: tmp, encoding: 'utf8' }).stdout.trim().split('\n').length;
+
+  test('a test that fails on the baseline and passes now is pinned', () => {
+    const tmp = gitRepo(BUGGY);
+    try {
+      const problem = atResolve(tmp);
+      writeFileSync(join(tmp, 'sum.js'), FIXED);
+      writeFileSync(join(tmp, 'check.js'), CHECK);
+      const r = verify(tmp, REG);
+      expect(r.exitCode).toBe(0);
+      expect(r.stdout).toContain('Regression test pinned');
+      const { regression } = afterRecord(tmp, problem);
+      expect(regression.fails_before).toBe(true);
+      expect(regression.passes_after).toBe(true);
+      expect(regression.before_exit).toBe(1);
+      expect(worktrees(tmp)).toBe(1);
+    } finally {
+      rmSync(tmp, { recursive: true, force: true });
+    }
+  });
+
+  test('a bug introduced by an uncommitted edit is rebuilt from the recorded patch', () => {
+    const tmp = gitRepo(FIXED);
+    try {
+      writeFileSync(join(tmp, 'sum.js'), BUGGY);
+      const problem = atResolve(tmp);
+      writeFileSync(join(tmp, 'sum.js'), FIXED);
+      writeFileSync(join(tmp, 'check.js'), CHECK);
+      const r = verify(tmp, REG);
+      expect(r.exitCode).toBe(0);
+      expect(afterRecord(tmp, problem).regression.baseline_patch).toBe('repro/baseline.patch');
+    } finally {
+      rmSync(tmp, { recursive: true, force: true });
+    }
+  });
+
+  test('a test that passes on the baseline is refused and nothing is recorded', () => {
+    const tmp = gitRepo(BUGGY);
+    try {
+      const problem = atResolve(tmp);
+      writeFileSync(join(tmp, 'sum.js'), FIXED);
+      writeFileSync(join(tmp, 'unrelated.js'), "console.log('fine');\n");
+      const r = verify(tmp, ['--regression-test', 'unrelated.js', '--regression-cmd', 'node unrelated.js', '--regression-marker', 'REGRESSION']);
+      expect(r.exitCode).not.toBe(0);
+      expect(r.stderr).toContain('does not fail on the code the bug was recorded on (it passed)');
+      expect(afterRecord(tmp, problem)).toBeNull();
+      expect(worktrees(tmp)).toBe(1);
+    } finally {
+      rmSync(tmp, { recursive: true, force: true });
+    }
+  });
+
+  test('a test that fails on the baseline for another reason is refused', () => {
+    const tmp = gitRepo(BUGGY);
+    try {
+      atResolve(tmp);
+      writeFileSync(join(tmp, 'sum.js'), FIXED);
+      writeFileSync(join(tmp, 'broken.js'), "require('./missing-helper.js');\n");
+      const r = verify(tmp, ['--regression-test', 'broken.js', '--regression-cmd', 'node broken.js', '--regression-marker', 'REGRESSION']);
+      expect(r.exitCode).not.toBe(0);
+      expect(r.stderr).toContain('without the marker');
+      expect(r.stderr).toContain('--regression-setup');
+    } finally {
+      rmSync(tmp, { recursive: true, force: true });
+    }
+  });
+
+  test('a test that still fails now is refused', () => {
+    const tmp = gitRepo(BUGGY);
+    try {
+      atResolve(tmp);
+      writeFileSync(join(tmp, 'sum.js'), `// touched, not fixed\n${BUGGY}`);
+      writeFileSync(join(tmp, 'check.js'), CHECK);
+      const r = verify(tmp, REG);
+      expect(r.exitCode).not.toBe(0);
+      expect(r.stderr).toContain('does not pass now (the marker is still in its output)');
+    } finally {
+      rmSync(tmp, { recursive: true, force: true });
+    }
+  });
+
+  test('--regression-cmd without a marker is refused before anything runs', () => {
+    const tmp = gitRepo(BUGGY);
+    try {
+      atResolve(tmp);
+      writeFileSync(join(tmp, 'sum.js'), FIXED);
+      writeFileSync(join(tmp, 'check.js'), CHECK);
+      const r = verify(tmp, ['--regression-test', 'check.js', '--regression-cmd', 'node check.js']);
+      expect(r.exitCode).not.toBe(0);
+      expect(r.stderr).toContain('--regression-cmd needs --regression-marker');
+    } finally {
+      rmSync(tmp, { recursive: true, force: true });
+    }
+  });
+});
+
+describe('x-solver workaround signals at repro verify', () => {
+  const BUGGY = 'module.exports = (a, b) => a - b;\n';
+  const FIXED = 'module.exports = (a, b) => a + b;\n';
+
+  function gitRepo(committedSum) {
+    const tmp = mkdtempSync(join(tmpdir(), 'xs-wsig-'));
+    spawnSync('git', ['init', '-q'], { cwd: tmp });
+    spawnSync('git', ['config', 'user.email', 't@t'], { cwd: tmp });
+    spawnSync('git', ['config', 'user.name', 't'], { cwd: tmp });
+    writeFileSync(join(tmp, 'sum.js'), committedSum);
+    spawnSync('git', ['add', '-A'], { cwd: tmp });
+    spawnSync('git', ['commit', '-qm', 'init'], { cwd: tmp });
+    return tmp;
+  }
+
+  function atResolve(tmp) {
+    const problem = setupProblem(tmp, 'sum is wrong');
+    run(['strategy', 'set', 'iterate'], { cwd: tmp });
+    run(['repro', 'set', '--command', 'node check.js', '--output', 'REGRESSION: sum(2, 3) = -1',
+      '--exit-code', '1', '--failure-marker', 'REGRESSION', '--status', 'reproduced'], { cwd: tmp });
+    for (const p of ['diagnose', 'hypothesize']) run(['solve-advance', '--phase', p], { cwd: tmp });
+    run(['hypotheses', 'add', 'sum subtracts', '--check', 'node check.js'], { cwd: tmp });
+    run(['solve-advance', '--phase', 'test'], { cwd: tmp });
+    run(['hypotheses', 'update', 'h1', '--status', 'confirmed', '--evidence-for', 'sum.js uses a - b', '--source-kind', 'code'], { cwd: tmp });
+    run(['solve-advance', '--phase', 'refine'], { cwd: tmp });
+    run(['hypotheses', 'update', 'h1', '--refutation', 'survived', '--refuted-by', 'refuter-1'], { cwd: tmp });
+    run(['solve-advance', '--phase', 'resolve'], { cwd: tmp });
+    return problem;
+  }
+
+  const verify = (tmp) => run(['repro', 'verify', '--output', 'ok', '--exit-code', '0'], { cwd: tmp });
+  const signalsOf = (tmp, problem) => JSON.parse(readFileSync(
+    join(tmp, '.xm', 'solver', 'problems', problem, 'phases', '03-solve', 'strategy-state.json'), 'utf8',
+  )).repro.after.workaround_signals;
+
+  test('an added empty catch is reported but does not block the proof', () => {
+    const tmp = gitRepo(BUGGY);
+    try {
+      const problem = atResolve(tmp);
+      writeFileSync(join(tmp, 'sum.js'), 'module.exports = (a, b) => { try { return a + b; } catch {} };\n');
+      const r = verify(tmp);
+      expect(r.exitCode).toBe(0);
+      expect(r.stdout).toContain('Regression proof: proven');
+      expect(r.stderr).toContain('[empty-catch] sum.js:1');
+      expect(signalsOf(tmp, problem).map((s) => s.kind)).toEqual(['empty-catch']);
+    } finally {
+      rmSync(tmp, { recursive: true, force: true });
+    }
+  });
+
+  test('a new untracked file is scanned too', () => {
+    const tmp = gitRepo(BUGGY);
+    try {
+      const problem = atResolve(tmp);
+      writeFileSync(join(tmp, 'sum.js'), FIXED);
+      writeFileSync(join(tmp, 'guard.js'), "test.skip('flaky sum', () => {});\n");
+      expect(verify(tmp).exitCode).toBe(0);
+      expect(signalsOf(tmp, problem)).toEqual([{ kind: 'skip-or-mock', file: 'guard.js', line: 1, text: "test.skip('flaky sum', () => {});" }]);
+    } finally {
+      rmSync(tmp, { recursive: true, force: true });
+    }
+  });
+
+  test('a clean fix records an empty list, and lines from the baseline patch are not the fix', () => {
+    const tmp = gitRepo('module.exports = (a, b) => a + b;\nfunction load() {}\n');
+    try {
+      // The uncommitted state the bug was recorded on already has the empty catch.
+      writeFileSync(join(tmp, 'sum.js'), 'module.exports = (a, b) => a - b;\ntry { load(); } catch {}\n');
+      const problem = atResolve(tmp);
+      writeFileSync(join(tmp, 'sum.js'), 'module.exports = (a, b) => a + b;\ntry { load(); } catch {}\n');
+      expect(verify(tmp).exitCode).toBe(0);
+      expect(signalsOf(tmp, problem)).toEqual([]);
+    } finally {
+      rmSync(tmp, { recursive: true, force: true });
+    }
+  });
+});
+
+describe('x-solver instrument registry', () => {
+  const BUGGY = 'module.exports = (a, b) => a - b;\n';
+  const FIXED = 'module.exports = (a, b) => a + b;\n';
+
+  function gitRepo() {
+    const tmp = mkdtempSync(join(tmpdir(), 'xs-instr-'));
+    spawnSync('git', ['init', '-q'], { cwd: tmp });
+    spawnSync('git', ['config', 'user.email', 't@t'], { cwd: tmp });
+    spawnSync('git', ['config', 'user.name', 't'], { cwd: tmp });
+    writeFileSync(join(tmp, 'sum.js'), BUGGY);
+    spawnSync('git', ['add', '-A'], { cwd: tmp });
+    spawnSync('git', ['commit', '-qm', 'init'], { cwd: tmp });
+    return tmp;
+  }
+
+  function atResolve(tmp, scopeArgs) {
+    const problem = setupProblem(tmp, 'sum is wrong');
+    run(['strategy', 'set', 'iterate'], { cwd: tmp });
+    run(['repro', 'set', '--command', 'node check.js', '--output', 'REGRESSION: sum(2, 3) = -1',
+      '--exit-code', '1', '--failure-marker', 'REGRESSION', '--status', 'reproduced'], { cwd: tmp });
+    run(['solve-advance', '--phase', 'diagnose'], { cwd: tmp });
+    if (scopeArgs) run(['scope', 'set', '--symptom', 'wrong sum', '--invariant', 'sum adds', ...scopeArgs], { cwd: tmp });
+    // Registered before resolve, while the guard would allow nothing else.
+    run(['instrument', 'add', 'debug.js', 'repro.test.js'], { cwd: tmp });
+    run(['solve-advance', '--phase', 'hypothesize'], { cwd: tmp });
+    run(['hypotheses', 'add', 'sum subtracts', '--check', 'node check.js'], { cwd: tmp });
+    run(['solve-advance', '--phase', 'test'], { cwd: tmp });
+    run(['hypotheses', 'update', 'h1', '--status', 'confirmed', '--evidence-for', 'sum.js uses a - b', '--source-kind', 'code'], { cwd: tmp });
+    run(['solve-advance', '--phase', 'refine'], { cwd: tmp });
+    run(['hypotheses', 'update', 'h1', '--refutation', 'survived', '--refuted-by', 'refuter-1'], { cwd: tmp });
+    run(['solve-advance', '--phase', 'resolve'], { cwd: tmp });
+    return problem;
+  }
+
+  const verify = (tmp) => run(['repro', 'verify', '--output', 'ok', '--exit-code', '0'], { cwd: tmp });
+
+  test('add records each path relative to the project and its content hash', () => {
+    const tmp = gitRepo();
+    try {
+      setupProblem(tmp, 'sum is wrong');
+      run(['strategy', 'set', 'iterate'], { cwd: tmp });
+      const r = run(['instrument', 'add', 'sum.js', 'debug.js'], { cwd: tmp });
+      expect(r.exitCode).toBe(0);
+      const list = parseLastJSON(run(['instrument', 'list'], { cwd: tmp }).stdout).instruments;
+      expect(list.map((e) => e.path)).toEqual(['sum.js', 'debug.js']);
+      expect(list[0].sha256).toMatch(/^[0-9a-f]{64}$/);
+      expect(list[1].sha256).toBeNull();
+      const outside = run(['instrument', 'add', join(tmpdir(), 'elsewhere.js')], { cwd: tmp });
+      expect(outside.exitCode).not.toBe(0);
+      expect(outside.stderr).toContain('outside the project');
+    } finally {
+      rmSync(tmp, { recursive: true, force: true });
+    }
+  });
+
+  test('verify refuses while instrumentation is in place and passes once it is removed', () => {
+    const tmp = gitRepo();
+    try {
+      atResolve(tmp);
+      writeFileSync(join(tmp, 'debug.js'), 'console.log("trace");\n');
+      writeFileSync(join(tmp, 'sum.js'), FIXED);
+      const refused = verify(tmp);
+      expect(refused.exitCode).not.toBe(0);
+      expect(refused.stderr).toContain('Instrumentation is still in place: debug.js');
+      rmSync(join(tmp, 'debug.js'));
+      expect(verify(tmp).exitCode).toBe(0);
+    } finally {
+      rmSync(tmp, { recursive: true, force: true });
+    }
+  });
+
+  test('a registered file the Scope Contract keeps is not instrumentation', () => {
+    const tmp = gitRepo();
+    try {
+      atResolve(tmp, ['--files', 'sum.js', '--tests', 'repro.test.js']);
+      writeFileSync(join(tmp, 'repro.test.js'), "require('./sum.js');\n");
+      writeFileSync(join(tmp, 'sum.js'), FIXED);
+      expect(verify(tmp).exitCode).toBe(0);
+    } finally {
+      rmSync(tmp, { recursive: true, force: true });
+    }
+  });
+});
+
+describe('x-solver verify requires a pinned regression test', () => {
+  const BUGGY = 'module.exports = (a, b) => a - b;\n';
+  const FIXED = 'module.exports = (a, b) => a + b;\n';
+  const CHECK = "const sum = require('./sum.js');\nif (sum(2, 3) !== 5) { console.error('REGRESSION: sum(2, 3) = ' + sum(2, 3)); process.exit(1); }\nconsole.log('ok');\n";
+
+  function fixedAtResolve() {
+    const tmp = mkdtempSync(join(tmpdir(), 'xs-regreq-'));
+    spawnSync('git', ['init', '-q'], { cwd: tmp });
+    spawnSync('git', ['config', 'user.email', 't@t'], { cwd: tmp });
+    spawnSync('git', ['config', 'user.name', 't'], { cwd: tmp });
+    writeFileSync(join(tmp, 'sum.js'), BUGGY);
+    spawnSync('git', ['add', '-A'], { cwd: tmp });
+    spawnSync('git', ['commit', '-qm', 'init'], { cwd: tmp });
+    setupProblem(tmp, 'sum is wrong');
+    run(['strategy', 'set', 'iterate'], { cwd: tmp });
+    run(['repro', 'set', '--command', 'node check.js', '--output', 'REGRESSION: sum(2, 3) = -1',
+      '--exit-code', '1', '--failure-marker', 'REGRESSION', '--status', 'reproduced'], { cwd: tmp });
+    for (const p of ['diagnose', 'hypothesize']) run(['solve-advance', '--phase', p], { cwd: tmp });
+    run(['hypotheses', 'add', 'sum subtracts', '--check', 'node check.js'], { cwd: tmp });
+    run(['solve-advance', '--phase', 'test'], { cwd: tmp });
+    run(['hypotheses', 'update', 'h1', '--status', 'confirmed', '--evidence-for', 'sum.js uses a - b', '--source-kind', 'code'], { cwd: tmp });
+    run(['solve-advance', '--phase', 'refine'], { cwd: tmp });
+    run(['hypotheses', 'update', 'h1', '--refutation', 'survived', '--refuted-by', 'refuter-1'], { cwd: tmp });
+    run(['solve-advance', '--phase', 'resolve'], { cwd: tmp });
+    writeFileSync(join(tmp, 'sum.js'), FIXED);
+    writeFileSync(join(tmp, 'check.js'), CHECK);
+    return tmp;
+  }
+
+  function verifyAfter(tmp, extra) {
+    const r = run(['repro', 'verify', '--output', 'ok', '--exit-code', '0', ...extra], { cwd: tmp });
+    run(['candidates', 'add', 'add instead of subtract', '--source', 'executor'], { cwd: tmp });
+    run(['candidates', 'select', 'cand-1'], { cwd: tmp });
+    return { r, v: run(['verify'], { cwd: tmp }) };
+  }
+
+  test('a re-run without a pinned test leaves verify unverified', () => {
+    const tmp = fixedAtResolve();
+    try {
+      const { r, v } = verifyAfter(tmp, []);
+      expect(r.exitCode).toBe(0);
+      expect(r.stdout).toContain('No regression test pinned');
+      const json = parseLastJSON(v.stdout);
+      expect(json.status).toBe('unverified');
+      expect(json.reason).toBe('regression_test_absent');
+      expect(json.regression_test).toBe('absent');
+      expect(v.stdout).toContain('--regression-waiver');
+    } finally {
+      rmSync(tmp, { recursive: true, force: true });
+    }
+  });
+
+  test('a test that fails on the baseline and passes now lets verify pass', () => {
+    const tmp = fixedAtResolve();
+    try {
+      const { v } = verifyAfter(tmp, ['--regression-test', 'check.js', '--regression-cmd', 'node check.js', '--regression-marker', 'REGRESSION']);
+      const json = parseLastJSON(v.stdout);
+      expect(json.status).toBe('passed');
+      expect(json.regression_test).toBe('pinned');
+      expect(v.stdout).toContain('regression test pinned');
+    } finally {
+      rmSync(tmp, { recursive: true, force: true });
+    }
+  });
+
+  test('a waiver with a reason lets verify pass and says so', () => {
+    const tmp = fixedAtResolve();
+    try {
+      const { v } = verifyAfter(tmp, ['--regression-waiver', 'the failure needs production traffic; an alert on sum errors watches it']);
+      const json = parseLastJSON(v.stdout);
+      expect(json.status).toBe('passed');
+      expect(json.regression_test).toBe('waived');
+      expect(v.stdout).toContain('regression test waived');
+    } finally {
+      rmSync(tmp, { recursive: true, force: true });
+    }
+  });
+
+  test('--manual cannot stand in for the regression test', () => {
+    const tmp = fixedAtResolve();
+    try {
+      verifyAfter(tmp, []);
+      const m = run(['verify', '--manual', 'it is fixed', '--evidence', 'node check.js -> ok'], { cwd: tmp });
+      expect(m.exitCode).not.toBe(0);
+      expect(m.stderr).toContain('No regression test is pinned');
+    } finally {
+      rmSync(tmp, { recursive: true, force: true });
+    }
+  });
+
+  test('a waiver needs a reason and cannot be combined with --regression-cmd', () => {
+    const tmp = fixedAtResolve();
+    try {
+      const empty = run(['repro', 'verify', '--output', 'ok', '--exit-code', '0', '--regression-waiver'], { cwd: tmp });
+      expect(empty.exitCode).not.toBe(0);
+      expect(empty.stderr).toContain('--regression-waiver needs the reason');
+      const both = run(['repro', 'verify', '--output', 'ok', '--exit-code', '0', '--regression-waiver', 'x',
+        '--regression-test', 'check.js', '--regression-cmd', 'node check.js', '--regression-marker', 'REGRESSION'], { cwd: tmp });
+      expect(both.exitCode).not.toBe(0);
+      expect(both.stderr).toContain('contradict each other');
     } finally {
       rmSync(tmp, { recursive: true, force: true });
     }

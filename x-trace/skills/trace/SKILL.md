@@ -6,7 +6,7 @@ model: sonnet
 
 <Purpose>
 x-trace tracks xm tool executions across two artifacts:
-- **Per-session traces** in `.xm/traces/*.jsonl` — agent call trees, estimated tokens, cost, elapsed time, and a git snapshot per session. These power the timeline / cost / replay / diff views, which the LLM renders by parsing JSONL.
+- **Per-session traces** in `.xm/traces/*.jsonl` — `session_start` when an xm skill is invoked, one `agent_step` per Agent tool call made while the session is open (role, model, `duration_ms`, `status`), and `session_end` at the Stop hook of the first turn that ends with none of the session's background agents running, all written by the trace-session hook with a git snapshot per session. Tokens and cost are estimates: the hook payload carries neither. These power the timeline / cost / replay / diff views, which the LLM renders by parsing JSONL.
 - **A cross-tool activity ledger** in `.xm/last.json` — which tool last ran, on which commit, and how far HEAD has moved since. This is maintained by the `x-trace` CLI (`record` / `last` / `status` / `since` / `doctor`), not by LLM parsing.
 No external dependencies.
 </Purpose>
@@ -15,7 +15,7 @@ No external dependencies.
 - User wants to trace or observe multi-agent execution
 - User says "trace", "execution log", "check cost", "token usage", "show timeline"
 - User wants to compare two runs ("diff", "compare before and after")
-- User wants to replay a previous execution ("replay", "reproduce")
+- User wants to prepare a replay artifact or compare supplied replay result metadata
 - Other xm skills want to record agent calls for observability
 </Use_When>
 
@@ -31,15 +31,15 @@ No external dependencies.
 
 | Subcommand | Model | Reason |
 |------------|-------|--------|
-| `show`, `list`, `cost`, `diff` | **haiku** (Agent tool) | Read-only log parsing and display |
-| `record`, `last`, `status`, `since`, `doctor` | **haiku** (Agent tool) | Deterministic CLI output — script decides, model relays |
-| `replay` | **sonnet** | Requires agent re-execution |
+| `cost`, `diff` | **haiku** (Agent tool) | Read-only log parsing and display |
+| `list`, `show`, `record`, `last`, `status`, `since`, `doctor` | **haiku** (Agent tool) | Deterministic CLI output — script decides, model relays |
+| `replay` | **sonnet** | Audits replay inputs and supplied result provenance |
 
 For haiku-eligible commands, delegate via: `Agent tool: { model: "haiku", prompt: "Run: [command]" }` <!-- managed-model: writer -->
 
 Two command families:
-- **LLM-rendered views** (`show` / `cost` / `diff` / `list` / `start` / `stop` / `clean`) — the LLM reads `.xm/traces/*.jsonl` with the Bash/Read tools and renders the output described in each subcommand file.
-- **CLI-backed ledger ops** (`record` / `last` / `status` / `since` / `doctor`) — run `x-trace-cli.mjs` through the `xm` dispatcher; the LLM only relays what the script prints. See [Activity Ledger (CLI)](#activity-ledger-cli).
+- **LLM-rendered views** (`cost` / `diff` / `start` / `stop` / `clean`) — the LLM reads `.xm/traces/*.jsonl` with the Bash/Read tools and renders the output described in each subcommand file.
+- **CLI-backed commands** (`list` / `show` / `record` / `last` / `status` / `since` / `doctor` / `drift`) — run `x-trace-cli.mjs` through the `xm` dispatcher; the LLM only relays what the script prints. `xm trace list` and `xm trace show <session-id>` are the entry points for browsing sessions. See [Activity Ledger (CLI)](#activity-ledger-cli).
 
 No external dependencies. Works as long as the `.xm/` directory exists.
 
@@ -118,7 +118,7 @@ See `subcommands/cost.md` — per-agent cost table with token rates and totals.
 
 ## Subcommand: replay
 
-See `subcommands/replay.md` — re-executes agents from a given step with user confirmation.
+See `subcommands/replay.md` — prepares a replay manifest and snapshot. The CLI does not invoke an agent; report that limit when the user asks to reproduce an execution.
 
 ---
 
@@ -156,6 +156,8 @@ See `subcommands/clean.md` — finds old trace files and deletes with confirmati
 
 | Command | What it does |
 |---------|-------------|
+| `xm trace list [--limit N] [--json]` | Recent trace sessions newest first: started, skill, status (`open` when no `session_end`), agent count, duration, session id. Malformed or oversized JSONL lines are skipped and counted in a trailing note. |
+| `xm trace show <session-id> [--json]` | One session (exact id or unique prefix): row-type counts, git snapshot, and every `agent_step` with role, model, duration, status, description. |
 | `xm trace record <tool> [--ref R] [--status S] [--note N] [--artifact A] [--session S]` | Write a tool's latest-activity pointer. Best-effort: an omitted `--ref` defaults to the current git HEAD; a lock contention or unknown tool name warns but still exits 0. |
 | `xm last [tool] [--json]` | One line per tool (ref, status, relative age), or the raw map with `--json`. Shortcut: `xm last`. |
 | `xm status [--json]` | Commits on HEAD since each tool last acted. Shortcut: `xm status`. |
@@ -178,6 +180,7 @@ The ledger is honest about its blind spots: it only knows about activity that ra
 | Direct `node x-*-cli.mjs …` (bypassing `xm`) | ❌ | Skips the dispatcher EXIT trap entirely. |
 | LLM-only skill reasoning with no CLI call (an x-op strategy, x-review's analysis) | ❌ unless it calls `xm trace record` | Nothing runs through the dispatcher. |
 | `session_start` / `session_end` in `.xm/traces/` | ✅ (traces) | Written by the trace-session hook; `doctor --rebuild` can reconstruct `last.json` from the git-bearing ones. |
+| Agent tool calls while an xm skill session is open | ✅ (traces, `agent_step`) | Written by the trace-session hook (matcher `Skill\|Agent` + `Stop` + `SubagentStop`) with `role`, `model`, `duration_ms`, `status` (one of `success`, `error`, `completed`, `launched`, `unknown`, `abandoned` — see Automatic Checkpoints for the meaning of each), `source: "hook"`. Tokens and cost are not in the hook payload. Agent calls outside an open session are not recorded. |
 
 When ledger output is empty or partial, the CLI appends a coverage note (`activity may exist that was never recorded`). Surface it — do not present the ledger as a complete record.
 
@@ -318,24 +321,20 @@ All xm skills MUST record trace entries during execution. This is the standard t
 
 ### Automatic Checkpoints (hook-based — no LLM action needed)
 
-`session_start` and `session_end` are recorded automatically by `.claude/hooks/trace-session.mjs`.
-The hook fires on Skill tool PreToolUse/PostToolUse for any `xm:x-*` skill.
+`session_start`, `session_end`, and `agent_step` are recorded automatically by `.claude/hooks/trace-session.mjs`.
+The hook fires on PreToolUse/PostToolUse for the Skill tool (any `xm:*` skill) and the Agent tool, on Stop (end of the assistant turn), and on SubagentStop.
 
-- **session_start**: mkdir -p .xm/traces, generate session ID, write entry, set .xm/traces/.active
-- **session_end**: read .active, calculate duration, count agent_steps, write entry, delete .active
+- **session_start**: PreToolUse(Skill) — mkdir -p .xm/traces, generate session ID, write entry, set `.xm/traces/.active` to `{"session_id","tool_use_id"}`. A session left open by an earlier turn is closed first (`close_reason: "superseded"`). An xm skill invoked inside a subagent (the payload carries `agent_id`) while a session is open does not open a new session: it appends a `skill_step` row (`skill`, `args`, `agent_id`) to the open one.
+- **agent_step**: one per Agent tool call made while `.active` exists — `id` (tool_use_id), `role` (subagent_type), `model`, `duration_ms`, `status`, `source: "hook"`. `status` is exactly one of: `success` (a result came back), `error` (error marker in the tool response, background or not), `completed` (a background agent ended; written at its SubagentStop, `duration_ms` runs from dispatch to that end, and the outcome itself is not observed), `launched` (a background dispatch whose end was not seen — still running when the session closed, written then with `duration_ms: null`; or an older acknowledgement shape without `async_launched`, where `duration_ms` is launch time), `unknown` (no visible response), `abandoned` (a foreground call still running when the session closed). No tokens: the hook payload carries none.
+- **session_end**: Stop — if Stop's `background_tasks` lists a running subagent this session dispatched, the session stays open and later turns' Agent calls join it. Otherwise write leftover agent markers (`abandoned`, or `launched` for background ones), then session_end with duration and `agent_count`, delete .active. PostToolUse(Skill) is deliberately not the close: it fires as soon as the skill's instructions are loaded, before the skill's own Agent calls. A skill that continues across turns without a running background agent is traced up to the first turn end. A session older than 6 hours, or opened in another Claude conversation, is closed with `close_reason: "stale"` the next time the hook runs instead of collecting that turn's agents.
 
-Skills do NOT need to emit session_start/session_end manually. If detected in SKILL.md trace sections, those instructions are redundant and can be removed.
+Skills do NOT emit session_start, session_end, or agent_step manually — a hand-written row duplicates the hook's and skews `agent_count` and every drift axis.
 
 ### Best-Effort Entries (SHOULD — LLM records when possible)
 
-**Session ID** — read from `.xm/traces/.active` (written by hook at session start):
+Only `fan_out` and `synthesize` remain LLM-written. **Session ID** — read from `.xm/traces/.active` (JSON from current hooks, a bare id from older installs):
 ```bash
-SESSION_ID=$(cat .xm/traces/.active 2>/dev/null)
-```
-
-**Per agent call** — append agent_step after each agent completes:
-```bash
-echo '{"type":"agent_step","session_id":"SESSION_ID","ts":"TIMESTAMP","v":1,"id":"step-NNN","parent_id":PARENT_OR_NULL,"role":"ROLE","model":"MODEL","tokens_est":{"input":N,"output":N,"precision":"estimate"},"duration_ms":N,"status":"success","error":null}' >> .xm/traces/SESSION_ID.jsonl
+SESSION_ID=$(node -e 'const r=require("fs").readFileSync(".xm/traces/.active","utf8").trim();console.log(r.startsWith("{")?JSON.parse(r).session_id:r)' 2>/dev/null)
 ```
 
 ### Session ID Format

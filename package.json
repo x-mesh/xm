@@ -1,13 +1,14 @@
 {
   "name": "xm",
-  "version": "2.26.0",
+  "version": "2.41.0",
   "description": "x-mesh agent toolkit for Claude Code — project harness, strategy orchestration, and more",
   "type": "module",
   "scripts": {
     "test": "bun test",
     "bench:routing": "node scripts/benchmark-adaptive-routing.mjs",
     "sync": "bash scripts/sync-bundle.sh",
-    "verify": "bun test && bash scripts/sync-bundle.sh --check"
+    "verify": "bun test && bash scripts/sync-bundle.sh --check",
+    "test:coverage": "node scripts/coverage.mjs"
   },
   "keywords": [
     "claude-code",
@@ -30,6 +31,7 @@
     "node": ">=18.0.0"
   },
   "devDependencies": {
+    "c8": "^10",
     "fast-check": "^4.7.0"
   }
 }

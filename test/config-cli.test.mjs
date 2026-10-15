@@ -1427,6 +1427,40 @@ describe('validateSet (t2 structured findings)', () => {
     expect(findings[0].severity).toBe('error');
   });
 
+  // ── model_overrides pin validation (t4/R7) ───────────────────────────────
+
+  test('dotted model_overrides.<role> with an uninferable-tier pin: severity error naming the tier', () => {
+    const findings = validateSet('model_overrides.executor', 'codex:gpt-6-new:high');
+    expect(findings.length).toBe(1);
+    expect(findings[0].code).toBe('model_pin_spec');
+    expect(findings[0].severity).toBe('error');
+    expect(findings[0].message).toContain('could not infer a tier');
+  });
+
+  test('whole-object model_overrides with a valid pin: no findings', () => {
+    expect(validateSet('model_overrides', { executor: 'codex:gpt-5.6-luna:xhigh' })).toEqual([]);
+  });
+
+  test('whole-object model_overrides with a bare tier: no findings (back-compat)', () => {
+    expect(validateSet('model_overrides', { executor: 'sonnet' })).toEqual([]);
+  });
+
+  test('whole-object model_overrides with a malformed pin: severity error naming the role', () => {
+    const findings = validateSet('model_overrides', { executor: 'codex:gpt-5.6-luna:xhi' });
+    expect(findings.length).toBe(1);
+    expect(findings[0].code).toBe('model_pin_spec');
+    expect(findings[0].severity).toBe('error');
+    expect(findings[0].message).toContain('model_overrides.executor');
+  });
+
+  test('dotted model_overrides.<role> with a valid pin: no findings', () => {
+    expect(validateSet('model_overrides.executor', 'codex:gpt-5.6-luna:xhigh')).toEqual([]);
+  });
+
+  test('dotted model_overrides.<role> with a bare tier: no findings (back-compat)', () => {
+    expect(validateSet('model_overrides.executor', 'inherit')).toEqual([]);
+  });
+
   test('unmanaged panel.* leaf: severity warn, code unregistered', () => {
     const findings = validateSet('panel.some_unmanaged_leaf', 'x');
     expect(findings.length).toBe(1);

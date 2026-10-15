@@ -7,7 +7,7 @@
 // Two hooks consume this: xm-build-scope-guard.mjs (PreToolUse) and
 // xm-build-stop-gate.mjs (Stop).
 
-import { existsSync, readFileSync } from 'node:fs';
+import { existsSync, readFileSync, readdirSync } from 'node:fs';
 import { join, relative, isAbsolute, resolve, sep } from 'node:path';
 import { createHash } from 'node:crypto';
 
@@ -109,6 +109,53 @@ export function reviewFixState(projectDir) {
   return { active: fixNow.length > 0 && !lgtm, allowedFiles, unresolvedBlocking, triageUnreadable: false };
 }
 
+// An active iterate problem nobody has touched for a day is more likely abandoned than
+// mid-diagnosis. Ignoring it fails open, which is the safe side for a guard that runs
+// on every edit in the repository.
+const SOLVER_STALE_MS = 24 * 60 * 60 * 1000;
+const SOLVER_PRE_RESOLVE = new Set(['reproduce', 'diagnose', 'hypothesize', 'test', 'refine']);
+
+/**
+ * Read the x-solver iterate state from <projectDir>/.xm/solver/. Before `resolve` the
+ * cause is unconfirmed, so only files registered with `x-solver instrument add` may
+ * change. In `resolve`, the Scope Contract's files and tests may change too.
+ * The problem chosen is the most recently active one, as the x-solver CLI does.
+ * @returns {{ active: boolean, problem?: string, phase?: string, allowedFiles: string[] }}
+ *   active is false with no fresh active iterate problem, or in `resolve` with no
+ *   Scope Contract (the CLI only warns there, so the guard does not invent a scope).
+ */
+export function solverEditState(projectDir, now = Date.now()) {
+  const inactive = { active: false, allowedFiles: [] };
+  const problemsDir = join(projectDir, '.xm', 'solver', 'problems');
+  if (!existsSync(problemsDir)) return inactive;
+  let names;
+  try { names = readdirSync(problemsDir); } catch { return inactive; }
+  let best = null;
+  for (const name of names) {
+    const manifest = readJSON(join(problemsDir, name, 'manifest.json'));
+    if (manifest?.state !== 'active' || manifest.strategy !== 'iterate') continue;
+    const strat = readJSON(join(problemsDir, name, 'phases', '03-solve', 'strategy-state.json'));
+    if (strat?.strategy !== 'iterate' || typeof strat.current_phase !== 'string') continue;
+    const touched = Math.max(
+      Date.parse(manifest.updated_at || manifest.created_at || '') || 0,
+      Date.parse(strat.updated_at || '') || 0,
+    );
+    if (now - touched > SOLVER_STALE_MS) continue;
+    if (!best || touched > best.touched) best = { name, strat, touched };
+  }
+  if (!best) return inactive;
+  const phase = best.strat.current_phase;
+  const instruments = (Array.isArray(best.strat.instruments) ? best.strat.instruments : [])
+    .map((entry) => String(entry?.path ?? '')).filter(Boolean);
+  if (SOLVER_PRE_RESOLVE.has(phase)) {
+    return { active: true, problem: best.name, phase, allowedFiles: instruments };
+  }
+  const scope = best.strat.scope;
+  if (phase !== 'resolve' || !scope) return inactive;
+  const list = (value) => (Array.isArray(value) ? value.map(String) : []);
+  return { active: true, problem: best.name, phase, allowedFiles: [...list(scope.files), ...list(scope.tests), ...instruments] };
+}
+
 // The guard's OWN decision source. Hard-allowing all of .xm/ let a constrained agent
 // disarm the guard with one permitted Write — delete the fix_now decisions and it
 // evaporates (F4). triage.json is therefore NOT auto-allowed.
@@ -123,6 +170,9 @@ export function reviewFixState(projectDir) {
 // compare (re-review M1). Over-blocking a genuinely different casing on a case-sensitive
 // FS is the safe direction.
 const GUARD_INPUTS = new Set(['.xm/review/triage.json', '.xm/review/finding-lifecycle.json']);
+// The x-solver CLI writes these through Bash; an Edit/Write to them could rewrite the
+// phase or the instrument list and release the solver half of the guard.
+const SOLVER_GUARD_INPUT = /^\.xm\/solver\/problems\/[^/]+\/(?:manifest\.json|phases\/03-solve\/strategy-state\.json)$/;
 
 // Paths the scope guard must never block: the rest of .xm/ (tasks, phases, the
 // later-queue) — blocking those would self-lock the harness and produce the known
@@ -131,6 +181,7 @@ export function isProtectedPath(rel) {
   if (!rel) return true;
   const norm = String(rel).split(sep).join('/');
   if (GUARD_INPUTS.has(norm.toLowerCase())) return false; // never hard-allow the guard's own input
+  if (SOLVER_GUARD_INPUT.test(norm.toLowerCase())) return false;
   return norm === '.xm' || norm.startsWith('.xm/');
 }
 

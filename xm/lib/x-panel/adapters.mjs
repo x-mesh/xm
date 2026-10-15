@@ -712,28 +712,20 @@ export function resolveSessionCommand(name, prompt, model, session, providerArgs
   return resolveCommand(name, prompt, model, providerArgs);
 }
 
-export async function invokeProviderAsync(name, prompt, { timeout = 180_000, maxTimeout = null, deadlineMs = null, maxSpawns = 2, model = null, onEvent = null, stream = false, partial = true, session = null, fallbackPrompt = null, expectKeys = null, providerArgs = null, commandBudget = null, isolate = false, strictContract = false } = {}) {
+export async function invokeProviderAsync(name, prompt, { timeout = 180_000, maxTimeout = null, deadlineMs = null, maxSpawns = 2, model = null, onEvent = null, stream = null, partial = true, session = null, fallbackPrompt = null, expectKeys = null, providerArgs = null, commandBudget = null, isolate = false, strictContract = false } = {}) {
   const budgetMs = (Number.isFinite(maxTimeout) && maxTimeout > 0) ? maxTimeout : Math.max(timeout * 2, timeout + 120_000);
   const effectiveDeadlineMs = deadlineMs ?? (Date.now() + budgetMs);
-  if (stream && supportsStream(name)) {
-    // Session reuse is a raw-path feature: the structured-stream argv is kept
-    // exactly as dogfooded. Callers already disable sessions under --stream.
-    const remaining = effectiveDeadlineMs - Date.now();
-    if (remaining <= 0) {
-      return { ok: false, error: 'slot wall-clock budget exhausted', raw: '', json: null, timedOut: true, timeoutReason: 'cap', spawns: 0 };
-    }
-    return invokeProviderStream(name, prompt, {
-      timeout: Math.min(timeout, remaining),
-      maxTimeout: Math.min(maxTimeout ?? remaining, remaining),
-      model, onEvent, partial, expectKeys, commandBudget, isolate, strictContract,
-    });
-  }
-  const use = session && supportsResume(name) ? session : null;
+  const streaming = supportsStream(name) && (stream === true || (stream == null && name === 'claude'));
+  const use = session && supportsResume(name) && (!streaming || name === 'claude') ? session : null;
   const invokeWithinBudget = (body, activeSession) => {
     const remaining = effectiveDeadlineMs - Date.now();
     if (remaining <= 0) {
       return Promise.resolve({ ok: false, error: 'slot wall-clock budget exhausted', raw: '', json: null, timedOut: true, timeoutReason: 'cap', spawns: 0 });
     }
+    if (streaming) return invokeProviderStream(name, body, {
+      timeout: Math.min(timeout, remaining), maxTimeout: Math.min(maxTimeout ?? remaining, remaining),
+      model, onEvent, partial, expectKeys, commandBudget, isolate, strictContract, session: activeSession,
+    });
     return invokeProviderRaw(name, body, {
       timeout: Math.min(timeout, remaining),
       maxTimeout: Math.min(maxTimeout ?? remaining, remaining),
@@ -956,11 +948,15 @@ export function streamCommand(name, prompt = '', model = null, partial = true) {
   return fn ? fn(prompt, model, partial) : null;
 }
 
-function resolveStreamCommand(name, prompt, model, partial) {
+function resolveStreamCommand(name, prompt, model, partial, session = null) {
   const override = overridePath(name);
-  if (override) return ['node', [override, name, prompt, '--stream', ...(partial ? ['--partial'] : [])]]; // hint the stub
+  const sessionArgs = name === 'claude' && session ? [session.mode === 'resume' ? '--resume' : '--session-id', session.id] : [];
+  if (override) return ['node', [override, name, prompt, '--stream', ...(partial ? ['--partial'] : []),
+    ...(sessionArgs.length ? ['--session-mode', session.mode, '--session-id', session.id] : [])]];
   const fn = STREAM_BUILTIN[name];
-  return fn ? fn(prompt, model || null, partial) : null;
+  if (!fn) return null;
+  const resolved = fn(prompt, model || null, partial);
+  return [resolved[0], [...resolved[1], ...sessionArgs], resolved[2]];
 }
 
 // Approximate USD per 1M tokens. INLINE on purpose — importing x-build/cost-engine
@@ -1106,7 +1102,7 @@ function cursorEventText(obj) {
  * Parse ONE provider JSONL line into normalized events + optional final
  * text/usage. Returns { events, finalText?, usage? }. Unknown lines → no events.
  */
-export function parseStreamLine(name, obj, model) {
+export function parseStreamLine(name, obj, model, { partial = true } = {}) {
   const events = [];
   let finalText, usage;
   const setUsage = (tokens, cost_usd) => {
@@ -1123,6 +1119,20 @@ export function parseStreamLine(name, obj, model) {
       if (d.type === 'text_delta' && d.text) events.push({ kind: 'text', delta: d.text });
       else if (d.type === 'thinking_delta' && d.thinking) events.push({ kind: 'thinking', delta: d.thinking });
       // signature_delta and others: ignore
+    } else if (obj.type === 'stream_event' && obj.event?.type === 'message_start') {
+      events.push({ kind: 'activity', phase: '분석 중' });
+    } else if (obj.type === 'stream_event' && obj.event?.type === 'content_block_start') {
+      const block = obj.event.content_block;
+      if (block?.type === 'tool_use') events.push({ kind: 'activity', phase: `도구 실행: ${String(block.name || 'tool').replace(/[^a-z0-9_.:-]/gi, '').slice(0, 64)}` });
+      else if (block?.type === 'thinking') events.push({ kind: 'thinking' });
+      else if (block?.type === 'text') events.push({ kind: 'text' });
+    } else if (obj.type === 'assistant' && Array.isArray(obj.message?.content)) {
+      for (const block of obj.message.content) {
+        if (block.type === 'tool_use') events.push({ kind: 'activity', phase: `도구 실행: ${String(block.name || 'tool').replace(/[^a-z0-9_.:-]/gi, '').slice(0, 64)}` });
+        else if (block.type === 'text') events.push(partial ? { kind: 'activity', phase: '응답 작성 중' } : { kind: 'text', delta: block.text || '' });
+      }
+    } else if (obj.type === 'user' && obj.message?.content?.some?.(block => block.type === 'tool_result')) {
+      events.push({ kind: 'activity', phase: '도구 결과 수신 · 분석 중' });
     } else if (obj.type === 'result') {
       if (typeof obj.result === 'string') finalText = obj.result;
       const u = obj.usage || {};
@@ -1166,12 +1176,12 @@ export function parseStreamLine(name, obj, model) {
   return { events, finalText, usage };
 }
 
-function invokeProviderStream(name, prompt, { timeout = 180_000, maxTimeout = null, model = null, onEvent = null, partial = true, expectKeys = null, commandBudget = null, isolate = false, strictContract = false } = {}) {
+function invokeProviderStream(name, prompt, { timeout = 180_000, maxTimeout = null, model = null, onEvent = null, partial = true, expectKeys = null, commandBudget = null, isolate = false, strictContract = false, session = null, textOnly = false } = {}) {
   return new Promise((resolve) => {
     const emit = (event) => { if (!onEvent) return; try { onEvent({ at: new Date().toISOString(), ...event }); } catch { /* observer only */ } };
     let settled = false;
-    const finish = (value) => { if (!settled) { settled = true; resolve(value); } };
-    const resolved = resolveStreamCommand(name, prompt, model, partial);
+    const finish = (value) => { if (!settled) { settled = true; resolve({ ...value, ...(session?.id ? { session_id: session.id } : {}) }); } };
+    const resolved = resolveStreamCommand(name, prompt, model, partial, session);
     if (!resolved) return resolve({ ok: false, error: `no stream profile: ${name}`, raw: '', json: null, spawns: 0 });
     let child;
     try { child = spawnResolved(resolved, { env: process.env, ...promptSpawnOpts(name, { isolate }) }); }
@@ -1181,7 +1191,7 @@ function invokeProviderStream(name, prompt, { timeout = 180_000, maxTimeout = nu
     // Bounds — the async path has no maxBuffer, so cap every accumulator.
     const RAW_CAP = 2_000_000, TEXT_CAP = 1_000_000, LINE_CAP = 4_000_000, ERR_CAP = 200_000;
     let rawCap = '', buf = '', textBuf = '', stderr = '';
-    let finalText = null, usage = null;
+    let finalText = null, usage = null, resultError = null;
     const progressObserver = createProviderProgressObserver(name, expectKeys);
     const effectiveCommandBudget = name === 'codex' && Number.isFinite(Number(commandBudget)) && Number(commandBudget) > 0
       ? Number(commandBudget) : null;
@@ -1211,7 +1221,8 @@ function invokeProviderStream(name, prompt, { timeout = 180_000, maxTimeout = nu
           return;
         }
       }
-      const r = parseStreamLine(name, obj, model);
+      if (obj.type === 'result' && obj.is_error === true) resultError = 'provider reported an unsuccessful result';
+      const r = parseStreamLine(name, obj, model, { partial });
       for (const ev of r.events) {
         if (ev.kind === 'text' && ev.delta && textBuf.length < TEXT_CAP) textBuf += ev.delta;
         emit({ type: ev.kind, provider: name, model, ...ev });
@@ -1225,10 +1236,12 @@ function invokeProviderStream(name, prompt, { timeout = 180_000, maxTimeout = nu
     const guard = makeTimeoutGuard(timeout, maxTimeout, (error, reason) => {
       emit({ type: 'timeout', provider: name, model, error, reason });
       killProbeTree(child, 'SIGKILL');
-      if (reason === 'cap') {
+      if (reason === 'cap' && !resultError) {
         // The final JSONL event may lack a trailing newline when the cap lands.
         if (buf.trim()) { handleLine(buf); buf = ''; }
+        if (resultError) return finish({ ok: false, error: resultError, raw: rawCap, json: null, usage, timedOut: true, timeoutReason: reason, spawns: 1 });
         const text = finalText != null ? finalText : textBuf;
+        if (textOnly && finalText?.trim()) return finish({ ok: true, partial: true, output: finalText, error, raw: rawCap, usage, timedOut: true, timeoutReason: reason, spawns: 1 });
         const json = extractAnswerJSON(text, expectKeys, strictContract)
           || extractContractJSON(rawCap, expectKeys || ['findings', 'verdicts']);
         if (json) {
@@ -1257,8 +1270,10 @@ function invokeProviderStream(name, prompt, { timeout = 180_000, maxTimeout = nu
       // otherwise a crashed provider whose stream happened to contain a JSON object
       // would be reported as a successful review (matches the raw path's contract).
       if (code !== 0) return finish({ ok: false, error: `${exitLabel(code, signal)}: ${stderr.trim().slice(0, 300)}`, raw: rawCap, json: null, usage, signal: signal || null, spawns: 1 });
+      if (resultError) return finish({ ok: false, error: resultError, raw: rawCap, json: null, usage, spawns: 1 });
       // Findings come from the final answer text (NOT the raw JSONL envelope).
       const text = finalText != null ? finalText : textBuf;
+      if (textOnly) return finish({ ok: !!text.trim(), output: text, error: text.trim() ? null : 'empty provider answer', raw: rawCap, usage, spawns: 1 });
       let json = extractAnswerJSON(text, expectKeys, strictContract);
       // rawCap fallback is ALWAYS shape-guarded (even without expectKeys): a JSONL
       // envelope line (e.g. {"type":"system"}) must NOT be mistaken for a successful
@@ -1268,7 +1283,7 @@ function invokeProviderStream(name, prompt, { timeout = 180_000, maxTimeout = nu
       }
       if (!json) { emit({ type: 'json_missing', provider: name, model }); return finish({ ok: false, error: withStderrReason(jsonMissingError(expectKeys), rawCap, stderr), raw: rawCap, json: null, usage, spawns: 1 }); }
       emit({ type: 'json_parsed', provider: name, model });
-      finish({ ok: true, error: null, raw: rawCap, json, usage, spawns: 1 });
+      finish({ ok: true, error: null, raw: rawCap, answer_text: finalText != null || textBuf ? text : rawCap, json, usage, spawns: 1 });
     });
   });
 }
@@ -1278,7 +1293,8 @@ function invokeProviderStream(name, prompt, { timeout = 180_000, maxTimeout = nu
  * generic cross-vendor deliberation (debate/council) where the answer is free-form
  * prose, not findings JSON. ok = process exited 0.
  */
-export function invokeProviderText(name, prompt, { timeout = 180_000, maxTimeout = null, model = null, onEvent = null, providerArgs = null } = {}) {
+export function invokeProviderText(name, prompt, { timeout = 180_000, maxTimeout = null, model = null, onEvent = null, providerArgs = null, stream = null } = {}) {
+  if (name === 'claude' && stream !== false) return invokeProviderStream(name, prompt, { timeout, maxTimeout, model, onEvent, partial: prompt.length <= 50000, textOnly: true });
   return new Promise((resolve) => {
     // Observer-only progress events (same shapes as invokeProviderAsync's raw path:
     // spawn/stdout/stderr/timeout/error/exit) so a cross-vendor caller can write a live

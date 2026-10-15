@@ -4,7 +4,7 @@
  * Every artifact, whatever its on-disk format, normalizes to:
  *   { type, id, title, status, created_at, project, path, format, meta }
  *
- * - type:       review | op | plan | eval | probe | humble | solver | research | prd | handoff
+ * - type:       review | op | plan | eval | probe | humble | solver | research | prd | handoff | mutate
  * - id:         stable, host-stripped selector (e.g. "op:council-2026-04-06-xsync")
  * - title:      one-line human label
  * - status:     verdict / phase / state (type-specific)
@@ -24,7 +24,7 @@ import {
   normalizeVerdict, toMillis, parseSince,
 } from './core.mjs';
 
-const ALL_TYPES = ['review', 'op', 'plan', 'eval', 'probe', 'humble', 'solver', 'research', 'prd', 'handoff', 'panel'];
+const ALL_TYPES = ['review', 'op', 'plan', 'eval', 'probe', 'humble', 'solver', 'research', 'prd', 'handoff', 'panel', 'mutate'];
 
 export function knownTypes() {
   return ALL_TYPES.slice();
@@ -154,6 +154,38 @@ function scanProbe(root) {
   }
   for (const f of dedupeByHost(listFiles(join(dir, 'history'), ['.json']))) {
     out.push(probeRecord('probe:' + stripExt(stripHostSuffix(f.name)), f, readJSON(f.path) || {}));
+  }
+  return out;
+}
+
+function mutateRecord(id, file, report, project) {
+  const counts = report.counts || {};
+  const languages = (report.languages || []).map(row => row.language).filter(Boolean);
+  const scope = report.mode === 'task' ? `${report.project || project || '?'}/${report.task_id || '?'}` : `${report.base || '?'}..${String(report.head || '').slice(0, 7)}`;
+  return {
+    type: 'mutate', id,
+    title: `${scope} — ${counts.survived ?? 0} survived / ${(report.mutants || []).length} mutants${languages.length ? ` (${languages.join(', ')})` : ''}`,
+    // A run whose languages could not all run is not a clean result, so the
+    // status says so instead of implying the survivor count is the whole story.
+    status: (report.languages || []).every(row => row.status === 'ran') ? 'ran' : 'partial',
+    created_at: report.ts || isoFromMtime(file.mtimeMs),
+    project: report.project || project || null, path: file.path, format: 'json',
+    meta: { mode: report.mode || null, survived: counts.survived ?? null, mutants: (report.mutants || []).length, languages },
+  };
+}
+
+// Mutation reports live under two roots: diff runs keyed by head-mergebase, and
+// task runs nested one level under their project.
+function scanMutate(root) {
+  const out = [];
+  for (const file of dedupeByHost(listFiles(join(root, 'review', 'mutate-diff'), ['.json']))) {
+    out.push(mutateRecord('mutate:' + stripExt(stripHostSuffix(file.name)), file, readJSON(file.path) || {}, null));
+  }
+  for (const dir of listDirs(join(root, 'review', 'mutate'))) {
+    for (const file of dedupeByHost(listFiles(dir.path, ['.json']))) {
+      const task = stripExt(stripHostSuffix(file.name));
+      out.push(mutateRecord(`mutate:${dir.name}/${task}`, file, readJSON(file.path) || {}, dir.name));
+    }
   }
   return out;
 }
@@ -310,7 +342,7 @@ function scanPanel(root) {
 const SCANNERS = {
   review: scanReview, op: scanOp, plan: scanPlan, eval: scanEval, probe: scanProbe,
   humble: scanHumble, solver: scanSolver, research: scanResearch, prd: scanPrd, handoff: scanHandoff,
-  panel: scanPanel,
+  panel: scanPanel, mutate: scanMutate,
 };
 
 // ── public API ───────────────────────────────────────────────────────

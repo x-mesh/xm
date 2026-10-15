@@ -349,7 +349,7 @@ Settings in .xm/config.json:
 
 ## Trace Recording
 
-See `references/trace-recording.md` — session_start/session_end are automatic via `.claude/hooks/trace-session.mjs`; emit best-effort `agent_step` entries for long sub-operations.
+Tracing is automatic: the trace-session hook writes `session_start` when the skill is invoked, one `agent_step` per Agent tool call made before the assistant turn ends, and `session_end` at the turn's Stop hook. Do not hand-write those three row types; `fan_out`/`synthesize` stay LLM-written, metadata only, as x-trace describes.
 
 ## Natural Language Mapping
 

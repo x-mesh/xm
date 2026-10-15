@@ -124,4 +124,27 @@ describe('run --json vendor-model additive fields', () => {
     expect(entry.model_by_vendor.codex).toBeUndefined();
     expect(out.stderr).toContain('vendor model (codex)');
   });
+
+  // ── Direct pin support (t3/R5) — vendorModelFields consumes resolveRoleModel.
+
+  test('a direct codex: pin dispatches its exact spec, claude stays on the inferred tier', () => {
+    const out = runProject({ sharedConfig: { model_overrides: { executor: 'codex:gpt-5.6-luna:xhigh' } } });
+    expect(out.exitCode).toBe(0);
+    const entry = firstTask(out);
+    // The canonical routing contract is a TIER, never the pin's raw model name.
+    expect(entry.model).toBe('haiku');
+    expect(entry.model_vendor).toBe('claude');
+    expect(entry.model_by_vendor).toEqual({ claude: 'haiku', codex: 'gpt-5.6-luna:xhigh' });
+  });
+
+  test('a malformed pin degrades to the profile default and still emits a valid claude-only map', () => {
+    const out = runProject({
+      sharedConfig: { model_overrides: { executor: 'codex:gpt-6-new:high' }, model_profile: 'default' }, // unknown model, no @tier
+    });
+    expect(out.exitCode).toBe(0);
+    const entry = firstTask(out);
+    expect(entry.model).toBe('sonnet'); // default.executor — the pin never took effect
+    expect(entry.model_by_vendor.claude).toBe('sonnet');
+    expect(out.stderr).toContain('could not infer a tier');
+  });
 });

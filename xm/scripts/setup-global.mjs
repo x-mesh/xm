@@ -10,6 +10,8 @@
 import fs from 'node:fs';
 import path from 'node:path';
 import os from 'node:os';
+import { fileURLToPath } from 'node:url';
+import { removeMarkerBlock, renderMarkerBlock, writeMergeMarker } from '../lib/install/merge.mjs';
 
 const HOME = os.homedir();
 const CLAUDE_DIR = path.join(HOME, '.claude');
@@ -21,10 +23,45 @@ const HOOK_DEST = path.join(HOOKS_DIR, HOOK_FILENAME);
 const NODE_BIN = resolveNodeBin();
 const HOOK_CMD_PRE = `"${NODE_BIN}" "${HOOK_DEST}" pre`;
 const HOOK_CMD_POST = `"${NODE_BIN}" "${HOOK_DEST}" post`;
+// Stop closes the session the Skill call opened: PostToolUse(Skill) fires before
+// the skill's own Agent calls, so it cannot be the close.
+const HOOK_CMD_STOP = `"${NODE_BIN}" "${HOOK_DEST}" stop`;
+const RELAY_HOOK_FILENAME = 'xm-relay-autoreply.mjs';
+const RELAY_HOOK_DEST = path.join(HOOKS_DIR, RELAY_HOOK_FILENAME);
+const CODEX_DIR = path.join(HOME, '.codex');
+const CODEX_HOOKS = path.join(CODEX_DIR, 'hooks.json');
+const CODEX_RELAY_HOOK_DEST = path.join(CODEX_DIR, 'xm', 'hooks', RELAY_HOOK_FILENAME);
+// The Stop half runs `xm relay send`, which can take several seconds.
+const RELAY_HOOK_TIMEOUT = 30;
+const RELAY_HOOK_EVENTS = ['UserPromptSubmit', 'Stop'];
 const XM_CMD_DEST = path.join(COMMANDS_DIR, 'xm.md');
 const XM_PLAN_CMD_DEST = path.join(COMMANDS_DIR, 'xm-plan.md');
 const XM_PLAN_CMD_BACKUP = path.join(COMMANDS_DIR, 'xm-plan.md.pre-xm');
 const XM_PLAN_MARKER = '<!-- xm-managed:xm-plan -->';
+const CLAUDE_MD = path.join(CLAUDE_DIR, 'CLAUDE.md');
+const CODEX_MD = path.join(HOME, '.codex', 'AGENTS.md');
+// Beside this script rather than searched in the cache: the cache resolvers sort
+// versions as strings, and the block must match the version doing the install.
+const TEMPLATES_DIR = path.join(path.dirname(fileURLToPath(import.meta.url)), '..', 'templates');
+// The begin marker carries the template revision (`v<N>`), bumped only when the
+// template text changes (test/setup-global-codex-md.test.mjs pins it). Matching
+// ignores the revision, so a block written by an older xm is still found and
+// replaced rather than followed by a second one. A block with no revision is
+// revision 0: the format before revisions existed.
+const routingMarkers = (flag, revision) => ({
+  begin: `<!-- xm:routing:begin v${revision} — managed by \`xm setup ${flag}\`; edit outside this block -->`,
+  beginMatch: /<!-- xm:routing:begin(?: v(\d+))?[^\n]*?-->/,
+  end: '<!-- xm:routing:end -->',
+});
+const routingTarget = (label, flag, file, template, revision) => ({
+  label, flag, file, revision,
+  src: path.join(TEMPLATES_DIR, template),
+  markers: routingMarkers(flag, revision),
+});
+const ROUTING_TARGETS = [
+  routingTarget('CLAUDE.md', '--claude-md', CLAUDE_MD, 'claude-routing.md', 1),
+  routingTarget('AGENTS.md', '--codex-md', CODEX_MD, 'codex-routing.md', 1),
+];
 
 // Previous format (bare `node`) — cleaned up during install so users upgrading
 // from earlier xm versions don't end up with duplicate Skill hook entries.
@@ -68,16 +105,16 @@ function log(msg) { process.stdout.write(`[xm ${VERB}] ${msg}\n`); }
 function warn(msg) { process.stderr.write(`[xm ${VERB}] ${msg}\n`); }
 function die(msg) { warn(msg); process.exit(1); }
 
-function resolveHookSource() {
-  if (process.env.XM_HOOK_SRC && fs.existsSync(process.env.XM_HOOK_SRC)) {
+function resolveHookSource(file = 'trace-session.mjs') {
+  if (file === 'trace-session.mjs' && process.env.XM_HOOK_SRC && fs.existsSync(process.env.XM_HOOK_SRC)) {
     return process.env.XM_HOOK_SRC;
   }
   const candidates = [];
   if (process.env.XM_LIB) {
-    candidates.push(path.join(process.env.XM_LIB, 'xm', 'hooks', 'trace-session.mjs'));
+    candidates.push(path.join(process.env.XM_LIB, 'xm', 'hooks', file));
   }
   // Local repo (cwd)
-  candidates.push(path.join(process.cwd(), 'xm', 'hooks', 'trace-session.mjs'));
+  candidates.push(path.join(process.cwd(), 'xm', 'hooks', file));
   // Plugin cache: ~/.claude/plugins/cache/xm/xm/<ver>/hooks/trace-session.mjs (new) or legacy xm path
   for (const cacheRoot of [
     path.join(HOME, '.claude', 'plugins', 'cache', 'xm', 'xm'),
@@ -90,7 +127,7 @@ function resolveHookSource() {
       .sort()
       .reverse();
     for (const v of versions) {
-      candidates.push(path.join(cacheRoot, v, 'hooks', 'trace-session.mjs'));
+      candidates.push(path.join(cacheRoot, v, 'hooks', file));
     }
   }
   return candidates.find((p) => fs.existsSync(p)) || null;
@@ -137,6 +174,81 @@ function resolveXmPlanCommandSource() {
   return candidates.find((p) => fs.existsSync(p)) || null;
 }
 
+function backupCopy(file) {
+  const backup = `${file}.backup-${new Date().toISOString().replace(/[:.]/g, '-')}`;
+  fs.copyFileSync(file, backup);
+  return backup;
+}
+
+function readRoutingFile(target) {
+  return fs.existsSync(target.file) ? fs.readFileSync(target.file, 'utf8') : '';
+}
+
+/** Revision of the block in `text`: its number, 0 when unversioned, null when there is no block. */
+function installedRevision(text, markers) {
+  const match = markers.beginMatch.exec(text);
+  return match ? Number(match[1] ?? 0) : null;
+}
+
+function withoutRoutingBlock(text, markers) {
+  const match = markers.beginMatch.exec(text);
+  const end = text.indexOf(markers.end);
+  if (!match || end === -1 || match.index > end) return text;
+  return text.slice(0, match.index) + text.slice(end + markers.end.length);
+}
+
+/**
+ * The `--claude-md` / `--codex-md` flag is the opt-in. Afterwards the block's
+ * presence is the consent, so a bare install (what `xm update` runs) refreshes
+ * it and never adds it.
+ */
+function syncRouting(target, optIn) {
+  const { label, flag, file, src, markers, revision } = target;
+  const current = readRoutingFile(target);
+  const installed = installedRevision(current, markers);
+  if (!optIn && installed === null) {
+    log(`${label} routing: not enabled (opt in: xm ${VERB} ${flag})`);
+    return;
+  }
+  // An older xm must not overwrite a block that a newer xm wrote.
+  if (installed !== null && installed > revision) {
+    warn(`${label} routing: ${file} has block v${installed}, newer than v${revision} in this xm. Left unchanged; update xm.`);
+    return;
+  }
+  if (!fs.existsSync(src)) {
+    warn(`${src} not found (skipped the routing block in ${file})`);
+    return;
+  }
+  const body = fs.readFileSync(src, 'utf8');
+  if (current.includes(renderMarkerBlock(body, markers))) {
+    log(`${label} routing: up to date (${file})`);
+  } else {
+    fs.mkdirSync(path.dirname(file), { recursive: true });
+    const backup = fs.existsSync(file) ? backupCopy(file) : null;
+    try {
+      writeMergeMarker(file, body, { markers, backup: false });
+    } catch (e) {
+      die(`${label} routing: ${e.message}`);
+    }
+    log(`${label} routing: wrote the managed block in ${file}`
+      + (backup ? ` (backup: ${path.basename(backup)}; edits inside the block are replaced)` : ''));
+  }
+  if (/^## xm routing\b/m.test(withoutRoutingBlock(readRoutingFile(target), markers))) {
+    warn(`${file} also has a hand-written "## xm routing" section outside the managed block. Remove it to avoid duplicate rules.`);
+  }
+}
+
+function routingStatus(target) {
+  const { flag, file, src, markers, revision } = target;
+  const text = readRoutingFile(target);
+  const installed = installedRevision(text, markers);
+  if (installed === null) return `(not enabled — opt in: xm ${VERB} ${flag})`;
+  if (installed > revision) return `newer than this xm (v${installed} > v${revision}; update xm)`;
+  if (!fs.existsSync(src)) return `(template missing: ${src})`;
+  if (text.includes(renderMarkerBlock(fs.readFileSync(src, 'utf8'), markers))) return `current (v${revision}, ${file})`;
+  return `outdated (${installed === revision ? `v${revision}, content differs` : `v${installed} → v${revision}`}; re-run xm ${VERB})`;
+}
+
 function readSettings() {
   if (!fs.existsSync(SETTINGS)) return {};
   try { return JSON.parse(fs.readFileSync(SETTINGS, 'utf8')); }
@@ -150,35 +262,173 @@ function writeSettings(obj) {
   return backup;
 }
 
-function hasSkillHook(entries, command) {
+// One group per event with a combined matcher: Skill (session boundaries) and
+// Agent (one agent_step per subagent call inside an open session). A single
+// group keeps the command unique per event, which `xm install --target codex`
+// relies on when it translates settings into Codex hooks. Pre-Agent installs
+// registered the same command under a bare 'Skill' matcher; install removes every
+// entry for the command (any matcher) and re-adds exactly one, so a duplicated or
+// corrupted registration cannot survive as "already present".
+const HOOK_MATCHER = 'Skill|Agent';
+// [event, command, matcher] — Stop and SubagentStop have no matcher. SubagentStop
+// runs the stop command too: the hook tells the two apart by hook_event_name and
+// records a background agent's end there instead of closing the session.
+const HOOK_REGISTRATIONS = [
+  ['PreToolUse', HOOK_CMD_PRE, HOOK_MATCHER],
+  ['PostToolUse', HOOK_CMD_POST, HOOK_MATCHER],
+  ['Stop', HOOK_CMD_STOP, null],
+  ['SubagentStop', HOOK_CMD_STOP, null],
+];
+
+const sameMatcher = (group, matcher) => (group?.matcher ?? null) === (matcher ?? null);
+
+/** Executable registrations of `command` across every group of an event. */
+function countHook(entries, command) {
+  if (!Array.isArray(entries)) return 0;
+  return entries.reduce((n, group) => n + (Array.isArray(group?.hooks)
+    ? group.hooks.filter((h) => h?.type === 'command' && h?.command === command).length
+    : 0), 0);
+}
+
+function hasHook(entries, command, matcher = 'Skill') {
   if (!Array.isArray(entries)) return false;
   return entries.some((group) =>
-    group?.matcher === 'Skill' &&
+    sameMatcher(group, matcher) &&
     Array.isArray(group?.hooks) &&
     group.hooks.some((h) => h?.command === command)
   );
 }
 
-function addSkillHook(entries, command) {
+function addHook(entries, command, matcher = 'Skill') {
   const list = Array.isArray(entries) ? entries : [];
-  if (hasSkillHook(list, command)) return list;
+  if (hasHook(list, command, matcher)) return list;
   list.push({
-    matcher: 'Skill',
+    ...(matcher ? { matcher } : {}),
     hooks: [{ type: 'command', command }],
   });
   return list;
 }
 
-function removeSkillHook(entries, command) {
+function removeHook(entries, command, matcher = 'Skill') {
   if (!Array.isArray(entries)) return entries;
   return entries
     .map((group) => {
-      if (group?.matcher !== 'Skill' || !Array.isArray(group?.hooks)) return group;
+      if (!sameMatcher(group, matcher) || !Array.isArray(group?.hooks)) return group;
       const hooks = group.hooks.filter((h) => h?.command !== command);
       if (hooks.length === 0) return null;
       return { ...group, hooks };
     })
     .filter(Boolean);
+}
+
+/** Remove `command` from every group, whatever its matcher. */
+function removeHookCommand(entries, command) {
+  if (!Array.isArray(entries)) return entries;
+  return entries
+    .map((group) => {
+      if (!Array.isArray(group?.hooks)) return group;
+      const hooks = group.hooks.filter((h) => h?.command !== command);
+      if (hooks.length === 0) return null;
+      return { ...group, hooks };
+    })
+    .filter(Boolean);
+}
+
+/** Drop every hook whose command runs `file`, whatever node path an earlier install used. */
+function withoutHookFile(entries, file) {
+  if (!Array.isArray(entries)) return [];
+  return entries
+    .map((group) => {
+      if (!Array.isArray(group?.hooks)) return group;
+      const hooks = group.hooks.filter((h) => !(typeof h?.command === 'string' && h.command.includes(file)));
+      return hooks.length ? { ...group, hooks } : null;
+    })
+    .filter(Boolean);
+}
+
+/** Wire `node <dest> <agent>` into UserPromptSubmit and Stop of a hooks document, replacing earlier copies. */
+function withRelayHook(document, dest, agent) {
+  const hooks = { ...(document.hooks || {}) };
+  for (const event of RELAY_HOOK_EVENTS) {
+    hooks[event] = [...withoutHookFile(hooks[event], dest),
+      { hooks: [{ type: 'command', command: `"${NODE_BIN}" "${dest}" ${agent}`, timeout: RELAY_HOOK_TIMEOUT }] }];
+  }
+  return { ...document, hooks };
+}
+
+function withoutRelayHook(document, dest) {
+  if (!document.hooks) return document;
+  const hooks = { ...document.hooks };
+  for (const event of RELAY_HOOK_EVENTS) {
+    if (!(event in hooks)) continue;
+    hooks[event] = withoutHookFile(hooks[event], dest);
+    if (hooks[event].length === 0) delete hooks[event];
+  }
+  return { ...document, hooks };
+}
+
+function readCodexHooks() {
+  if (!fs.existsSync(CODEX_HOOKS)) return { hooks: {} };
+  try { return JSON.parse(fs.readFileSync(CODEX_HOOKS, 'utf8')); }
+  catch (e) { die(`cannot parse ${CODEX_HOOKS}: ${e.message}`); }
+}
+
+function writeCodexHooks(document) {
+  const backup = `${CODEX_HOOKS}.backup-${new Date().toISOString().replace(/[:.]/g, '-')}`;
+  if (fs.existsSync(CODEX_HOOKS)) fs.copyFileSync(CODEX_HOOKS, backup);
+  fs.writeFileSync(CODEX_HOOKS, JSON.stringify(document, null, 2) + '\n');
+  return backup;
+}
+
+function installRelayHook() {
+  const src = resolveHookSource('relay-autoreply.mjs');
+  // An xm build older than the hook has no source; the trace hook above still installs.
+  if (!src) {
+    warn('relay auto-reply hook skipped: relay-autoreply.mjs not found. Update the xm plugin, then re-run xm init.');
+    return;
+  }
+  fs.copyFileSync(src, RELAY_HOOK_DEST);
+  fs.chmodSync(RELAY_HOOK_DEST, 0o755);
+  const backup = writeSettings(withRelayHook(readSettings(), RELAY_HOOK_DEST, 'claude'));
+  log(`relay auto-reply hook: ${RELAY_HOOK_DEST} (settings backup: ${path.basename(backup)})`);
+
+  if (!fs.existsSync(CODEX_DIR)) {
+    log('relay auto-reply hook: ~/.codex not found, Codex skipped');
+    return;
+  }
+  fs.mkdirSync(path.dirname(CODEX_RELAY_HOOK_DEST), { recursive: true });
+  fs.copyFileSync(src, CODEX_RELAY_HOOK_DEST);
+  fs.chmodSync(CODEX_RELAY_HOOK_DEST, 0o755);
+  const codexBackup = writeCodexHooks(withRelayHook(readCodexHooks(), CODEX_RELAY_HOOK_DEST, 'codex'));
+  log(`relay auto-reply hook: ${CODEX_RELAY_HOOK_DEST} (hooks.json backup: ${path.basename(codexBackup)})`);
+  log('Codex asks each session once to trust new or changed hooks; choose "Trust all and continue".');
+}
+
+function uninstallRelayHook() {
+  let removed = false;
+  for (const dest of [RELAY_HOOK_DEST, CODEX_RELAY_HOOK_DEST]) {
+    if (!fs.existsSync(dest)) continue;
+    fs.unlinkSync(dest);
+    log(`removed ${dest}`);
+    removed = true;
+  }
+  if (fs.existsSync(SETTINGS)) {
+    const settings = readSettings();
+    const cleaned = withoutRelayHook(settings, RELAY_HOOK_DEST);
+    if (JSON.stringify(cleaned) !== JSON.stringify(settings)) {
+      log(`cleaned relay hook from ${SETTINGS} (backup: ${path.basename(writeSettings(cleaned))})`);
+      removed = true;
+    }
+  }
+  if (fs.existsSync(CODEX_HOOKS)) {
+    const document = readCodexHooks();
+    const cleaned = withoutRelayHook(document, CODEX_RELAY_HOOK_DEST);
+    if (JSON.stringify(cleaned) !== JSON.stringify(document)) {
+      log(`cleaned relay hook from ${CODEX_HOOKS} (backup: ${path.basename(writeCodexHooks(cleaned))})`);
+      removed = true;
+    }
+  }
+  return removed;
 }
 
 function install(opts) {
@@ -197,12 +447,12 @@ function install(opts) {
       const beforePre = JSON.stringify(s.hooks.PreToolUse || []);
       const beforePost = JSON.stringify(s.hooks.PostToolUse || []);
       // Drop renamed-hook entries (pre-rename: x-kit-trace-session.mjs)
-      s.hooks.PreToolUse = removeSkillHook(s.hooks.PreToolUse, LEGACY_HOOK_CMD_PRE);
-      s.hooks.PostToolUse = removeSkillHook(s.hooks.PostToolUse, LEGACY_HOOK_CMD_POST);
+      s.hooks.PreToolUse = removeHook(s.hooks.PreToolUse, LEGACY_HOOK_CMD_PRE);
+      s.hooks.PostToolUse = removeHook(s.hooks.PostToolUse, LEGACY_HOOK_CMD_POST);
       // Drop bare-`node` entries from earlier xm versions so we don't end up
       // with both formats wired after this install rewrites with absolute path.
-      s.hooks.PreToolUse = removeSkillHook(s.hooks.PreToolUse, PREVIOUS_HOOK_CMD_PRE);
-      s.hooks.PostToolUse = removeSkillHook(s.hooks.PostToolUse, PREVIOUS_HOOK_CMD_POST);
+      s.hooks.PreToolUse = removeHook(s.hooks.PreToolUse, PREVIOUS_HOOK_CMD_PRE);
+      s.hooks.PostToolUse = removeHook(s.hooks.PostToolUse, PREVIOUS_HOOK_CMD_POST);
       const changed = JSON.stringify(s.hooks.PreToolUse || []) !== beforePre
         || JSON.stringify(s.hooks.PostToolUse || []) !== beforePost;
       if (changed) {
@@ -221,11 +471,14 @@ function install(opts) {
 
     const settings = readSettings();
     settings.hooks = settings.hooks || {};
-    settings.hooks.PreToolUse = addSkillHook(settings.hooks.PreToolUse, HOOK_CMD_PRE);
-    settings.hooks.PostToolUse = addSkillHook(settings.hooks.PostToolUse, HOOK_CMD_POST);
+    for (const [event, command, matcher] of HOOK_REGISTRATIONS) {
+      settings.hooks[event] = removeHookCommand(settings.hooks[event], command);
+      settings.hooks[event] = addHook(settings.hooks[event], command, matcher);
+    }
     const backup = writeSettings(settings);
     log(`updated ${SETTINGS} (backup: ${path.basename(backup)})`);
-    log('hook installed. Skill traces → <project>/.xm/traces/');
+    log('hook installed. Skill sessions (closed at Stop) + Agent spans → <project>/.xm/traces/');
+    installRelayHook();
   } else {
     log('hooks skipped (--no-hooks). CLI dispatcher install is handled by install.sh.');
   }
@@ -282,6 +535,9 @@ function install(opts) {
     warn(`CLI binary refresh skipped: ${e.message}`);
   }
 
+  // Last: a failure here exits, and must not cost the steps above.
+  for (const target of ROUTING_TARGETS) syncRouting(target, opts.routingFlags.has(target.flag));
+
   log('done.');
 }
 
@@ -311,7 +567,7 @@ function resolveBashDispatcher() {
 }
 
 function uninstall() {
-  let removed = false;
+  let removed = uninstallRelayHook();
   if (fs.existsSync(HOOK_DEST)) {
     fs.unlinkSync(HOOK_DEST);
     log(`removed ${HOOK_DEST}`);
@@ -340,18 +596,29 @@ function uninstall() {
   if (fs.existsSync(SETTINGS)) {
     const settings = readSettings();
     if (settings.hooks) {
-      const beforePre = JSON.stringify(settings.hooks.PreToolUse || []);
-      const beforePost = JSON.stringify(settings.hooks.PostToolUse || []);
-      settings.hooks.PreToolUse = removeSkillHook(settings.hooks.PreToolUse, HOOK_CMD_PRE);
-      settings.hooks.PostToolUse = removeSkillHook(settings.hooks.PostToolUse, HOOK_CMD_POST);
-      const changed = JSON.stringify(settings.hooks.PreToolUse || []) !== beforePre
-        || JSON.stringify(settings.hooks.PostToolUse || []) !== beforePost;
+      const snapshot = () => JSON.stringify(HOOK_REGISTRATIONS.map(([event]) => settings.hooks[event] || []));
+      const before = snapshot();
+      for (const [event, command] of HOOK_REGISTRATIONS) {
+        settings.hooks[event] = removeHookCommand(settings.hooks[event], command);
+      }
+      const changed = snapshot() !== before;
       if (changed) {
         const backup = writeSettings(settings);
         log(`cleaned ${SETTINGS} (backup: ${path.basename(backup)})`);
         removed = true;
       }
     }
+  }
+  for (const target of ROUTING_TARGETS) {
+    if (installedRevision(readRoutingFile(target), target.markers) === null) continue;
+    const backup = backupCopy(target.file);
+    try {
+      removeMarkerBlock(target.file, { markers: target.markers, backup: false });
+    } catch (e) {
+      die(`${target.label} routing: ${e.message}`);
+    }
+    log(`removed the routing block from ${target.file} (backup: ${path.basename(backup)})`);
+    removed = true;
   }
   log(removed ? 'uninstalled.' : 'nothing to remove.');
 }
@@ -362,24 +629,45 @@ function status() {
   const xmPlanCmdExists = fs.existsSync(XM_PLAN_CMD_DEST)
     && fs.readFileSync(XM_PLAN_CMD_DEST, 'utf8').includes(XM_PLAN_MARKER);
   const settings = readSettings();
-  const pre = hasSkillHook(settings.hooks?.PreToolUse, HOOK_CMD_PRE);
-  const post = hasSkillHook(settings.hooks?.PostToolUse, HOOK_CMD_POST);
+  const legacySkillOnly = hasHook(settings.hooks?.PreToolUse, HOOK_CMD_PRE, 'Skill') || hasHook(settings.hooks?.PostToolUse, HOOK_CMD_POST, 'Skill');
   log(`hook file        : ${hookExists ? HOOK_DEST : '(missing)'}`);
   log(`xm dispatcher    : ${xmCmdExists ? XM_CMD_DEST : '(missing)'}`);
   log(`xm-plan alias    : ${xmPlanCmdExists ? XM_PLAN_CMD_DEST : '(missing)'}`);
-  log(`PreToolUse/Skill : ${pre ? 'registered' : '(missing)'}`);
-  log(`PostToolUse/Skill: ${post ? 'registered' : '(missing)'}`);
-  const ok = hookExists && xmCmdExists && xmPlanCmdExists && pre && post;
+  // Opt-in, so it is reported but never counted toward `overall`.
+  for (const target of ROUTING_TARGETS) log(`${target.label} routing: ${routingStatus(target)}`);
+  // Exactly one executable registration per event is "registered"; more than one
+  // runs the hook twice per call, none is missing.
+  let hooksOk = true;
+  for (const [event, command, matcher] of HOOK_REGISTRATIONS) {
+    const count = countHook(settings.hooks?.[event], command);
+    // The one executable registration must itself sit in the right matcher group;
+    // a stray typeless entry in the right group plus an executable one elsewhere
+    // is not "installed".
+    const matched = countHook((settings.hooks?.[event] || []).filter((group) => sameMatcher(group, matcher)), command) === 1;
+    const state = count === 1 && matched ? 'registered'
+      : count > 1 ? `duplicate (${count} registrations — re-run xm setup)`
+        : legacySkillOnly && event !== 'Stop' ? '(Skill-only — re-run xm setup to add Agent spans)'
+          : event === 'Stop' && legacySkillOnly ? '(missing — re-run xm setup; sessions never close without it)'
+            : '(missing)';
+    if (state !== 'registered') hooksOk = false;
+    log(`${event}${matcher ? `/${matcher}` : ''}`.padEnd(21) + `: ${state}`);
+  }
+  const ok = hookExists && xmCmdExists && xmPlanCmdExists && hooksOk;
   log(`overall          : ${ok ? 'OK' : 'NOT installed'}`);
   process.exit(ok ? 0 : 1);
 }
 
-const cmd = process.argv[2] || 'install';
-const flags = new Set(process.argv.slice(3));
+// `xm setup --claude-md` reaches here without a subcommand. Only known install
+// flags imply install: `xm init --dry-run` must still fail, not install.
+const INSTALL_FLAGS = new Set(['--no-hooks', ...ROUTING_TARGETS.map((t) => t.flag)]);
+const args = process.argv.slice(2);
+const flagOnly = INSTALL_FLAGS.has(args[0]);
+const cmd = flagOnly ? 'install' : (args[0] || 'install');
+const flags = new Set(flagOnly ? args : args.slice(1));
 
 switch (cmd) {
   case 'install':
-    install({ withHooks: !flags.has('--no-hooks') });
+    install({ withHooks: !flags.has('--no-hooks'), routingFlags: flags });
     break;
   case 'uninstall':
     uninstall();
@@ -392,10 +680,13 @@ switch (cmd) {
   case 'help':
     process.stdout.write(`xm ${VERB} — install global hooks into ~/.claude/ (once per machine)\n\n`
       + `Usage:\n`
-      + `  xm ${VERB}                 # install trace-session hook globally\n`
+      + `  xm ${VERB}                 # install trace-session and relay auto-reply hooks globally\n`
       + `  xm ${VERB} --no-hooks      # skip hook install (CLI only)\n`
+      + `  xm ${VERB} --claude-md     # also add the xm routing block to ~/.claude/CLAUDE.md\n`
+      + `                           #   (later installs and xm update refresh it while it exists)\n`
+      + `  xm ${VERB} --codex-md      # also add the xm routing block to ~/.codex/AGENTS.md\n`
       + `  xm ${VERB} status          # check install state\n`
-      + `  xm ${VERB} uninstall       # remove hook + settings entries\n\n`
+      + `  xm ${VERB} uninstall       # remove hook + settings entries + routing block\n\n`
       + `To start a PROJECT (not a machine install):\n`
       + `  xm init <name>          # create .xm/build/projects/<name> + register it\n`
       + `  xm init . | --here      # name it after the current directory\n\n`

@@ -8,6 +8,10 @@
 import { writeFileSync, existsSync } from 'node:fs';
 const [model, prompt = ''] = process.argv.slice(2);
 const stream = process.argv.includes('--stream'); // resolveStreamCommand appends --stream
+if (stream && model === 'claude' && process.env.X_PANEL_RESULT_ERROR_CLAUDE) {
+  console.log(JSON.stringify({ type: 'result', is_error: true, result: '{"findings":[]}' }));
+  process.exit(0);
+}
 const isFollowup = /"responses"/.test(prompt); // debate round (빅뱃5) — must precede refute check
 const isRefute = !isFollowup && /verdicts/i.test(prompt);
 

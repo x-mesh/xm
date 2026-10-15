@@ -1,6 +1,6 @@
 {
   "name": "xm",
-  "version": "2.26.0",
+  "version": "2.41.0",
   "description": "All-in-one x-mesh toolkit: x-build (project harness), x-op (strategy orchestration), x-agent (agent primitives), x-solver (problem solving)",
   "author": {
     "name": "x-mesh"
@@ -16,5 +16,20 @@
     "orchestration",
     "agent"
   ],
-  "skills": "./skills/"
+  "skills": "./skills/",
+  "types": "./types/index.d.ts",
+  "userConfig": {
+    "relayChatAutoReviewCooldownMinutes": {
+      "type": "number",
+      "description": "relay-chat auto review: minutes between two automatic review requests to the pair session",
+      "default": 30,
+      "title": "relay-chat auto review cooldown (minutes)"
+    },
+    "relayChatAutoReviewMaxLines": {
+      "type": "number",
+      "description": "relay-chat auto review: largest diff (added + removed lines) sent automatically; a bigger one waits for the button",
+      "default": 400,
+      "title": "relay-chat auto review max diff lines"
+    }
+  }
 }

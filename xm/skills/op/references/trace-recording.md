@@ -1,18 +1,17 @@
 # Trace Recording
 
-Reference for x-op trace entries. `session_start` and `session_end` are automatic via `.claude/hooks/trace-session.mjs`.
+Tracing is automatic. The trace-session hook (`.claude/hooks/trace-session.mjs`, installed into `~/.claude/hooks/` by `xm setup`) writes:
 
-## Per agent call
+- `session_start` when an `xm:*` skill is invoked (PreToolUse on the Skill tool).
+- one `agent_step` per Agent tool call made between that point and the end of the assistant turn — `id` (tool_use_id), `role` (subagent_type), `model`, `duration_ms`, `status`, `source: "hook"`. `status` comes from the tool response: `success`, `error`, `launched` (a `run_in_background` agent, so `duration_ms` is launch time, not run time), or `unknown` when no response is visible.
+- `session_end` at the turn's Stop hook. An agent still running at that point is written as `status: "abandoned"` and counted in `agent_count`. A skill that spans several turns (AskUserQuestion) gets one session per turn that invoked it; later turns' Agent calls are not attributed.
 
-Read the session ID from `.xm/traces/.active`, then record `agent_step` with role, model, estimated tokens, duration, and status. Use `parent_id` for fan-out trees and `null` for root agents.
+Tokens and cost are not in the hook payload. `xm trace drift` reports them only when a writer supplies `tokens_est`, and always as estimates.
 
 ## Rules
 
-1. `session_start` and `session_end` are automatic; do not emit them manually.
-2. `agent_step` is best-effort; record it when possible.
-3. Store metadata only. Never include LLM output or verdicts in trace entries.
-4. If trace write fails, log to stderr and continue. Trace failures must not block strategy execution.
-
-## Applies to
-
-x-op strategy execution and long-running sub-operations.
+1. Do not hand-write `session_start`, `session_end`, or `agent_step`. Duplicate rows skew `agent_count` and every drift axis.
+2. `fan_out` and `synthesize` rows stay LLM-written where x-trace's SKILL.md asks for them.
+3. Metadata only, in every row and in `xm trace record` notes: ids, roles, models, durations, statuses, paths. Never LLM output, verdicts, PRD text, or user requirements.
+4. Record cross-tool activity with `xm trace record <tool>` (the ledger). That contract is unchanged.
+5. Read traces with `xm trace list` and `xm trace show <session-id>`.

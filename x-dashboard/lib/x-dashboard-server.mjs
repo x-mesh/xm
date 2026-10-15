@@ -2731,11 +2731,15 @@ function parseJsonlFile(filePath) {
 function handleTraces(xmRoot, req) {
   const tracesDir = safeJoin(xmRoot, 'traces');
 
-  // Read active pointer
+  // Read active pointer. Current hooks store {session_id, tool_use_id}; older
+  // installs stored the bare session id — accept both.
   let active = null;
   const activeFile = tracesDir ? safeJoin(xmRoot, 'traces', '.active') : null;
   if (activeFile && existsSync(activeFile)) {
-    try { active = readFileSync(activeFile, 'utf8').trim(); } catch {}
+    try {
+      const raw = readFileSync(activeFile, 'utf8').trim();
+      active = raw.startsWith('{') ? (JSON.parse(raw).session_id || null) : (raw || null);
+    } catch {}
   }
 
   if (!tracesDir || !existsSync(tracesDir)) {
@@ -4645,22 +4649,57 @@ function handlePrdList(xmRoot, req) {
       }
     } catch {}
   }
+  // x-plan sessions: .xm/plan/<id>/plan.md, including drafts x-build cannot import yet
+  const planBase = safeJoin(xmRoot, 'plan');
+  if (planBase && existsSync(planBase)) {
+    try {
+      for (const entry of readdirSync(planBase, { withFileTypes: true })) {
+        if (!entry.isDirectory()) continue;
+        const planPath = safeJoin(planBase, entry.name, 'plan.md');
+        if (!planPath || !existsSync(planPath)) continue;
+        const manifest = readJSONFile(join(planBase, entry.name, 'manifest.json'));
+        try {
+          const st = statSync(planPath);
+          items.push({
+            id: 'x:' + entry.name, name: entry.name, source: 'plan',
+            // Same gate as `xm build import-plan`: only complete, executable envelopes become a PRD
+            draft: manifest?.status !== 'complete' || manifest?.executable !== true,
+            status: manifest?.status ?? null, phase: manifest?.phase ?? null, goal: manifest?.goal ?? null,
+            mtime: st.mtimeMs, size: st.size,
+          });
+        } catch {}
+      }
+    } catch {}
+  }
   items.sort((a, b) => b.mtime - a.mtime);
   return jsonResponseWithETag(items, req);
 }
 
 function handlePrdDetail(xmRoot, id, req) {
-  // id prefix: 'p:<project>' → build-project PRD, 's:<file>' (or bare) → standalone
+  // id prefix: 'p:<project>' → build-project PRD, 'x:<session>' → x-plan plan.md, 's:<file>' (or bare) → standalone
   let filePath;
+  let planInfo = null;
   if (id.startsWith('p:')) {
     filePath = safeJoin(xmRoot, 'build', 'projects', id.slice(2), 'phases', '02-plan', 'PRD.md');
+  } else if (id.startsWith('x:')) {
+    const planBase = safeJoin(xmRoot, 'plan');
+    const planDir = planBase && safeJoin(planBase, id.slice(2));
+    // safeJoin accepts the base itself, so require a direct child of .xm/plan
+    if (!planDir || dirname(planDir) !== planBase) return jsonResponseWithETag({ error: 'forbidden' }, req, 400);
+    filePath = join(planDir, 'plan.md');
+    const manifest = readJSONFile(join(planDir, 'manifest.json'));
+    planInfo = {
+      source: 'plan',
+      draft: manifest?.status !== 'complete' || manifest?.executable !== true,
+      status: manifest?.status ?? null, phase: manifest?.phase ?? null,
+    };
   } else {
     filePath = safeJoin(xmRoot, 'prd', id.startsWith('s:') ? id.slice(2) : id);
   }
   if (!filePath) return jsonResponseWithETag({ error: 'forbidden' }, req, 400);
   if (!existsSync(filePath)) return jsonResponseWithETag({ error: 'not_found' }, req, 404);
   try {
-    return jsonResponseWithETag({ id, content: readFileSync(filePath, 'utf8') }, req);
+    return jsonResponseWithETag({ id, content: readFileSync(filePath, 'utf8'), ...planInfo }, req);
   } catch {
     return jsonResponseWithETag({ error: 'read_error' }, req, 500);
   }

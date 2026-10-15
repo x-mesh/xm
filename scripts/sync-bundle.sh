@@ -180,6 +180,12 @@ echo "=== Syncing shared docs ==="
 sync_file "docs/korean-output-style.md" "xm/docs/korean-output-style.md"
 
 echo ""
+echo "=== Syncing x-plan validator into standalone x-build ==="
+for f in schema.mjs normalize.mjs validate.mjs core.mjs; do
+  sync_file "x-plan/lib/x-plan/$f" "x-build/lib/x-plan/$f"
+done
+
+echo ""
 echo "=== Syncing x-build lib files ==="
 shopt -s nullglob
 for f in x-build/lib/x-build/*.mjs; do
@@ -363,6 +369,13 @@ if [ -d "x-build/templates/hooks" ]; then
     sync_file "$f" "xm/templates/hooks/$rel"
   done < <(find x-build/templates/hooks -type f)
 fi
+
+echo ""
+echo "=== Syncing trace-session hook ==="
+# The hook that `xm setup` installs into ~/.claude/hooks/ ships from xm/hooks/, but
+# the tested source lives in .claude/hooks/ (test/trace-session-hook.test.mjs). The
+# two drifted for three months before this mirror existed.
+sync_file ".claude/hooks/trace-session.mjs" "xm/hooks/trace-session.mjs"
 
 echo ""
 echo "=== Syncing build references ==="

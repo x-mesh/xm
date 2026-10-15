@@ -278,6 +278,108 @@ describe('getModelForRole — extended roles and aliases', () => {
   });
 });
 
+// ── 1c. resolveRoleModel — pin layer on top of the tier chain (t2) ────────────
+
+describe('resolveRoleModel / getModelForRole — pin support', () => {
+  afterEach(() => { clearConfig(); clearMetrics(); });
+
+  function captureStderr(fn) {
+    const chunks = [];
+    const orig = process.stderr.write;
+    process.stderr.write = (s) => { chunks.push(String(s)); return true; };
+    try { fn(); } finally { process.stderr.write = orig; }
+    return chunks.join('');
+  }
+
+  test('a valid pin resolves with source "pin" and a reconstructed spec', () => {
+    const r = ce.resolveRoleModel('executor', 'medium', {
+      model_overrides: { executor: 'codex:gpt-5.6-luna:xhigh' },
+    });
+    expect(r).toEqual({
+      tier: 'haiku', vendor: 'codex', model: 'gpt-5.6-luna', effort: 'xhigh',
+      spec: 'gpt-5.6-luna:xhigh', source: 'pin', warning: null,
+    });
+  });
+
+  test('getModelForRole still returns only the tier for a pin', () => {
+    expect(ce.getModelForRole('executor', 'medium', {
+      model_overrides: { executor: 'codex:gpt-5.6-luna:xhigh' },
+    })).toBe('haiku');
+  });
+
+  test('a bare-tier override keeps source "override" (back-compat)', () => {
+    const r = ce.resolveRoleModel('executor', 'medium', { model_overrides: { executor: 'opus' } });
+    expect(r).toEqual({ tier: 'opus', vendor: null, model: null, effort: null, spec: null, source: 'override', warning: null });
+  });
+
+  test('no override falls back to the profile default with source "profile"', () => {
+    const r = ce.resolveRoleModel('executor', 'medium', { model_profile: 'default' });
+    expect(r).toEqual({ tier: 'sonnet', vendor: null, model: null, effort: null, spec: null, source: 'profile', warning: null });
+  });
+
+  test('a malformed pin warns on stderr, degrades to the profile default, and getModelForRole still returns a tier', () => {
+    let r;
+    const stderr = captureStderr(() => {
+      r = ce.resolveRoleModel('executor', 'medium', {
+        model_overrides: { executor: 'codex:gpt-6-new:high' }, // unknown model, no @tier
+        model_profile: 'default',
+      });
+    });
+    expect(r.tier).toBe('sonnet'); // default.executor
+    expect(r.source).toBe('profile');
+    expect(r.warning).toContain('could not infer a tier');
+    expect(stderr).toContain('could not infer a tier');
+    expect(ce.getModelForRole('executor', 'medium', {
+      model_overrides: { executor: 'codex:gpt-6-new:high' },
+      model_profile: 'default',
+    })).toBe('sonnet');
+  });
+
+  test('nothing throws for a matrix of bare tiers, valid pins, and malformed pins — always a MODEL_COSTS key or INHERIT_MODEL', () => {
+    const VALID_TIERS = new Set([...Object.keys(ce.MODEL_COSTS), ce.INHERIT_MODEL]);
+    const values = [
+      'sonnet', 'opus', 'haiku', 'fable', 'inherit',
+      'codex:gpt-5.6-luna:xhigh', 'codex:gpt-5.6-terra', 'claude:fable',
+      'codex:gpt-6-new:high', 'codex:gpt-6-new:high@sonnet', 'a@b@c', ':bad', 'codex:gpt-5.6-luna:xhi',
+    ];
+    for (const value of values) {
+      let model;
+      expect(() => {
+        model = ce.getModelForRole('executor', 'medium', { model_overrides: { executor: value }, model_profile: 'default' });
+      }).not.toThrow();
+      expect(VALID_TIERS.has(model)).toBe(true);
+    }
+  });
+
+  test('economy: a pin resolves to the pin (not rejected like inherit)', () => {
+    const r = ce.resolveRoleModel('executor', 'medium', {
+      model_overrides: { executor: 'codex:gpt-5.6-luna:xhigh' },
+      model_profile: 'economy',
+    });
+    expect(r.source).toBe('pin');
+    expect(r.tier).toBe('haiku');
+    expect(r.warning).toBeNull();
+  });
+
+  test('economy: "inherit" still falls back with its warning (guard untouched)', () => {
+    const warnings = [];
+    const orig = console.warn;
+    console.warn = (...a) => warnings.push(a.join(' '));
+    let r;
+    try {
+      r = ce.resolveRoleModel('executor', 'medium', {
+        model_overrides: { executor: 'inherit' },
+        model_profile: 'economy',
+      });
+    } finally {
+      console.warn = orig;
+    }
+    expect(r.source).toBe('profile');
+    expect(r.tier).not.toBe('inherit');
+    expect(warnings.some(w => w.includes('economy'))).toBe(true);
+  });
+});
+
 // ── 2. Spinlock concurrency (appendMetric) ────────────────────────────────────
 
 describe('appendCostEvent — payload and write lock', () => {
@@ -655,6 +757,7 @@ describe('estimateTaskCost — forecast actuals', () => {
     try { utimesSync(metricsFile(), pastSec, pastSec); } catch { /* ok */ }
 
     writeFileSync(tokenActualsPath(), JSON.stringify({
+      sample_policy: 'explicit-actual-v1',
       updated_at: new Date().toISOString(),
       sample_counts: { small: 5 },
       estimates: { small: { avg_cost_usd: 999.99 } },
@@ -675,6 +778,7 @@ describe('estimateTaskCost — forecast actuals', () => {
 
     const avgCost = 0.042;
     writeFileSync(tokenActualsPath(), JSON.stringify({
+      sample_policy: 'explicit-actual-v1',
       updated_at: new Date().toISOString(),
       sample_counts: { small: 10 },
       estimates: { small: { avg_cost_usd: avgCost } },
@@ -695,6 +799,7 @@ describe('estimateTaskCost — forecast actuals', () => {
 
     // Rich sonnet history only — a haiku estimate must not borrow its average.
     writeFileSync(tokenActualsPath(), JSON.stringify({
+      sample_policy: 'explicit-actual-v1',
       updated_at: new Date().toISOString(),
       sample_counts: { small: 10 },
       estimates: { small: { avg_cost_usd: 999.99 } },
@@ -713,6 +818,7 @@ describe('estimateTaskCost — forecast actuals', () => {
     mkdirSync(metricsDir(), { recursive: true });
     // Write token-actuals first with an older mtime
     writeFileSync(tokenActualsPath(), JSON.stringify({
+      sample_policy: 'explicit-actual-v1',
       updated_at: new Date(Date.now() - 10_000).toISOString(),
       sample_counts: { small: 20 },
       estimates: { small: { avg_cost_usd: 999.99 } },
@@ -725,6 +831,27 @@ describe('estimateTaskCost — forecast actuals', () => {
 
     expect(ce.loadTokenActuals()).toBeNull();
   });
+
+  test('rebuilds an old cache that counted untagged estimated completions', () => {
+    appendLines(...Array.from({ length: 10 }, () => ({
+      type: 'task_complete', size: 'small', model: 'sonnet', cost_usd: 99,
+    })), {
+      type: 'task_complete', size: 'small', model: 'sonnet', cost_usd: 0.02, cost_source: 'actual',
+    });
+    writeFileSync(tokenActualsPath(), JSON.stringify({
+      updated_at: new Date().toISOString(),
+      sample_counts: { small: 10 },
+      model_sample_counts: { 'small:sonnet': 10 },
+      model_estimates: { 'small:sonnet': { avg_cost_usd: 99 } },
+    }), 'utf8');
+
+    const actuals = ce.loadTokenActuals();
+    expect(actuals.sample_policy).toBe('explicit-actual-v1');
+    expect(actuals.sample_counts.small).toBe(1);
+    expect(actuals.model_estimates['small:sonnet'].avg_cost_usd).toBeCloseTo(0.02, 6);
+    expect(JSON.parse(readFileSync(tokenActualsPath(), 'utf8'))).toEqual(actuals);
+    expect(ce.estimateTaskCost({ name: 'setup', size: 'small' }, 'sonnet').cost_usd).toBeLessThan(1);
+  });
 });
 
 // ── 6. cmdForecastUpdate ──────────────────────────────────────────────────────
@@ -736,8 +863,8 @@ describe('cmdForecastUpdate', () => {
   test('cmdForecastUpdate creates token-actuals.json', () => {
     const ts = new Date().toISOString();
     appendLines(
-      { type: 'task_complete', cost_usd: 0.10, size: 'small', timestamp: ts },
-      { type: 'task_complete', cost_usd: 0.20, size: 'small', timestamp: ts },
+      { type: 'task_complete', cost_usd: 0.10, size: 'small', cost_source: 'actual', timestamp: ts },
+      { type: 'task_complete', cost_usd: 0.20, size: 'small', cost_source: 'actual', timestamp: ts },
     );
     ce.cmdForecastUpdate();
     const actualsPath = join(metricsDir(), 'token-actuals.json');
@@ -761,9 +888,9 @@ describe('computeTokenActuals — averages from metrics', () => {
   test('known task_complete entries produce correct per-size averages', () => {
     const ts = new Date().toISOString();
     appendLines(
-      { type: 'task_complete', cost_usd: 0.10, size: 'small',  timestamp: ts },
-      { type: 'task_complete', cost_usd: 0.20, size: 'small',  timestamp: ts },
-      { type: 'task_complete', cost_usd: 0.30, size: 'medium', timestamp: ts },
+      { type: 'task_complete', cost_usd: 0.10, size: 'small', cost_source: 'actual', timestamp: ts },
+      { type: 'task_complete', cost_usd: 0.20, size: 'small', cost_source: 'actual', timestamp: ts },
+      { type: 'task_complete', cost_usd: 0.30, size: 'medium', cost_source: 'actual', timestamp: ts },
     );
 
     const result = ce.computeTokenActuals();
@@ -789,7 +916,7 @@ describe('computeTokenActuals — averages from metrics', () => {
     const ts = new Date().toISOString();
     appendLines(
       { type: 'task_complete', cost_usd: 0.50, timestamp: ts },           // no size
-      { type: 'task_complete', cost_usd: 0.10, size: 'large', timestamp: ts },
+      { type: 'task_complete', cost_usd: 0.10, size: 'large', cost_source: 'actual', timestamp: ts },
     );
     const result = ce.computeTokenActuals();
     expect(result.sample_counts.large).toBe(1);
@@ -800,7 +927,7 @@ describe('computeTokenActuals — averages from metrics', () => {
     const ts = new Date().toISOString();
     appendLines(
       { type: 'task_failed',   cost_usd: 0.99, size: 'small', timestamp: ts },
-      { type: 'task_complete', cost_usd: 0.05, size: 'small', timestamp: ts },
+      { type: 'task_complete', cost_usd: 0.05, size: 'small', cost_source: 'actual', timestamp: ts },
     );
     const result = ce.computeTokenActuals();
     expect(result.sample_counts.small).toBe(1);
@@ -809,7 +936,7 @@ describe('computeTokenActuals — averages from metrics', () => {
 
   test('result includes updated_at timestamp string', () => {
     const ts = new Date().toISOString();
-    appendLines({ type: 'task_complete', cost_usd: 0.05, size: 'small', timestamp: ts });
+    appendLines({ type: 'task_complete', cost_usd: 0.05, size: 'small', cost_source: 'actual', timestamp: ts });
     const result = ce.computeTokenActuals();
     expect(typeof result.updated_at).toBe('string');
     expect(() => new Date(result.updated_at)).not.toThrow();
@@ -828,19 +955,23 @@ describe('computeTokenActuals — averages from metrics', () => {
     expect(result.estimates.small.avg_cost_usd).toBeCloseTo(0.20, 5);
   });
 
-  test('legacy untagged samples remain counted (backward compatible)', () => {
+  test('legacy untagged estimated completions do not count as actuals', () => {
     const ts = new Date().toISOString();
-    appendLines({ type: 'task_complete', cost_usd: 0.30, size: 'medium', timestamp: ts });
+    appendLines(
+      { type: 'task_complete', cost_usd: 0.30, size: 'medium', timestamp: ts },
+      { type: 'task_complete', cost_usd: 0.04, size: 'medium', cost_source: 'actual', timestamp: ts },
+    );
     const result = ce.computeTokenActuals();
     expect(result.sample_counts.medium).toBe(1);
+    expect(result.estimates.medium.avg_cost_usd).toBeCloseTo(0.04, 5);
   });
 
   test('rows with a concrete model also feed a size:model bucket; model-less rows stay size-only', () => {
     const ts = new Date().toISOString();
     appendLines(
-      { type: 'task_complete', cost_usd: 0.10, size: 'small', model: 'sonnet', timestamp: ts },
-      { type: 'task_complete', cost_usd: 0.30, size: 'small', model: 'haiku',  timestamp: ts },
-      { type: 'task_complete', cost_usd: 0.50, size: 'small',                  timestamp: ts }, // legacy: no model
+      { type: 'task_complete', cost_usd: 0.10, size: 'small', model: 'sonnet', cost_source: 'actual', timestamp: ts },
+      { type: 'task_complete', cost_usd: 0.30, size: 'small', model: 'haiku', cost_source: 'actual', timestamp: ts },
+      { type: 'task_complete', cost_usd: 0.50, size: 'small', cost_source: 'actual', timestamp: ts },
     );
     const result = ce.computeTokenActuals();
     expect(result.sample_counts.small).toBe(3); // size aggregate keeps all three
@@ -925,10 +1056,11 @@ describe('predictTaskCost — measured hierarchical lookup (t6)', () => {
     expect(result.p50_usd).toBeCloseTo(0.20, 8);
   });
 
-  test('keeps untagged legacy actuals but excludes estimated and inherit rows', () => {
+  test('excludes untagged legacy estimates and inherit rows', () => {
     const result = ce.predictTaskCost({ description: 'implement login endpoint', role: 'executor', size: 'medium' }, [
       actual(0.10),
-      { ...actual(0.20), cost_source: undefined }, // schema-v1 measured completion
+      { ...actual(99.99), cost_source: undefined },
+      actual(0.20),
       actual(0.30),
       { ...actual(99.99), cost_source: 'estimated_inherit' },
       { ...actual(88.88), model: ce.INHERIT_MODEL },

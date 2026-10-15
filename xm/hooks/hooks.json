@@ -1,4 +1,7 @@
 {
   "description": "x-build hooks",
-  "hooks": {}
+  "hooks": {},
+  "modules": [
+    "./relay-chat/register.tsx"
+  ]
 }

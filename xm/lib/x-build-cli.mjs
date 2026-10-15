@@ -8,7 +8,7 @@
  */
 
 import { resolveProject, resetCircuitBreaker, getCircuitState, setExplicitProject, cmdProjectKind } from './x-build/core.mjs';
-import { cmdInit, cmdList, cmdStatus, cmdClose, cmdDashboard, interactiveInit, interactiveDashboard, cmdHandoffFull, cmdHandoffMirror, cmdHandon } from './x-build/project.mjs';
+import { cmdInit, cmdList, cmdArchive, cmdStatus, cmdClose, cmdDashboard, interactiveInit, interactiveDashboard, cmdHandoffFull, cmdHandoffMirror, cmdHandon } from './x-build/project.mjs';
 import { cmdPhase, cmdGate, cmdCheckpoint } from './x-build/phase.mjs';
 import { cmdTasks, cmdTaskCheck, cmdSteps, cmdRun, cmdRunStatus, cmdReviewGroup, cmdGroupCheck, interactiveTasksAdd, cmdDispatch } from './x-build/tasks.mjs';
 import { cmdLater } from './x-build/later.mjs';
@@ -30,6 +30,7 @@ import { cmdProgress } from './x-build/plan-progress.mjs';
 import { cmdAttention } from './x-build/attention.mjs';
 import { cmdMutate, cmdMutateDiff } from './x-build/mutate.mjs';
 import { cmdVerifyTests } from './x-build/escape-verify.mjs';
+import { cmdBatch } from './x-build/batch.mjs';
 
 // Skip top-level execution when imported by xm-server
 if (process.env.XKIT_SERVER !== '1') {
@@ -74,7 +75,8 @@ switch (cmd) {
   case 'init':
     if (args.length === 0) { await interactiveInit(); } else { cmdInit(args); }
     break;
-  case 'list':       cmdList(); break;
+  case 'list':       cmdList(args); break;
+  case 'archive':    cmdArchive(args); break;
   case 'status':     cmdStatus(args); break;
   case 'phase':      cmdPhase(args); break;
   case 'gate':       cmdGate(args); break;
@@ -161,6 +163,7 @@ switch (cmd) {
   case 'release':       cmdRelease(args); break;
   case 'gate-panel':    cmdGatePanel(args); break;
   case 'worktrees':     cmdWorktrees(args); break;
+  case 'batch':         await cmdBatch(args); break;
   case 'review-integration': cmdReviewIntegration(args); break;
   case 'circuit-breaker': {
     const project = resolveProject(args[1]);

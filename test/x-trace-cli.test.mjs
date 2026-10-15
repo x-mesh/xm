@@ -252,6 +252,7 @@ describe('replay artifact (t14)', () => {
     expect(out.code).toBe(0);
     const result = JSON.parse(out.stdout);
     expect(result.replay_of).toBe('replay-fixture');
+    expect(result.execution).toEqual({ agent_invoked: false, result_source: 'none' });
     expect(result.seed).toMatch(/^[a-f0-9]{64}$/);
     expect(result.warnings).toEqual([]);
     expect(result.diff.output.comparison).toBe('unavailable');
@@ -263,6 +264,7 @@ describe('replay artifact (t14)', () => {
 
     const manifest = JSON.parse(readFileSync(result.manifest, 'utf8'));
     expect(manifest.replay_of).toBe('replay-fixture');
+    expect(manifest.execution).toEqual(result.execution);
     expect(manifest.overrides.model).toBe('haiku');
     expect(manifest.source.span_id).toBe('span-a');
     expect(manifest.deterministic_context.span.id).toBe('span-a');
@@ -289,6 +291,7 @@ describe('replay artifact (t14)', () => {
     const first = runCli(dir, ['replay', 'diff-trace', '--span', 'span-a', '--result', 'replay-result.json', '--promote-to-eval', '--json']);
     expect(first.code).toBe(0);
     const parsed = JSON.parse(first.stdout);
+    expect(parsed.execution).toEqual({ agent_invoked: false, result_source: 'provided_metadata' });
     expect(parsed.diff.output.comparison).toBe('changed');
     expect(parsed.diff.tokens.total).toEqual({ original: 30, replay: 36, delta: 6 });
     expect(parsed.diff.cost.original).toBeCloseTo(0.03, 8);
@@ -407,7 +410,9 @@ describe('replay artifact (t14)', () => {
     expect(runCli(dir, ['replay', '../fork-trace', '--span', 'span-a']).code).toBe(1);
     expect(runCli(dir, ['replay', 'fork-trace', '--span', 'missing']).code).toBe(1);
     for (let index = 0; index < 3; index++) {
-      expect(runCli(dir, ['replay', 'fork-trace', '--span', 'span-a']).code).toBe(0);
+      const prepared = runCli(dir, ['replay', 'fork-trace', '--span', 'span-a']);
+      expect(prepared.code).toBe(0);
+      expect(prepared.stdout).toContain('agent execution: not run');
     }
     const capped = runCli(dir, ['replay', 'fork-trace', '--span', 'span-a']);
     expect(capped.code).toBe(1);
@@ -442,6 +447,118 @@ describe('replay artifact (t14)', () => {
     expect(results.filter((result) => result.code === 0)).toHaveLength(3);
     expect(results.filter((result) => result.code !== 0)).toHaveLength(1);
     expect(results.find((result) => result.code !== 0).stderr).toContain('fork point limit reached');
+  });
+});
+
+describe('list / show', () => {
+  function seedTraces(dir, head) {
+    const traces = join(dir, '.xm', 'traces');
+    mkdirSync(traces, { recursive: true });
+    const solver = 'solver-20260929-010000-aaaa';
+    writeFileSync(join(traces, `${solver}.jsonl`), [
+      JSON.stringify({ type: 'session_start', session_id: solver, ts: '2026-09-29T01:00:00.000Z', v: 1, skill: 'solver', args: 'iterate', git: { head, branch: 'main', dirty: false } }),
+      JSON.stringify({ type: 'agent_step', session_id: solver, ts: '2026-09-29T01:00:02.000Z', v: 1, id: 'toolu_01', parent_id: null, role: 'Explore', model: 'haiku', duration_ms: 1200, status: 'success', source: 'hook', description: 'Scan tests' }),
+      JSON.stringify({ type: 'session_end', session_id: solver, ts: '2026-09-29T01:00:05.000Z', v: 1, status: 'unknown', total_duration_ms: 5000, agent_count: 1 }),
+    ].join('\n') + '\n');
+    const review = 'review-20260928-010000-bbbb';
+    writeFileSync(join(traces, `${review}.jsonl`), [
+      JSON.stringify({ type: 'session_start', session_id: review, ts: '2026-09-28T01:00:00.000Z', v: 1, skill: 'review', args: '' }),
+      '{"type":"session_end","session_id":"' + review + '","st',
+    ].join('\n') + '\n');
+    writeFileSync(join(traces, '.active'), solver);
+    return { solver, review };
+  }
+
+  test('list prints newest first, marks open sessions, counts agents, and reports malformed lines', () => {
+    const { dir, head } = makeRepo();
+    const { solver, review } = seedTraces(dir, head);
+    const r = runCli(dir, ['list']);
+    expect(r.code).toBe(0);
+    const lines = r.stdout.split('\n');
+    expect(lines[0]).toMatch(/^STARTED\s+SKILL\s+STATUS\s+AGENTS\s+DURATION\s+SESSION/);
+    expect(lines[1]).toContain(solver);
+    expect(lines[1]).toMatch(/\bsolver\b.*\bunknown\b.*\b1\b.*5\.0s/);
+    expect(lines[2]).toContain(review);
+    expect(lines[2]).toMatch(/\breview\b.*\bopen\b.*\b0\b/);
+    expect(r.stdout).toContain('2 of 2 session(s)');
+    expect(r.stdout).toContain('1 malformed');
+  });
+
+  test('list --json and --limit', () => {
+    const { dir, head } = makeRepo();
+    const { solver } = seedTraces(dir, head);
+    const r = runCli(dir, ['list', '--json', '--limit', '1']);
+    expect(r.code).toBe(0);
+    const out = JSON.parse(r.stdout);
+    expect(out.total).toBe(2);
+    expect(out.shown).toBe(1);
+    // Only the sessions shown are parsed, so the torn review file is not counted here.
+    expect(out.malformed_lines).toBe(0);
+    expect(out.sessions[0]).toMatchObject({ session_id: solver, skill: 'solver', status: 'unknown', agent_count: 1, duration_ms: 5000 });
+    expect(out.sessions[0]._rows).toBeUndefined();
+    expect(runCli(dir, ['list', '--limit', '0']).code).toBe(1);
+  });
+
+  test('list on an empty trace dir is an honest empty state', () => {
+    const { dir } = makeRepo();
+    const r = runCli(dir, ['list']);
+    expect(r.code).toBe(0);
+    expect(r.stdout).toContain('No trace sessions');
+  });
+
+  test('show resolves exact ids and unique prefixes, and lists agent_step rows', () => {
+    const { dir, head } = makeRepo();
+    const { solver } = seedTraces(dir, head);
+    const exact = runCli(dir, ['show', solver]);
+    expect(exact.code).toBe(0);
+    expect(exact.stdout).toContain(`Session ${solver}`);
+    expect(exact.stdout).toContain(head.slice(0, 7));
+    expect(exact.stdout).toMatch(/Agents \(1\)/);
+    expect(exact.stdout).toMatch(/Explore · haiku · 1\.2s · success · Scan tests\s+\[toolu_01\]/);
+
+    const prefix = runCli(dir, ['show', 'solver-2026']);
+    expect(prefix.code).toBe(0);
+    expect(prefix.stdout).toContain(`Session ${solver}`);
+
+    const json = JSON.parse(runCli(dir, ['show', solver, '--json']).stdout);
+    expect(json.agents).toHaveLength(1);
+    expect(json.agents[0]).toMatchObject({ id: 'toolu_01', role: 'Explore', model: 'haiku', duration_ms: 1200, source: 'hook' });
+    expect(json.row_types).toEqual({ session_start: 1, agent_step: 1, session_end: 1 });
+  });
+
+  test('show reports the malformed line and an unknown or ambiguous id exits 1', () => {
+    const { dir, head } = makeRepo();
+    const { review } = seedTraces(dir, head);
+    const torn = runCli(dir, ['show', review]);
+    expect(torn.code).toBe(0);
+    expect(torn.stdout).toContain('status: open');
+    expect(torn.stdout).toContain('1 malformed');
+    expect(torn.stdout).toContain('Agents: none recorded');
+
+    const missing = runCli(dir, ['show', 'nope-0000']);
+    expect(missing.code).toBe(1);
+    expect(missing.stderr).toContain('No trace session matches');
+    expect(runCli(dir, ['show']).code).toBe(1);
+  });
+
+  test('show falls back to the embedded session_id when a file stem does not match, and reports ambiguous prefixes', () => {
+    const { dir, head } = makeRepo();
+    seedTraces(dir, head);
+    const traces = join(dir, '.xm', 'traces');
+    // A synced/renamed file: stem differs from the session_id inside.
+    writeFileSync(join(traces, 'renamed-copy-20260927-010000-cccc.jsonl'), [
+      JSON.stringify({ type: 'session_start', session_id: 'op-20260927-010000-dddd', ts: '2026-09-27T01:00:00.000Z', v: 1, skill: 'op' }),
+      JSON.stringify({ type: 'session_end', session_id: 'op-20260927-010000-dddd', ts: '2026-09-27T01:00:03.000Z', v: 1, status: 'success', total_duration_ms: 3000, agent_count: 0 }),
+    ].join('\n') + '\n');
+
+    const byEmbedded = runCli(dir, ['show', 'op-20260927-010000-dddd']);
+    expect(byEmbedded.code).toBe(0);
+    expect(byEmbedded.stdout).toContain('Session op-20260927-010000-dddd');
+
+    writeFileSync(join(traces, 'solver-20260929-020000-eeee.jsonl'), JSON.stringify({ type: 'session_start', session_id: 'solver-20260929-020000-eeee', ts: '2026-09-29T02:00:00.000Z', v: 1, skill: 'solver' }) + '\n');
+    const ambiguous = runCli(dir, ['show', 'solver-2026']);
+    expect(ambiguous.code).toBe(1);
+    expect(ambiguous.stderr).toContain('Ambiguous session');
   });
 });
 

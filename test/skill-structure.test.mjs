@@ -136,6 +136,16 @@ describe('x-solver SKILL.md structure', () => {
     expect(content).toContain('same logical operation');
   });
 
+  // The LLM fallback runs before the AskUserQuestion in step 4. Acting on its answer there
+  // (strategy set, or classify --select) commits the run before the user has chosen.
+  test('classify LLM fallback defers every state change to the step after the user chooses', () => {
+    const classifyBody = readFileSync(join(solverRoot, 'commands', 'classify.md'), 'utf8');
+    const parse = classifyBody.slice(classifyBody.indexOf('Parse the agent result'), classifyBody.indexOf('4. **AskUserQuestion'));
+    expect(parse.length).toBeGreaterThan(0);
+    expect(parse).not.toContain('strategy set');
+    expect(parse).not.toContain('classify --select');
+  });
+
   test('classify direct path is documented as non-strategy', () => {
     const classifyBody = readFileSync(join(solverRoot, 'commands', 'classify.md'), 'utf8');
 

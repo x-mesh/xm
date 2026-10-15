@@ -3,7 +3,7 @@ import { execSync, spawnSync } from 'node:child_process';
 import { copyFileSync, existsSync, lstatSync, mkdirSync, mkdtempSync, readFileSync, realpathSync, rmSync, symlinkSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { dirname, join, matchesGlob, resolve } from 'node:path';
-import { listMutationTasks, parseDiffChanges, runDiffMutate, runTaskMutate } from '../x-build/lib/x-build/mutate.mjs';
+import { listMutationTasks, parseDiffChanges, recordDiffSurvivors, runDiffMutate, runTaskMutate } from '../x-build/lib/x-build/mutate.mjs';
 import { ADAPTERS, lineRanges, widenedRoot } from '../x-build/lib/x-build/mutate-adapters.mjs';
 
 const FIXTURES = resolve(import.meta.dir, 'fixtures/mutate');
@@ -133,6 +133,13 @@ test('StrykerJS report keeps schema locations and statuses', () => {
   expect(mutants.every(row => row.file === 'src/calc.ts' && row.line >= 4 && row.end_line <= 14)).toBe(true);
 });
 
+test('StrykerJS preserves end columns for nested mutation identities', () => {
+  const outDir = tempDir('mutate-span-');
+  write(outDir, 'mutation.json', JSON.stringify({ files: { 'src/a.mjs': { mutants: [20, 40].map(column => ({ mutatorName: 'ConditionalExpression', replacement: 'false', status: 'Survived', location: { start: { line: 1, column: 9 }, end: { line: 1, column } } })) } } }));
+  const parsed = adapter('javascript').parse({ outDir }, { exitCode: 0 });
+  expect(parsed.mutants.map(row => row.end_column)).toEqual([20, 40]);
+});
+
 test('StrykerJS schema status names map to the shared scale, unknown names to error', () => {
   const outDir = outDirWith(), location = { start: { line: 1, column: 1 }, end: { line: 1, column: 2 } };
   const names = ['CompileError', 'NoCoverage', 'RuntimeError', 'Ignored', 'Pending', 'Timeout', 'Bogus'];
@@ -179,6 +186,28 @@ test('Muter outcome names follow its TestSuiteOutcome enum', () => {
   const appliedOperators = names.map(testSuiteOutcome => ({ testSuiteOutcome, mutationPoint: { filePath: '/p_mutated/A.swift', mutationOperatorId: 'Op', position: { line: 1, column: 1 } } }));
   writeFileSync(join(outDir, 'muter.json'), JSON.stringify({ fileReports: [{ appliedOperators }] }));
   expect(adapter('swift').parse({ root: '/p', outDir }, { exitCode: 0 }).mutants.map(row => row.status)).toEqual(['killed', 'unviable', 'no_coverage', 'timeout', 'survived', 'killed']);
+});
+
+test('a red baseline reaches the report as a tool failure, not a mutation result', () => {
+  // Measured: cargo-mutants exits 4, StrykerJS 1, gomutants 1, Muter 255, and only
+  // cargo-mutants names the baseline; the others write no report at all.
+  const empty = outDirWith();
+  expect(adapter('rust').parse({ outDir: empty }, { exitCode: 4 })).toEqual({ mutants: [], baseline_failed: true });
+  expect(() => adapter('javascript').parse({ outDir: empty }, { exitCode: 1 })).toThrow(/StrykerJS exited 1 without a report/);
+  expect(() => adapter('go').parse({ outDir: empty }, { exitCode: 1 })).toThrow(/gomutants exited 1/);
+  expect(() => adapter('swift').parse({ root: '/project', outDir: empty }, { exitCode: 255 })).toThrow(/Muter exited 255/);
+});
+
+test('gomutants statuses keep the spacing the tool emits, and an unmapped one stays visible', () => {
+  const outDir = outDirWith();
+  const mutations = [
+    { type: 'INVERT_ASSIGNMENTS', status: 'NOT VIABLE', line: 4, column: 2, original: '+=', replacement: '-=' },
+    { type: 'RETURN_ZERO', status: 'NOT COVERED', line: 5, column: 2, original: 'x', replacement: '0' },
+    { type: 'LOOP_CONDITION', status: 'TIMED OUT', line: 6, column: 2, original: 'i < n', replacement: 'true' },
+    { type: 'BRANCH_IF', status: 'EQUIVALENT', line: 7, column: 2, original: 'a', replacement: 'b' },
+  ];
+  writeFileSync(join(outDir, 'gomutants.json'), JSON.stringify({ files: [{ file_name: 'calc.go', mutations }] }));
+  expect(adapter('go').parse({ outDir }, { exitCode: 0 }).mutants.map(row => row.status)).toEqual(['unviable', 'no_coverage', 'timeout', 'error']);
 });
 
 test('Muter plan requires muter.conf.yml and repeats --files-to-mutate per file', () => {
@@ -272,6 +301,17 @@ test('diff mode groups files by manifest root, includes uncommitted edits, and k
   expect(report.counts.survived).toBe(2);
 });
 
+test('an untracked file in a supported language is named instead of silently skipped', async () => {
+  const root = fakeRepo();
+  write(root, 'a.fake', 'one\ntwo\n');
+  write(root, 'new.fake', 'fresh\n');
+  write(root, 'notes.txt', 'unsupported kind\n');
+  const report = await runDiffMutate({ cwd: root, base: 'main', adapters: [fakeAdapter()] });
+  // The new file is not in the diff, so it is never mutated; the report says so.
+  expect(report.untracked_files).toEqual(['new.fake']);
+  expect(report.mutants.map(row => row.file)).toEqual(['a.fake']);
+});
+
 test('a tool that is not installed is reported with its install command and never replaced', async () => {
   const root = fakeRepo();
   sh(root, 'git checkout -qb feature');
@@ -340,7 +380,7 @@ test('each entry rejects the other entry\'s flags and the removed ones', () => {
     ['mutate-diff', ['--diff', 'main', '--timeout-ms', '99999999999'], /--timeout-ms must be an integer between 1 and 2147483647/],
     // `xm build mutate` is task-only.
     ['mutate', ['--diff', 'main'], /--diff belongs to `xm mutate --diff <base>`/],
-    ['mutate', ['--max-mutants', '3'], /--max-mutants was removed/],
+    ['mutate-diff', ['--diff', 'main', '--max-mutants', '0'], /--max-mutants must be a positive integer/],
     ['mutate', ['--list', '--task', 'T1'], /--list cannot be combined with --task/],
     ['mutate', ['--base', 'main'], /--task <id> is required/],
     // --base reaches its own guard only with --list, which names no task.
@@ -352,6 +392,57 @@ test('each entry rejects the other entry\'s flags and the removed ones', () => {
   }
 });
 
+test('diff survivors reach the attention queue once per commit, and never for uncommitted bytes', async () => {
+  const root = fakeRepo();
+  sh(root, 'git checkout -qb feature');
+  write(root, 'a.fake', 'one\ntwo\n');
+  commitAll(root, 'committed change');
+  const report = await runDiffMutate({ cwd: root, base: 'main', adapters: [fakeAdapter()] });
+  const artifact = '.xm/review/mutate-diff/x.json';
+  expect(report.uncommitted_files).toEqual([]);
+  expect(recordDiffSurvivors(root, report, artifact, true)).toBe(1);
+  // The row id carries the commit, so a second run on the same HEAD adds nothing.
+  expect(recordDiffSurvivors(root, report, artifact, true)).toBe(0);
+  const ledger = readFileSync(join(root, '.xm/review/escape-ledger.jsonl'), 'utf8').trim().split('\n').map(line => JSON.parse(line));
+  expect(ledger).toEqual([expect.objectContaining({ type: 'surviving_mutant', commit: report.head, file: 'a.fake', line: 2, source: 'mutate' })]);
+  expect(ledger[0].task_id).toBeUndefined();
+
+  write(root, 'a.fake', 'one\ntwo\nthree\n');
+  const dirty = await runDiffMutate({ cwd: root, base: 'main', adapters: [fakeAdapter()] });
+  expect(dirty.uncommitted_files).toEqual(['a.fake']);
+  expect(recordDiffSurvivors(root, dirty, artifact, true)).toBe(0);
+  expect(readFileSync(join(root, '.xm/review/escape-ledger.jsonl'), 'utf8').trim().split('\n')).toHaveLength(1);
+});
+
+test('two survivors on one line stay separate rows in the attention queue', () => {
+  const root = makeRoot();
+  const mutant = (column, mutator = 'BinaryOperator') => ({ file: 'src/lib.rs', line: 4, end_line: 4, column, mutator, description: 'x', status: 'survived' });
+  const report = { head: 'a'.repeat(40), ts: new Date().toISOString(), uncommitted_files: [], mutants: [mutant(12), mutant(21)] };
+  // cargo-mutants reports both as BinaryOperator on line 4; only the column separates them.
+  expect(recordDiffSurvivors(root, report, '.xm/review/mutate-diff/x.json', true)).toBe(2);
+  const ledger = readFileSync(join(root, '.xm/review/escape-ledger.jsonl'), 'utf8').trim().split('\n').map(line => JSON.parse(line));
+  expect(ledger.map(row => row.operator).sort()).toEqual([expect.stringMatching(/^BinaryOperator-12-[0-9a-f]{16}$/), expect.stringMatching(/^BinaryOperator-21-[0-9a-f]{16}$/)]);
+});
+
+test('different replacements at the same position stay separate and reruns remain deduplicated', () => {
+  const root = makeRoot();
+  const mutant = description => ({ tool: 'StrykerJS', file: 'src/calc.mjs', line: 4, end_line: 4, column: 12, mutator: 'ArithmeticOperator', description, status: 'survived' });
+  const report = { head: 'a'.repeat(40), ts: new Date().toISOString(), uncommitted_files: [], mutants: [mutant('a + b -> a - b'), mutant('a + b -> a * b')] };
+  const artifact = '.xm/review/mutate-diff/x.json';
+  expect(recordDiffSurvivors(root, report, artifact, true)).toBe(2);
+  expect(recordDiffSurvivors(root, report, artifact, true)).toBe(0);
+  const ledger = readFileSync(join(root, '.xm/review/escape-ledger.jsonl'), 'utf8').trim().split('\n').map(JSON.parse);
+  expect(new Set(ledger.map(row => row.id)).size).toBe(2);
+  expect(new Set(ledger.map(row => row.operator)).size).toBe(2);
+});
+
+test('nested expressions with the same replacement and start keep their full span identity', () => {
+  const root = makeRoot();
+  const report = { head: 'a'.repeat(40), ts: new Date().toISOString(), uncommitted_files: [], mutants: [20, 40, 60].map(end_column => ({ tool: 'StrykerJS', file: 'src/a.mjs', line: 19, end_line: 19, column: 9, end_column, mutator: 'ConditionalExpression', description: 'ConditionalExpression: false', status: 'survived' })) };
+  expect(recordDiffSurvivors(root, report, '.xm/review/mutate-diff/x.json', true)).toBe(3);
+  expect(recordDiffSurvivors(root, report, '.xm/review/mutate-diff/x.json', true)).toBe(0);
+});
+
 test('task mode runs in the linked worktree, reports under the project, and queues survivors', async () => {
   const root = fakeRepo(), wt = artifact(root, 'T1', { base: 'main' });
   changeInWorktree(wt);
@@ -359,7 +450,8 @@ test('task mode runs in the linked worktree, reports under the project, and queu
   expect(report).toMatchObject({ mode: 'task', project: 'p', task_id: 'T1', counts: { survived: 1 } });
   expect(JSON.parse(readFileSync(join(root, '.xm/review/mutate/p/T1.json'), 'utf8')).mutants).toEqual([expect.objectContaining({ file: 'a.fake', line: 2, status: 'survived' })]);
   const ledger = readFileSync(join(root, '.xm/review/escape-ledger.jsonl'), 'utf8').trim().split('\n').map(line => JSON.parse(line));
-  expect(ledger).toEqual([expect.objectContaining({ type: 'surviving_mutant', task_id: 'T1', file: 'a.fake', line: 2, operator: 'Fake', source: 'mutate', artifact: '.xm/review/mutate/p/T1.json' })]);
+  // The column qualifies the operator so two mutants on one line stay apart.
+  expect(ledger).toEqual([expect.objectContaining({ type: 'surviving_mutant', task_id: 'T1', file: 'a.fake', line: 2, operator: expect.stringMatching(/^Fake-1-[0-9a-f]{16}$/), source: 'mutate', artifact: `.xm/review/mutate/p/T1-${report.run_id}.json` })]);
   expect(readFileSync(join(root, 'a.fake'), 'utf8')).toBe('one\n');
 });
 
@@ -463,5 +555,119 @@ test('build mutation surface has no stale probe command or module references', (
   const repo = resolve(import.meta.dir, '..');
   for (const file of ['x-build/lib/x-build-cli.mjs', 'x-build/lib/x-build/mutate.mjs', 'x-build/skills/build/references/commands.md', 'xm/lib/x-build-cli.mjs', 'xm/lib/x-build/mutate.mjs', 'xm/skills/build/references/commands.md']) {
     expect(readFileSync(resolve(repo, file), 'utf8')).not.toMatch(/xm build probe|cmdProbe|runTaskProbe|x-build\/probe\.mjs|source:\s*['"]probe/);
+  }
+});
+
+test('measurement binds tests and config bytes and invalidates an in-flight edit', async () => {
+  const root = fakeRepo();
+  write(root, 'case.test.mjs', 'original'); commitAll(root);
+  write(root, 'a.fake', 'one\ntwo\n');
+  const first = await runDiffMutate({ cwd: root, base: 'main', adapters: [fakeAdapter()] });
+  expect(first.measurement.status).toBe('complete');
+  expect(first.evidence.inputs.find(row => row.file === 'case.test.mjs').sha256).toMatch(/^[a-f0-9]{64}$/);
+  const changing = fakeAdapter();
+  const parse = changing.parse;
+  changing.parse = (...args) => { write(root, 'case.test.mjs', 'changed'); return parse(...args); };
+  const second = await runDiffMutate({ cwd: root, base: 'main', adapters: [changing] });
+  expect(second.run_id).not.toBe(first.run_id);
+  expect(second.measurement.status).toBe('failed');
+  expect(second.evidence.stable).toBe(false);
+});
+
+test('measurement distinguishes missing coverage, deletion-only, and empty targets', async () => {
+  const root = fakeRepo();
+  expect((await runDiffMutate({ cwd: root, base: 'main', adapters: [fakeAdapter()] })).measurement.status).toBe('no_targets');
+  write(root, 'a.fake', '');
+  const deleted = await runDiffMutate({ cwd: root, base: 'main', adapters: [fakeAdapter()] });
+  expect(deleted.measurement.status).toBe('incomplete');
+  expect(deleted.measurement.excluded).toContainEqual({ file: 'a.fake', reason: 'deletion_only' });
+  write(root, 'a.fake', 'one\ntwo\n');
+  const unresolved = await runDiffMutate({ cwd: root, base: 'main', adapters: [fakeAdapter({ status: 'error' })] });
+  expect(unresolved.measurement.status).toBe('incomplete');
+});
+
+test('zero mutants never claim a complete measurement and untracked sources stay visible', async () => {
+  const root = fakeRepo(); write(root, 'a.fake', 'one\ntwo\n'); write(root, 'fresh.fake', 'new');
+  const empty = fakeAdapter(); empty.parse = () => ({ mutants: [] });
+  const report = await runDiffMutate({ cwd: root, base: 'main', adapters: [empty] });
+  expect(report.measurement.status).toBe('incomplete');
+  expect(report.measurement.excluded).toContainEqual({ file: 'fresh.fake', reason: 'untracked' });
+  expect(report.measurement.excluded).toContainEqual({ file: 'a.fake', reason: 'no_mutants' });
+});
+
+test('reuse refuses changed execution environment instead of masking a failed baseline', async () => {
+  const root = fakeRepo(); write(root, 'a.fake', 'one\ntwo\n');
+  const previous = process.env.XM_MUTATE_TEST_MODE;
+  try {
+    process.env.XM_MUTATE_TEST_MODE = 'pass';
+    const tool = fakeAdapter(); const parse = tool.parse;
+    tool.parse = (...args) => process.env.XM_MUTATE_TEST_MODE === 'fail' ? { baseline_failed: true } : parse(...args);
+    const report = await runDiffMutate({ cwd: root, base: 'main', adapters: [tool] });
+    process.env.XM_MUTATE_TEST_MODE = 'fail';
+    expect((await runDiffMutate({ cwd: root, base: 'main', adapters: [tool] })).languages[0].status).toBe('baseline_failed');
+    await expect(runDiffMutate({ cwd: root, base: 'main', adapters: [tool], reuseReport: report })).rejects.toThrow(/reuse evidence/);
+  } finally { if (previous === undefined) delete process.env.XM_MUTATE_TEST_MODE; else process.env.XM_MUTATE_TEST_MODE = previous; }
+});
+
+test('reuse skips only an identical measured command and rejects changed tests and tool versions', async () => {
+  const root = fakeRepo(); write(root, 'case.test.mjs', 'v1'); commitAll(root); write(root, 'a.fake', 'one\ntwo\n');
+  const tool = fakeAdapter(); let executions = 0; const parse = tool.parse;
+  tool.parse = (...args) => { executions++; return parse(...args); };
+  const report = await runDiffMutate({ cwd: root, base: 'main', adapters: [tool] });
+  const reused = await runDiffMutate({ cwd: root, base: 'main', adapters: [tool], reuseReport: report });
+  expect(executions).toBe(1); expect(reused.languages[0].reused_from).toBe(report.run_id);
+  tool.detect = () => ({ version: '2.0.0' });
+  await expect(runDiffMutate({ cwd: root, base: 'main', adapters: [tool], reuseReport: report })).rejects.toThrow(/tool version or execution plan/);
+  write(root, 'case.test.mjs', 'v2');
+  await expect(runDiffMutate({ cwd: root, base: 'main', adapters: [tool], reuseReport: report })).rejects.toThrow(/reuse evidence/);
+});
+
+test('a count limit unsupported by an adapter fails before the tool starts', async () => {
+  const root = fakeRepo(), calls = []; write(root, 'a.fake', 'one\ntwo\n');
+  const report = await runDiffMutate({ cwd: root, base: 'main', adapters: [fakeAdapter({ calls })], maxMutants: 2 });
+  expect(calls).toHaveLength(0); expect(report.measurement.status).toBe('failed');
+  expect(report.languages[0].reason).toContain('cannot enforce --max-mutants');
+});
+
+test('JavaScript test selection changes the recorded command plan', () => {
+  const root = makeRoot(), outDir = tempDir('selection-'); write(root, 'package.json', '{"scripts":{"test":"bun test"}}');
+  const ctx = { root, repoTop: root, changed: new Map([['src/a.js', [1]]]), outDir, testCommand: 'bun test test/sync.test.mjs' };
+  const plan = adapter('javascript').plan(ctx, { bin: 'stryker' });
+  expect(JSON.parse(Object.values(plan.files)[0]).commandRunner.command).toBe(ctx.testCommand);
+});
+
+test('CLI keeps each run report immutable while updating the legacy latest alias', () => {
+  const root = makeRoot(); write(root, 'README.md', 'base'); commitAll(root);
+  write(root, 'Sources/A.swift', 'let a = 1'); commitAll(root, 'change');
+  const args = [CLI, 'mutate-diff', '--diff', 'HEAD~1', '--json'];
+  const first = JSON.parse(spawnSync('node', args, { cwd: root, encoding: 'utf8', env: cliEnv() }).stdout);
+  const prefix = `${first.head.slice(0, 12)}-${first.merge_base.slice(0, 12)}`;
+  const path = join(root, `.xm/review/mutate-diff/${prefix}-${first.run_id}.json`), bytes = readFileSync(path, 'utf8');
+  const second = JSON.parse(spawnSync('node', args, { cwd: root, encoding: 'utf8', env: cliEnv() }).stdout);
+  expect(second.run_id).not.toBe(first.run_id); expect(readFileSync(path, 'utf8')).toBe(bytes);
+  expect(JSON.parse(readFileSync(join(root, `.xm/review/mutate-diff/${prefix}.json`), 'utf8')).run_id).toBe(second.run_id);
+});
+
+test('source symlinks are rejected before tool detection and newly added inputs invalidate a run', async () => {
+  const root = fakeRepo(), outside = tempDir('mutate-outside-'); write(outside, 'dummy.fake', 'outside');
+  rmSync(join(root, 'a.fake')); symlinkSync(join(outside, 'dummy.fake'), join(root, 'a.fake'));
+  let detected = false; const tool = fakeAdapter(); tool.detect = () => { detected = true; return { version: '1.0.0' }; };
+  await expect(runDiffMutate({ cwd: root, base: 'main', adapters: [tool] })).rejects.toThrow(/symlink/);
+  expect(detected).toBe(false);
+  rmSync(join(root, 'a.fake')); write(root, 'a.fake', 'one\ntwo\n');
+  const parse = tool.parse; tool.parse = (...args) => { write(root, 'new.test.mjs', 'new input'); return parse(...args); };
+  expect((await runDiffMutate({ cwd: root, base: 'main', adapters: [tool] })).evidence.stable).toBe(false);
+});
+
+test('deleted captured documents and tests prevent a complete gate-compatible measurement', async () => {
+  for (const file of ['old.md', 'old.test.mjs']) {
+    const root = fakeRepo(); write(root, file, 'old input'); commitAll(root);
+    write(root, 'a.fake', 'one\ntwo\n'); rmSync(join(root, file));
+    const report = await runDiffMutate({ cwd: root, base: 'HEAD', adapters: [fakeAdapter()] });
+    expect(report.evidence.stable).toBe(true);
+    expect(report.evidence.inputs).toContainEqual({ file, sha256: null });
+    expect(report.counts.survived).toBe(1);
+    expect(report.measurement.status).toBe('incomplete');
+    expect(report.measurement.excluded).toContainEqual({ file, reason: 'absent_input' });
   }
 });

@@ -1,6 +1,6 @@
 import { describe, test, expect } from 'bun:test';
 import { spawn, spawnSync } from 'node:child_process';
-import { join, dirname } from 'node:path';
+import { join, dirname, resolve } from 'node:path';
 import { mkdtempSync, rmSync, mkdirSync, writeFileSync, readFileSync, existsSync, utimesSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { fileURLToPath } from 'node:url';
@@ -55,6 +55,31 @@ function setup(cwd) {
   run(cwd, ['init', 'demo']);
   return join(cwd, '.xm', 'build', 'projects', 'demo');
 }
+
+describe('x-build init git exclude', () => {
+  test('uses the shared git exclude from a linked worktree', () => {
+    const tmp = mkdtempSync(join(tmpdir(), 'xb-linked-init-'));
+    const linked = join(tmpdir(), `xb-linked-init-wt-${process.pid}-${Date.now()}`);
+    try {
+      git(tmp, ['init', '-q']);
+      git(tmp, ['config', 'user.email', 'xm-test@example.com']);
+      git(tmp, ['config', 'user.name', 'xm test']);
+      writeFileSync(join(tmp, '.baseline'), 'baseline\n');
+      git(tmp, ['add', '.baseline']);
+      git(tmp, ['commit', '-qm', 'baseline']);
+      git(tmp, ['worktree', 'add', '-b', 'linked-init', linked, 'HEAD']);
+
+      const initialized = run(linked, ['init', 'demo']);
+      expect(initialized.code, initialized.stderr + initialized.stdout).toBe(0);
+      const common = spawnSync('git', ['rev-parse', '--path-format=absolute', '--git-common-dir'], { cwd: linked, encoding: 'utf8' }).stdout.trim();
+      expect(readFileSync(join(resolve(common), 'info', 'exclude'), 'utf8')).toContain('.xm/cache/');
+    } finally {
+      spawnSync('git', ['worktree', 'remove', '--force', linked], { cwd: tmp });
+      rmSync(linked, { recursive: true, force: true });
+      rmSync(tmp, { recursive: true, force: true });
+    }
+  });
+});
 
 function prepareRunnableTask(cwd) {
   const project = setup(cwd);
@@ -727,6 +752,295 @@ describe('content-bound approval and shared review groups', () => {
       const dispatched = JSON.parse(run(tmp, ['run', '--json']).stdout);
       expect(dispatched.status).toBe('blocked');
       expect(dispatched.blocked_reason).toBe('git_baseline_unavailable');
+    } finally {
+      rmSync(tmp, { recursive: true, force: true });
+    }
+  });
+});
+
+describe('status multi-active warning', () => {
+  function closeProject(cwd, name) {
+    const path = join(cwd, '.xm', 'build', 'projects', name, 'manifest.json');
+    const manifest = JSON.parse(readFileSync(path, 'utf8'));
+    manifest.current_phase = '05-close';
+    writeFileSync(path, JSON.stringify(manifest, null, 2));
+  }
+
+  function multiActiveWarning(stderr) {
+    return stderr.split('\n').filter(Boolean).map((line) => {
+      try { return JSON.parse(line); } catch { return null; }
+    }).find((entry) => entry?.warning === 'multi_active') || null;
+  }
+
+  test('closed projects do not count as active', () => {
+    const tmp = mkdtempSync(join(tmpdir(), 'xb-status-active-'));
+    try {
+      for (const name of ['open-a', 'closed-b', 'closed-c']) run(tmp, ['init', name]);
+      closeProject(tmp, 'closed-b');
+      closeProject(tmp, 'closed-c');
+
+      const status = run(tmp, ['status', '--json']);
+      expect(status.code).toBe(0);
+      expect(multiActiveWarning(status.stderr)).toBeNull();
+    } finally {
+      rmSync(tmp, { recursive: true, force: true });
+    }
+  });
+
+  test('archived projects do not count as active and do not win default selection', () => {
+    const tmp = mkdtempSync(join(tmpdir(), 'xb-status-active-'));
+    try {
+      for (const name of ['old-a', 'current-b']) run(tmp, ['init', name]);
+      const archive = run(tmp, ['archive', 'old-a']);
+      expect(archive.code).toBe(0);
+      expect(archive.stdout).toContain('archived');
+
+      const status = run(tmp, ['status', '--json']);
+      expect(status.code).toBe(0);
+      expect(multiActiveWarning(status.stderr)).toBeNull();
+      expect(JSON.parse(status.stdout).name ?? JSON.parse(status.stdout).project).toBe('current-b');
+    } finally {
+      rmSync(tmp, { recursive: true, force: true });
+    }
+  });
+
+  test('warning lists only non-closed projects', () => {
+    const tmp = mkdtempSync(join(tmpdir(), 'xb-status-active-'));
+    try {
+      for (const name of ['open-a', 'closed-b', 'open-d']) run(tmp, ['init', name]);
+      closeProject(tmp, 'closed-b');
+
+      const status = run(tmp, ['status', '--json']);
+      expect(status.code).toBe(0);
+      const warning = multiActiveWarning(status.stderr);
+      expect(warning).not.toBeNull();
+      expect([...warning.active].sort()).toEqual(['open-a', 'open-d']);
+    } finally {
+      rmSync(tmp, { recursive: true, force: true });
+    }
+  });
+});
+
+describe('status hint, stale running, metrics', () => {
+  function executeWithTasks(tmp, { status, startedAt }) {
+    const project = setup(tmp);
+    run(tmp, ['phase', 'set', 'plan']);
+    run(tmp, ['tasks', 'add', 'Implement export', '--done-criteria', 'works']);
+    run(tmp, ['steps', 'compute']);
+    // Jump straight to Execute: `phase set` honours the Plan exit gate, which is
+    // not what these tests exercise.
+    const manifestFile = join(project, 'manifest.json');
+    const manifest = JSON.parse(readFileSync(manifestFile, 'utf8'));
+    manifest.current_phase = '03-execute';
+    writeFileSync(manifestFile, JSON.stringify(manifest, null, 2));
+    const path = projectTasksPath(project);
+    const data = JSON.parse(readFileSync(path, 'utf8'));
+    for (const t of data.tasks) {
+      t.status = status;
+      if (startedAt) t.started_at = startedAt;
+      if (status === 'completed') t.completed_at = new Date().toISOString();
+    }
+    writeFileSync(path, JSON.stringify(data, null, 2));
+    return project;
+  }
+
+  test('status 💡 Next and next agree when every Execute task is completed', () => {
+    const tmp = mkdtempSync(join(tmpdir(), 'xb-next-'));
+    try {
+      executeWithTasks(tmp, { status: 'completed' });
+      const status = run(tmp, ['status']);
+      const next = run(tmp, ['next']);
+      expect(status.code).toBe(0);
+      expect(status.stdout).toContain('x-build phase next');
+      expect(status.stdout).not.toMatch(/Next: .*x-build run\b/);
+      expect(next.stdout).toContain('x-build phase next');
+    } finally {
+      rmSync(tmp, { recursive: true, force: true });
+    }
+  });
+
+  test('a RUNNING task with no live worktree past the stale window is flagged in run-status and status', () => {
+    const tmp = mkdtempSync(join(tmpdir(), 'xb-stale-'));
+    try {
+      executeWithTasks(tmp, { status: 'running', startedAt: new Date(Date.now() - 2 * 3600_000).toISOString() });
+      const runStatus = run(tmp, ['run-status']);
+      expect(runStatus.code).toBe(0);
+      expect(runStatus.stdout).toContain('⚠ stale');
+      expect(runStatus.stdout).toContain('run --reconcile');
+      expect(run(tmp, ['status']).stdout).toContain('stale running (t1)');
+
+      for (const value of ['abc', '', '-5']) {
+        const bad = run(tmp, ['run-status', '--stale-min', value]);
+        expect(bad.code).toBe(1);
+        expect(bad.stderr).toContain('--stale-min requires a non-negative number of minutes');
+      }
+      expect(run(tmp, ['run-status', '--stale-min', '0']).code).toBe(0);
+
+      const fresh = mkdtempSync(join(tmpdir(), 'xb-stale-'));
+      try {
+        executeWithTasks(fresh, { status: 'running', startedAt: new Date().toISOString() });
+        expect(run(fresh, ['run-status']).stdout).not.toContain('stale');
+      } finally {
+        rmSync(fresh, { recursive: true, force: true });
+      }
+    } finally {
+      rmSync(tmp, { recursive: true, force: true });
+    }
+  });
+
+  test('metrics reads the rotated log, supports --json, and has an explicit empty state', () => {
+    const tmp = mkdtempSync(join(tmpdir(), 'xb-metrics-'));
+    try {
+      setup(tmp);
+      expect(run(tmp, ['metrics']).stdout).toContain('No metrics recorded yet');
+
+      const dir = join(tmp, '.xm', 'build', 'metrics');
+      mkdirSync(dir, { recursive: true });
+      writeFileSync(join(dir, 'sessions.jsonl.1'), JSON.stringify({
+        schema_v: 2, type: 'task_complete', project: 'demo', taskId: 't1', model: 'sonnet',
+        duration_ms: 60_000, cost_usd: 0.01, cost_source: 'estimate', timestamp: new Date().toISOString(),
+      }) + '\n');
+      // `not json` is unparsable; `null` parses but cannot be adapted — both count, neither aborts.
+      writeFileSync(join(dir, 'sessions.jsonl'), JSON.stringify({ schema_v: 2, event: 'after-rotation' }) + '\nnot json\nnull\n');
+
+      const text = run(tmp, ['metrics']);
+      expect(text.code).toBe(0);
+      expect(text.stdout).toContain('1 tasks completed');
+      expect(text.stdout).toContain('2 malformed row(s) skipped');
+
+      const json = JSON.parse(run(tmp, ['metrics', '--json']).stdout);
+      expect(json.tasks.count).toBe(1);
+      expect(json.files).toHaveLength(2);
+      expect(json.malformed_rows).toBe(2);
+      expect(json.tasks.cost.total_usd).toBeCloseTo(0.01, 5);
+      expect(json.tasks.cost).toMatchObject({ actual: 0, estimated: 1, missing: 0 });
+    } finally {
+      rmSync(tmp, { recursive: true, force: true });
+    }
+  });
+});
+
+describe('quality timeout', () => {
+  test('a test command that exceeds build.quality_timeout_ms is reported as a timeout, not a plain failure', () => {
+    const tmp = mkdtempSync(join(tmpdir(), 'xb-quality-'));
+    try {
+      setup(tmp);
+      writeFileSync(join(tmp, 'package.json'), JSON.stringify({ name: 't', scripts: { test: 'sleep 3' } }));
+      writeFileSync(join(tmp, '.xm', 'config.json'), JSON.stringify({ build: { quality_timeout_ms: 1000 } }));
+      const res = run(tmp, ['quality']);
+      expect(res.stdout).toContain('❌ npm-test');
+      expect(res.stdout).toContain('timed out after 1s (build.quality_timeout_ms — raise the limit or run `npm test` directly)');
+      const saved = JSON.parse(readFileSync(join(tmp, '.xm', 'build', 'projects', 'demo', 'phases', '04-verify', 'quality-results.json'), 'utf8'));
+      expect(saved.results.find((r) => r.check === 'npm-test')).toMatchObject({ passed: false, timeout: true, timeout_ms: 1000 });
+    } finally {
+      rmSync(tmp, { recursive: true, force: true });
+    }
+  });
+});
+
+describe('archive', () => {
+  test('archive hides a project from list, keeps status <name> working, and --undo restores it', () => {
+    const tmp = mkdtempSync(join(tmpdir(), 'xb-archive-'));
+    try {
+      for (const name of ['keep', 'retire']) run(tmp, ['init', name]);
+      expect(run(tmp, ['list']).stdout).toContain('retire');
+
+      const archived = run(tmp, ['archive', 'retire']);
+      expect(archived.code).toBe(0);
+      const manifestPath = join(tmp, '.xm', 'build', 'projects', 'retire', 'manifest.json');
+      const manifest = JSON.parse(readFileSync(manifestPath, 'utf8'));
+      expect(manifest.archived).toBe(true);
+      expect(typeof manifest.archived_at).toBe('string');
+
+      const list = run(tmp, ['list']);
+      expect(list.stdout).toContain('keep');
+      expect(list.stdout).not.toMatch(/^\s+retire\s/m);
+      expect(list.stdout).toContain('1 archived project(s) hidden');
+      expect(run(tmp, ['list', '--all']).stdout).toMatch(/retire.*\[archived/);
+
+      const status = run(tmp, ['status', 'retire']);
+      expect(status.code).toBe(0);
+      expect(status.stdout).toContain('retire');
+
+      expect(run(tmp, ['archive', 'retire']).stdout).toContain('already archived');
+      const undo = run(tmp, ['archive', 'retire', '--undo']);
+      expect(undo.code).toBe(0);
+      expect(JSON.parse(readFileSync(manifestPath, 'utf8')).archived).toBeUndefined();
+      expect(run(tmp, ['list']).stdout).toMatch(/^\s+retire\s/m);
+    } finally {
+      rmSync(tmp, { recursive: true, force: true });
+    }
+  });
+
+  test('close records a build entry through the xm dispatcher (XM_BIN seam) and survives a missing binary', () => {
+    const tmp = mkdtempSync(join(tmpdir(), 'xb-ledger-'));
+    try {
+      setup(tmp);
+      const log = join(tmp, 'xm-calls.log');
+      const fake = join(tmp, 'fake-xm');
+      writeFileSync(fake, `#!/bin/sh\necho "$@" >> "${log}"\n`, { mode: 0o755 });
+      const res = run(tmp, ['close', '--summary', 'done'], { XM_BIN: fake });
+      expect(res.code).toBe(0);
+      expect(readFileSync(log, 'utf8')).toContain('trace record build --note close demo --status ok');
+
+      const other = mkdtempSync(join(tmpdir(), 'xb-ledger-'));
+      try {
+        setup(other);
+        expect(run(other, ['close', '--summary', 'done'], { XM_BIN: join(other, 'does-not-exist') }).code).toBe(0);
+      } finally {
+        rmSync(other, { recursive: true, force: true });
+      }
+    } finally {
+      rmSync(tmp, { recursive: true, force: true });
+    }
+  });
+
+  test('archive without a name or with an unknown project fails without touching the tree', () => {
+    const tmp = mkdtempSync(join(tmpdir(), 'xb-archive-'));
+    try {
+      run(tmp, ['init', 'only']);
+      expect(run(tmp, ['archive']).code).toBe(1);
+      const unknown = run(tmp, ['archive', 'ghost']);
+      expect(unknown.code).toBe(1);
+      expect(existsSync(join(tmp, '.xm', 'build', 'projects', 'ghost'))).toBe(false);
+    } finally {
+      rmSync(tmp, { recursive: true, force: true });
+    }
+  });
+});
+
+describe('handoff collector', () => {
+  test('skips closed-project decisions and keeps exact uncommitted paths', () => {
+    const tmp = mkdtempSync(join(tmpdir(), 'xb-handoff-collect-'));
+    try {
+      git(tmp, ['init', '-q']);
+      git(tmp, ['config', 'user.email', 'xm-test@example.com']);
+      git(tmp, ['config', 'user.name', 'xm test']);
+      writeFileSync(join(tmp, '.gitignore'), '.xm/\n');
+      writeFileSync(join(tmp, 'Foo.mjs'), 'a\n');
+      writeFileSync(join(tmp, 'Gone.mjs'), 'a\n');
+      git(tmp, ['add', '.']);
+      git(tmp, ['commit', '-qm', 'baseline']);
+
+      for (const name of ['open-a', 'closed-b']) {
+        run(tmp, ['init', name]);
+        run(tmp, ['--project', name, 'decisions', 'add', `decision of ${name}`, '--rationale', 'why']);
+      }
+      const manifestFile = join(tmp, '.xm', 'build', 'projects', 'closed-b', 'manifest.json');
+      const manifest = JSON.parse(readFileSync(manifestFile, 'utf8'));
+      manifest.current_phase = '05-close';
+      writeFileSync(manifestFile, JSON.stringify(manifest, null, 2));
+
+      writeFileSync(join(tmp, 'Foo.mjs'), 'b\n');
+      rmSync(join(tmp, 'Gone.mjs'));
+      writeFileSync(join(tmp, 'CHANGELOG.md'), 'staged\n');
+      git(tmp, ['add', 'CHANGELOG.md']);
+      writeFileSync(join(tmp, 'README.md'), 'untracked\n');
+
+      expect(run(tmp, ['handoff', '--full']).code).toBe(0);
+      const state = JSON.parse(readFileSync(join(tmp, '.xm', 'build', 'SESSION-STATE.json'), 'utf8'));
+      expect(state.decisions.map((d) => d.project)).toEqual(['open-a']);
+      expect([...state.what_remains.uncommitted].sort()).toEqual(['CHANGELOG.md', 'Foo.mjs', 'Gone.mjs', 'README.md']);
     } finally {
       rmSync(tmp, { recursive: true, force: true });
     }

@@ -1,5 +1,6 @@
 import { describe, test, expect, beforeAll, afterAll } from 'bun:test';
 import { spawn } from 'node:child_process';
+import { createServer } from 'node:net';
 import { join, dirname } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { mkdtempSync, rmSync } from 'node:fs';
@@ -7,17 +8,53 @@ import { tmpdir } from 'node:os';
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 const SERVER_PATH = join(__dirname, '..', 'xm', 'lib', 'server', 'xm-server.mjs');
-const TEST_PORT = 19899;
-const BASE = `http://127.0.0.1:${TEST_PORT}`;
+// Assigned in beforeAll: a fixed port collided with whatever else was listening
+// on the machine, and the child's EADDRINUSE exit surfaced only as a 5s hook
+// timeout while the poll kept hitting the foreign server's /health.
+let TEST_PORT;
+let BASE;
 
 let serverProc;
 let testXmRoot;
+
+/** Ask the OS for a free loopback port. */
+function freePort() {
+  return new Promise((resolvePort, reject) => {
+    const probe = createServer();
+    probe.once('error', reject);
+    probe.listen(0, '127.0.0.1', () => {
+      const { port } = probe.address();
+      probe.close(() => resolvePort(port));
+    });
+  });
+}
+
+/** Poll /health; fail with the child's stderr as soon as it exits instead of timing out silently. */
+async function waitForHealth(proc, base, timeoutMs) {
+  let stderr = '';
+  let exit = null;
+  proc.stderr?.on('data', (chunk) => { stderr += chunk; });
+  proc.stdout?.on('data', () => {});
+  proc.on('exit', (code, signal) => { exit = { code, signal }; });
+  const deadline = Date.now() + timeoutMs;
+  while (Date.now() < deadline) {
+    if (exit) throw new Error(`server exited before /health (code ${exit.code}, signal ${exit.signal}):\n${stderr.trim()}`);
+    try {
+      const res = await fetch(`${base}/health`);
+      if (res.ok) return;
+    } catch {}
+    await new Promise(r => setTimeout(r, 150));
+  }
+  throw new Error(`server did not answer /health within ${timeoutMs}ms:\n${stderr.trim()}`);
+}
 
 beforeAll(async () => {
   // Isolate .xm/ writes to a temp dir so tests don't pollute xm/lib/.xm/
   // (the server resolves xmRoot from XM_ROOT env or cwd/.xm — without this,
   //  PUT /config would write test_key into the marketplace lib tree).
   testXmRoot = mkdtempSync(join(tmpdir(), 'xm-server-test-'));
+  TEST_PORT = await freePort();
+  BASE = `http://127.0.0.1:${TEST_PORT}`;
 
   serverProc = spawn('bun', [SERVER_PATH, '--port', String(TEST_PORT), '--idle-timeout', '60000'], {
     stdio: ['ignore', 'pipe', 'pipe'],
@@ -26,16 +63,8 @@ beforeAll(async () => {
     env: { ...process.env, XM_ROOT: join(testXmRoot, '.xm') },
   });
 
-  // Wait for server ready
-  const deadline = Date.now() + 5000;
-  while (Date.now() < deadline) {
-    try {
-      const res = await fetch(`${BASE}/health`);
-      if (res.ok) return;
-    } catch {}
-    await new Promise(r => setTimeout(r, 200));
-  }
-  throw new Error('Server did not start within 5s');
+  // Under bun's 5s hook timeout, so a startup failure is reported by name.
+  await waitForHealth(serverProc, BASE, 4000);
 });
 
 afterAll(() => {

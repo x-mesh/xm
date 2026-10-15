@@ -10,7 +10,7 @@
  * order matches the input.
  */
 import { describe, test, expect, beforeAll, afterAll, beforeEach } from 'bun:test';
-import { execSync } from 'node:child_process';
+import { execSync, spawnSync } from 'node:child_process';
 import { mkdtempSync, mkdirSync, rmSync, writeFileSync, readFileSync, existsSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join, dirname } from 'node:path';
@@ -20,6 +20,7 @@ const __dirname = dirname(fileURLToPath(import.meta.url));
 const FAKE_GK = join(__dirname, 'fake-gk.mjs');
 
 const wt = await import('../../x-build/lib/x-build/worktrees.mjs');
+const worktreesUrl = new URL('../../x-build/lib/x-build/worktrees.mjs', import.meta.url).href;
 
 const ORIG_ROOT = process.env.X_BUILD_ROOT;
 const PROJECT = 'demo';
@@ -76,10 +77,10 @@ function seedRun(taskId, { status = wt.WORKTREE_STATUS.RUNNING, worktree = null 
 }
 
 // Seed tasks.json under the call-time build root so markTaskCompleted can flip.
-function seedTasks(ids) {
+function seedTasks(ids, attributes = {}) {
   const p = join(process.env.X_BUILD_ROOT, 'projects', PROJECT, 'phases', '02-plan', 'tasks.json');
   mkdirSync(dirname(p), { recursive: true });
-  writeFileSync(p, JSON.stringify({ tasks: ids.map((id) => ({ id, name: id, status: 'running' })) }, null, 2));
+  writeFileSync(p, JSON.stringify({ tasks: ids.map((id) => ({ id, name: id, status: 'running', ...attributes[id] })) }, null, 2));
   return p;
 }
 
@@ -139,6 +140,36 @@ describe('finishWorktrees — serialization', () => {
     expect(run.worktree_status).toBe(wt.WORKTREE_STATUS.DONE);
     expect(run.task_status).toBe(wt.TASK_STATUS.COMPLETED);
     expect(readTasks().tasks.find((t) => t.id === 'okc').status).toBe('completed');
+  });
+
+  test('completion metrics distinguish scored and unscored tasks', () => {
+    const ids = ['quality-unscored', 'quality-scored'];
+    const started_at = new Date(Date.now() - 1000).toISOString();
+    seedTasks(ids, {
+      'quality-unscored': { started_at },
+      'quality-scored': { started_at, score: 8.3 },
+    });
+    ids.forEach((id) => seedRun(id));
+
+    const script = `const { finishWorktrees } = await import(${JSON.stringify(worktreesUrl)}); finishWorktrees(${JSON.stringify({ project: PROJECT, taskIds: ids, config: { base: 'develop' }, cwd: main })});`;
+    const finished = spawnSync('node', ['--input-type=module', '-e', script], {
+      cwd: main,
+      env: { ...process.env, X_BUILD_GK_ARGV: GK_ARGV, FAKE_GK_SCENARIO: 'ok' },
+      encoding: 'utf8',
+    });
+    expect(finished.status).toBe(0);
+    expect(ids.every((id) => readTasks().tasks.find((task) => task.id === id)?.status === 'completed')).toBe(true);
+
+    const metricsPath = join(process.env.X_BUILD_ROOT, 'metrics', 'sessions.jsonl');
+    const events = readFileSync(metricsPath, 'utf8').trim().split('\n').map(JSON.parse)
+      .filter((event) => event.type === 'task_complete' && ids.includes(event.taskId));
+    expect(events).toHaveLength(2);
+    expect(events.find((event) => event.taskId === 'quality-unscored')).toMatchObject({
+      quality_score: 1, quality_scored: false, cost_source: 'estimated',
+    });
+    expect(events.find((event) => event.taskId === 'quality-scored')).toMatchObject({
+      quality_score: 8.3, quality_scored: true, cost_source: 'estimated',
+    });
   });
 });
 

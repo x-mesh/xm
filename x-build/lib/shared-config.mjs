@@ -13,7 +13,7 @@ import { createRL, ask, WizardEOF, menuSelect, isRawCapable, section, railLine, 
 import { initLang, t } from './cli-messages.mjs';
 // 상대 경로는 소스(x-build/lib)와 미러(xm/lib) 양쪽 레이아웃에서 동일하게 해석된다
 // (frontmatter-sync가 검증한 경로 패턴).
-import { parseModelSpec } from './x-build/cost-engine.mjs';
+import { parseModelSpec, parseModelPin } from './x-build/cost-engine.mjs';
 // Single tier-merge rule shared with cost-engine/core (빌드5). config-loader only
 // imports root.mjs, so this direct import adds no cycle.
 import { mergeSharedTiers } from './x-build/config-loader.mjs';
@@ -541,6 +541,32 @@ export function validateSet(key, value) {
       if (parsed.warning) findings.push(finding('vendor_model_spec', 'error', parsed.warning));
     }
     return findings;
+  }
+
+  // model_overrides / model_overrides.<role> — { role: tier | [vendor:]model[:effort][@tier] }.
+  // The dotted per-role form has no exact schema entry (same gap vendor_models
+  // had, F2/R7) and used to skip value checks entirely — `xm config set
+  // model_overrides.executor <bad pin>` saved unvalidated. A pin value is run
+  // through the SAME parser resolveRoleModel uses at consume time (R1) rather
+  // than restating the grammar, so a malformed pin is visible at `set` time
+  // instead of only degrading silently three hops downstream at run time. A
+  // bare tier ('sonnet', 'inherit', ...) is untouched — this only ever ADDS
+  // findings on top of what the bare-tier path already accepted, so it does
+  // not fall through the `return` below: the exact-match checks still apply
+  // afterward (the registered `model_overrides` object-type check for the
+  // whole-object form; a no-op for the dotted form, which has no exact entry).
+  const overrideRole = key.match(/^model_overrides\.([^.]+)$/);
+  if (key === 'model_overrides' || overrideRole) {
+    const entries = overrideRole
+      ? [[overrideRole[1], value]]
+      : (value && typeof value === 'object' && !Array.isArray(value) ? Object.entries(value) : []);
+    for (const [role, roleValue] of entries) {
+      if (typeof roleValue !== 'string') continue;
+      const pin = parseModelPin(roleValue);
+      if (pin.isPin && pin.warning) {
+        findings.push(finding('model_pin_spec', 'error', `model_overrides.${role}: ${pin.warning}`));
+      }
+    }
   }
 
   // panel.* — owned by x-panel but editable via the `xm config` panel category.
