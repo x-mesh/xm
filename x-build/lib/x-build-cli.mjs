@@ -26,6 +26,7 @@ import { cmdImportPlan } from './x-build/plan-import.mjs';
 import { cmdXPlan } from './x-build/plan-bridge.mjs';
 import { cmdAdaptiveRoute } from './x-build/adaptive-routing.mjs';
 import { cmdAdaptiveProof } from './x-build/adaptive-proof.mjs';
+import { cmdProgress } from './x-build/plan-progress.mjs';
 import { cmdAttention } from './x-build/attention.mjs';
 import { cmdMutate, cmdMutateDiff } from './x-build/mutate.mjs';
 import { cmdVerifyTests } from './x-build/escape-verify.mjs';
@@ -155,6 +156,7 @@ switch (cmd) {
     if (args[0] === 'prove') cmdAdaptiveProof(args.slice(1));
     else cmdAdaptiveRoute(args);
     break;
+  case 'progress': await cmdProgress(args); break;
   case 'phase-context': cmdPhaseContext(args); break;
   case 'alias':         cmdAlias(args); break;
   case 'demo':          cmdDemo(args); break;
