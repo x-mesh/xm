@@ -4617,6 +4617,25 @@ function handleHandoffs(xmRoot, req) {
 
 // ── PRD handlers ───────────────────────────────────────────────────
 
+// tasks.md is rendered by `xm build progress` (x-build plan-progress.mjs) with an
+// "N/M verified" summary line; read it as written instead of re-deriving task status.
+function readPlanTasks(planDir) {
+  const tasksPath = join(planDir, 'tasks.md');
+  if (!existsSync(tasksPath)) return null;
+  try {
+    const content = readFileSync(tasksPath, 'utf8');
+    const summary = content.match(/^(\d+)\/(\d+) verified$/m);
+    return {
+      verified: summary ? Number(summary[1]) : null,
+      total: summary ? Number(summary[2]) : null,
+      mtime: statSync(tasksPath).mtimeMs,
+      content,
+    };
+  } catch {
+    return null;
+  }
+}
+
 function handlePrdList(xmRoot, req) {
   const items = [];
   // Legacy standalone PRDs: .xm/prd/*.md (the x-plan engine writes .xm/plan instead)
@@ -4658,6 +4677,7 @@ function handlePrdList(xmRoot, req) {
         const planPath = safeJoin(planBase, entry.name, 'plan.md');
         if (!planPath || !existsSync(planPath)) continue;
         const manifest = readJSONFile(join(planBase, entry.name, 'manifest.json'));
+        const tasks = readPlanTasks(join(planBase, entry.name));
         try {
           const st = statSync(planPath);
           items.push({
@@ -4665,6 +4685,7 @@ function handlePrdList(xmRoot, req) {
             // Same gate as `xm build import-plan`: only complete, executable envelopes become a PRD
             draft: manifest?.status !== 'complete' || manifest?.executable !== true,
             status: manifest?.status ?? null, phase: manifest?.phase ?? null, goal: manifest?.goal ?? null,
+            progress: tasks ? { verified: tasks.verified, total: tasks.total, mtime: tasks.mtime } : null,
             mtime: st.mtimeMs, size: st.size,
           });
         } catch {}
@@ -4692,6 +4713,7 @@ function handlePrdDetail(xmRoot, id, req) {
       source: 'plan',
       draft: manifest?.status !== 'complete' || manifest?.executable !== true,
       status: manifest?.status ?? null, phase: manifest?.phase ?? null,
+      progress: readPlanTasks(planDir),
     };
   } else {
     filePath = safeJoin(xmRoot, 'prd', id.startsWith('s:') ? id.slice(2) : id);
