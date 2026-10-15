@@ -1,6 +1,6 @@
 import { describe, expect, mock, test } from 'claude-code/testing'
 
-import { ago, buildContextDigest, contextSummaryLine, maskSecrets, parseCommitCommand, parseDelivery, parseRelaySend, recentExchanges, selectDiff, sendArgv, sessionRows, summarizeTranscript, transcriptPath } from './parse'
+import { ago, buildContextDigest, contextSummaryLine, maskSecrets, ownSessionName, parseCommitCommand, parseDelivery, parseRelaySend, recentExchanges, selectDiff, sendArgv, sessionRows, summarizeTranscript, transcriptPath } from './parse'
 import { badgeCells, badgeColumns, cells, displayName, fit, labels, layoutFor } from './view'
 
 const CODEX = '019a1b2c-3d4e-4f50-8a6b-7c8d9e0f1a2b'
@@ -224,6 +224,8 @@ describe('picker', () => {
       await ui.press({ key: 'add' })
       expect((await ui.find({ key: `pick-claude-${PEER}` }))?.text).toContain('gk-fa')
       expect(await ui.find({ key: `pick-claude-${OWN}` })).toBeUndefined()
+      // Its own row is left out of the list and named at the top instead.
+      expect(await ui.find({ type: 'Text', text: 'self' })).toBeDefined()
       expect(await ui.find({ type: 'Text', text: /Git action 모니터링/ })).toBeDefined()
       // One line under the name: the latest reply wins over the prompt and the path.
       expect(await ui.find({ type: 'Text', text: /‹ 릴리스 완료/ })).toBeDefined()
@@ -353,6 +355,52 @@ describe('opening with no conversations', () => {
       props: { title: 'Relay 대화', isFocused: true, bodyColumns: 100, placement: 'dock', scroll: { offset: 0, bodyRows: 40 }, view: {} },
     })
     expect(await ui.find({ key: `pick-claude-${PEER}` })).toBeDefined()
+    await ui.unmount()
+  })
+})
+
+describe('this session at the top of the pane', () => {
+  const pane = { title: 'Relay 대화', isFocused: true, bodyColumns: 100, placement: 'dock', scroll: { offset: 0, bodyRows: 40 }, view: {} } as const
+
+  test('reads its own name from the listing other sessions pick from', () => {
+    const listing = JSON.stringify({ ok: true, sessions: [{ session_id: PEER, name: 'gk-fa' }, { session_id: OWN, name: 'xm-90' }] })
+    expect(ownSessionName(listing, OWN)).toBe('xm-90')
+    expect(ownSessionName(JSON.stringify({ ok: true, sessions: [{ session_id: PEER, name: 'gk-fa' }] }), OWN)).toBeNull()
+    expect(() => ownSessionName(JSON.stringify({ ok: false, error: 'no socket' }), OWN)).toThrow('no socket')
+  })
+
+  test('shows the name and the id prefix once /relay-chat opens the pane', async ($, on) => {
+    const clock = mock.clock(on, { now: Date.parse('2026-10-07T08:34:52.000Z') })
+    mock.env(on, { HOME: '/Users/me' })
+    on('session.id', () => ({ value: OWN }))
+    on('fs.exists', () => ({ value: false }))
+    on('ui.open', () => ({ value: { isPlaced: true } }))
+    on('process.run', (_$, e) => {
+      const sessions = e.argv[4] === 'claude' ? [{ session_id: OWN, name: 'xm-90', cwd: '/Users/me/xm', status: 'busy' }] : []
+      return { value: { exitCode: 0, stderr: '', isStdoutTruncated: false, isStderrTruncated: false, stdout: JSON.stringify({ ok: true, sessions }) } }
+    })
+    await $.command.run({ command: 'relay-chat', args: '', origin: { kind: 'composer' }, presentation: { isFullscreen: true, columns: 120 } })
+    await clock.advance(0)
+    await clock.settle()
+    const ui = await $.ui.mount({ plugin: 'xm', surface: 'terminal', component: 'Pane', requestId: 'relay-chat', props: pane })
+    expect(await ui.find({ type: 'Text', text: 'xm-90' })).toBeDefined()
+    expect(await ui.find({ type: 'Text', text: new RegExp(` · ${OWN.slice(0, 8)} · 다른 세션의 상대 목록`) })).toBeDefined()
+    await ui.unmount()
+  })
+
+  test('says the name could not be read and still shows the id prefix', async ($, on) => {
+    const clock = mock.clock(on, { now: Date.parse('2026-10-07T08:34:52.000Z') })
+    mock.env(on, { HOME: '/Users/me' })
+    on('session.id', () => ({ value: OWN }))
+    on('fs.exists', () => ({ value: false }))
+    on('ui.open', () => ({ value: { isPlaced: true } }))
+    on('process.run', () => ({ value: { exitCode: 1, stderr: '', isStdoutTruncated: false, isStderrTruncated: false, stdout: JSON.stringify({ ok: false, error: 'no socket' }) } }))
+    await $.command.run({ command: 'relay-chat', args: '', origin: { kind: 'composer' }, presentation: { isFullscreen: true, columns: 120 } })
+    await clock.advance(0)
+    await clock.settle()
+    const ui = await $.ui.mount({ plugin: 'xm', surface: 'terminal', component: 'Pane', requestId: 'relay-chat', props: pane })
+    expect(await ui.find({ type: 'Text', text: '(이름 확인 불가)' })).toBeDefined()
+    expect(await ui.find({ type: 'Text', text: ` · ${OWN.slice(0, 8)}` })).toBeDefined()
     await ui.unmount()
   })
 })

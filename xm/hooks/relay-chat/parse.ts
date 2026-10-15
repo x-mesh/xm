@@ -467,6 +467,13 @@ export function sessionRows(stdout: string, provider: Provider, ownSessionId: st
   return rows
 }
 
+// $.session has no display name; the row other sessions pick this one from carries it.
+export function ownSessionName(stdout: string, ownSessionId: string): string | null {
+  const parsed = JSON.parse(stdout) as { ok?: unknown; error?: unknown; sessions?: SessionRow[] }
+  if (parsed.ok !== true) throw new Error(String(parsed.error ?? 'xm relay sessions failed'))
+  return text(parsed.sessions?.find(row => row.session_id === ownSessionId)?.name)
+}
+
 // Claude Code stores a transcript under ~/.claude/projects/<cwd with every
 // non-alphanumeric character as "-">/<session id>.jsonl.
 export function transcriptPath(home: string, cwd: string, sessionId: string): string {
