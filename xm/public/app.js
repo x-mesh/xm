@@ -6675,7 +6675,8 @@ async function renderPrdList() {
     return `<span class="badge ${item.source === 'project' ? 'badge-indigo' : 'badge-gray'}">${item.source || 'standalone'}</span>`;
   };
   const planLine = (item) => {
-    const parts = [item.status, item.phase && `phase: ${item.phase}`, item.goal].filter(Boolean);
+    const progress = item.progress?.total != null && `${item.progress.verified}/${item.progress.total} verified`;
+    const parts = [item.status, item.phase && `phase: ${item.phase}`, progress, item.goal].filter(Boolean);
     return parts.length ? `<div class="text-muted" style="font-size:0.75rem;margin-top:4px">${e(parts.join(' · '))}</div>` : '';
   };
   const cards = items.map(item => `
@@ -6733,6 +6734,10 @@ async function renderPrdDetail(name) {
       <h1 style="margin-top:0.5rem">${heading}: <code>${escapeHtmlHumble(display)}</code></h1>
       ${planMeta ? `<p>${escapeHtmlHumble(planMeta)}</p>` : ''}
     </div>
+    ${res.progress?.content ? `
+      <div class="text-muted" style="font-size:0.8rem;margin-bottom:4px">tasks.md · updated ${timeAgo(res.progress.mtime)} by <code>xm build progress</code></div>
+      <div class="card markdown-body" style="margin-bottom:1rem">${renderMarkdown(res.progress.content)}</div>
+    ` : ''}
     <div class="card markdown-body">${renderMarkdown(res.content || '')}</div>
   `;
 }
