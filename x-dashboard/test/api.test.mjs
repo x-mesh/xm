@@ -1126,6 +1126,80 @@ describe('safeJoin path traversal guards (via HTTP)', () => {
   });
 });
 
+describe('GET /api/prd — x-plan sessions next to PRDs', () => {
+  const PLAN_BASE = join(XM_ROOT, 'plan');
+  const PRD_DIR = join(XM_ROOT, 'prd');
+
+  function writePlanSession(id, manifest) {
+    const dir = join(PLAN_BASE, id);
+    ensureDir(dir);
+    if (manifest) writeJSON(join(dir, 'manifest.json'), { schema_version: 1, id, ...manifest });
+    writeFileSync(join(dir, 'plan.md'), `# Plan: ${id}\n`);
+  }
+
+  beforeAll(() => {
+    writePlanSession('plan-draft-fixture', { goal: 'draft goal', phase: 'clarify', status: 'incomplete', executable: false });
+    writePlanSession('plan-ready-fixture', { goal: 'ready goal', phase: 'finalize', status: 'complete', executable: true });
+    writePlanSession('plan-no-manifest-fixture', null);
+    ensureDir(join(PLAN_BASE, 'plan-without-md-fixture'));
+    ensureDir(PRD_DIR);
+    writeFileSync(join(PRD_DIR, 'legacy-fixture.md'), '# PRD: legacy\n');
+  });
+
+  afterAll(() => {
+    rmSync(PLAN_BASE, { recursive: true, force: true });
+    rmSync(PRD_DIR, { recursive: true, force: true });
+  });
+
+  it('lists an unimportable plan as a draft with its status and phase', async () => {
+    const { res, body } = await getJSON('/api/prd');
+    expect(res.status).toBe(200);
+    const item = body.find(i => i.id === 'x:plan-draft-fixture');
+    expect(item).toMatchObject({ source: 'plan', draft: true, status: 'incomplete', phase: 'clarify', goal: 'draft goal' });
+  });
+
+  it('lists a complete executable plan as not a draft', async () => {
+    const { body } = await getJSON('/api/prd');
+    expect(body.find(i => i.id === 'x:plan-ready-fixture')).toMatchObject({ source: 'plan', draft: false, status: 'complete' });
+  });
+
+  it('treats a plan without a readable manifest as a draft', async () => {
+    const { body } = await getJSON('/api/prd');
+    expect(body.find(i => i.id === 'x:plan-no-manifest-fixture')).toMatchObject({ source: 'plan', draft: true, status: null });
+  });
+
+  it('skips plan sessions that have no plan.md', async () => {
+    const { body } = await getJSON('/api/prd');
+    expect(body.some(i => i.name === 'plan-without-md-fixture')).toBe(false);
+  });
+
+  it('keeps standalone PRDs listed without plan fields', async () => {
+    const { body } = await getJSON('/api/prd');
+    const item = body.find(i => i.id === 's:legacy-fixture.md');
+    expect(item?.source).toBe('standalone');
+    expect(item).not.toHaveProperty('draft');
+  });
+
+  it('returns plan.md content with draft state for an x: id', async () => {
+    const { res, body } = await getJSON(`/api/prd/${encodeURIComponent('x:plan-draft-fixture')}`);
+    expect(res.status).toBe(200);
+    expect(body).toMatchObject({ id: 'x:plan-draft-fixture', source: 'plan', draft: true, status: 'incomplete', phase: 'clarify' });
+    expect(body.content).toContain('# Plan: plan-draft-fixture');
+  });
+
+  it('returns 404 for an unknown plan session', async () => {
+    const { res } = await getJSON(`/api/prd/${encodeURIComponent('x:no-such-plan')}`);
+    expect(res.status).toBe(404);
+  });
+
+  it('rejects x: ids that escape or equal .xm/plan → 400', async () => {
+    for (const id of ['x:../prd', 'x:../../anything', 'x:', 'x:plan-draft-fixture/../..']) {
+      const { res } = await getJSON(`/api/prd/${encodeURIComponent(id)}`);
+      expect(res.status).toBe(400);
+    }
+  });
+});
+
 // ── config-schema cache-layout smoke (P3) ─────────────────────────────
 //
 // The main test server above always resolves config-schema.mjs / worktree-
