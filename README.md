@@ -14,7 +14,7 @@
 </p>
 
 <p align="center">
-  <a href="https://github.com/x-mesh/xm/releases"><img src="https://img.shields.io/badge/version-2.41.0-blue" alt="Version" /></a>
+  <a href="https://github.com/x-mesh/xm/releases"><img src="https://img.shields.io/badge/version-2.41.1-blue" alt="Version" /></a>
   <a href="./LICENSE"><img src="https://img.shields.io/badge/license-MIT-green" alt="License: MIT" /></a>
   <a href="https://nodejs.org"><img src="https://img.shields.io/badge/node-%3E%3D18-brightgreen" alt="Node.js" /></a>
   <a href="#plugins"><img src="https://img.shields.io/badge/plugins-18-orange" alt="Plugins" /></a>
@@ -491,6 +491,17 @@ xm build plan --mode quick "..."            # deprecated alias for xm plan
 
 Planning artifacts live under `.xm/plan`. The default path does not create an x-build project, duplicate PRD, phase state, task database, worktree, or meta-gate.
 
+`xm build progress` records the tasks of an executable plan that are done. The x-build skill tells the agent to start each task before the work and to verify it after the work.
+
+```bash
+xm build progress start --plan <run-id> --task T1
+# native agent edits the expected files of T1
+xm build progress verify --plan <run-id> --task T1
+xm build progress show --plan <run-id>
+```
+
+`verify` checks a task only if one of its expected files changed after `start` and each `validation.commands` entry exits 0. Each command has a limit of 120 seconds. A failed command exits 2 and records nothing. `.xm/plan/<run-id>/progress.json` keeps the state, and `tasks.md` in the same directory shows it as a checklist. Do not edit these two files.
+
 `xm build plan` delegates to the same x-plan entry point and is deprecated. `xm build legacy-plan` retains the former PRD/task/phase planner for explicit compatibility use.
 
 ```
@@ -965,6 +976,7 @@ Browser ──→ Bun HTTP :19841 ──→ .xm/ (read-only)
   │
   ├── Home (summary + cost widget)
   ├── Builds (projects list + detail + tasks + context docs + PRD)
+  ├── PRD (PRDs + x-plan sessions + task progress)
   ├── Probes (history + detail + diff between two verdicts)
   ├── Solvers (list + detail with phase data)
   ├── Traces (timeline + token/cost per span)
@@ -978,6 +990,7 @@ Browser ──→ Bun HTTP :19841 ──→ .xm/ (read-only)
 | Feature | Description |
 |---------|-------------|
 | **Multi-root workspaces** | `--scan ~/work` or `scan_roots` in `~/.xm/config.json` — view all projects across directories |
+| **x-plan sessions** | The PRD tab lists `.xm/plan` sessions next to PRDs. A `plan draft` badge marks a plan that x-build cannot import. `N/M verified` and a checklist show the `xm build progress` state |
 | **Probe verdict diff** | Side-by-side comparison of two probe runs with premises change highlighting |
 | **Cost/token dashboard** | Aggregate cost by model (haiku/sonnet/opus) and date from x-trace data |
 | **Brutalism UI** | Hard shadows, monospace accents, dark/light toggle |

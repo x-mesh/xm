@@ -14,7 +14,7 @@
 </p>
 
 <p align="center">
-  <a href="https://github.com/x-mesh/xm/releases"><img src="https://img.shields.io/badge/version-2.41.0-blue" alt="Version" /></a>
+  <a href="https://github.com/x-mesh/xm/releases"><img src="https://img.shields.io/badge/version-2.41.1-blue" alt="Version" /></a>
   <a href="./LICENSE"><img src="https://img.shields.io/badge/license-MIT-green" alt="License: MIT" /></a>
   <a href="https://nodejs.org"><img src="https://img.shields.io/badge/node-%3E%3D18-brightgreen" alt="Node.js" /></a>
   <a href="#플러그인"><img src="https://img.shields.io/badge/plugins-18-orange" alt="Plugins" /></a>
@@ -492,6 +492,17 @@ xm build plan --mode quick "..."                 # xm plan의 deprecated alias
 
 계획 artifact는 `.xm/plan`에 저장됩니다. 기본 경로는 x-build project, 중복 PRD, phase state, task DB, worktree 또는 meta-gate를 만들지 않습니다.
 
+`xm build progress`는 실행 가능한 plan에서 끝난 task를 기록합니다. x-build 스킬은 에이전트가 task를 시작하기 전에 `start`를, 작업을 마친 뒤에 `verify`를 실행하도록 지시합니다.
+
+```bash
+xm build progress start --plan <run-id> --task T1
+# native agent가 T1의 expected file을 수정
+xm build progress verify --plan <run-id> --task T1
+xm build progress show --plan <run-id>
+```
+
+`verify`는 `start` 이후 expected file 중 하나 이상이 바뀌었고 `validation.commands`가 모두 0으로 끝날 때만 task를 체크합니다. 명령마다 120초 제한이 있습니다. 명령이 실패하면 종료 코드 2로 끝나고 아무것도 기록하지 않습니다. 상태는 `.xm/plan/<run-id>/progress.json`에 저장되고, 같은 디렉터리의 `tasks.md`가 이를 체크 목록으로 보여 줍니다. 두 파일은 직접 고치지 마세요.
+
 `xm build plan`은 같은 x-plan entry point로 위임하며 deprecated입니다. 기존 PRD·task·phase planner는 명시적 호환 경로 `xm build legacy-plan`으로만 남아 있습니다.
 
 ```
@@ -966,6 +977,7 @@ bun x-dashboard/lib/x-dashboard-server.mjs --stop       # 중지
   │
   ├── 홈 (요약 + 비용 위젯)
   ├── 빌드 (프로젝트 목록 + 상세 + 태스크 + 문서 + PRD)
+  ├── PRD (PRD + x-plan 세션 + task 진행 상태)
   ├── 프로브 (히스토리 + 상세 + 두 결과 비교)
   ├── 솔버 (목록 + 상세 + 페이즈 데이터)
   ├── 트레이스 (타임라인 + 스팬별 토큰/비용)
@@ -979,6 +991,7 @@ bun x-dashboard/lib/x-dashboard-server.mjs --stop       # 중지
 | 기능 | 설명 |
 |------|------|
 | **멀티루트 워크스페이스** | `--scan ~/work` 또는 `~/.xm/config.json`의 `scan_roots` — 여러 디렉토리의 프로젝트를 한곳에서 조회 |
+| **x-plan 세션** | PRD 탭에서 `.xm/plan` 세션을 PRD와 구분해 표시. x-build가 import할 수 없는 plan에는 `plan draft` badge, `xm build progress` 상태는 `N/M verified`와 체크 목록으로 표시 |
 | **프로브 verdict 비교** | 두 프로브 실행 결과를 사이드바이사이드로 비교, 가정 변화 하이라이트 |
 | **비용/토큰 대시보드** | 모델별(haiku/sonnet/opus), 날짜별 비용 집계 |
 | **Brutalism UI** | 하드 그림자, 모노스페이스 악센트, 다크/라이트 토글 |
