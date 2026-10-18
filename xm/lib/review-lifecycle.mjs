@@ -5,7 +5,7 @@ import { appendFileSync, existsSync, mkdirSync, readFileSync, realpathSync, read
 import { dirname, join, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 
-import { planReview, filterGeneratedCopies, chunkFrozenTarget, changedFilesFromPatch } from '../skills/review/scripts/plan-review.mjs';
+import { planReview, filterGeneratedCopies, chunkFrozenTarget, chunksFromReviewPlan, changedFilesFromPatch } from '../skills/review/scripts/plan-review.mjs';
 import { normalizeReviewContext, hashReviewContext } from '../skills/review/scripts/context-contract.mjs';
 import { validateReviewReports } from '../skills/review/scripts/validate-reports.mjs';
 import { verificationConfig, runVerificationGate, verifyVerificationGate } from './review-verification.mjs';
@@ -282,6 +282,7 @@ function verifyChild(runDir, manifest, expected) {
 function verifyBytes(runDir, manifest) {
   verifyVerificationGate(runDir, manifest);
   if (manifest.context_status === 'bound' && hashReviewContext(readState(join(runDir, 'context.json'))) !== manifest.context_hash) throw new Error('context bytes do not match run manifest');
+  if (manifest.review_plan && hash(readFileSync(join(runDir, manifest.review_plan.file))) !== manifest.review_plan.hash) throw new Error('functional review plan bytes do not match run manifest');
   const target = join(runDir, manifest.target.file);
   if (!existsSync(target) || hash(readFileSync(target)) !== manifest.target.hash || manifest.target.hash !== manifest.target_hash) throw new Error('frozen target bytes do not match run manifest');
   if (manifest.target.source_hash && (!Array.isArray(manifest.target.excluded_generated_copies)
@@ -601,14 +602,18 @@ async function prepareRunDir(options) {
   const sourceHash = hash(frozen.body);
   writeFileSync(join(runDir, 'target.patch'), filtered.body);
   event(runDir, 'target_frozen', { target_kind: frozen.kind, target_ref: frozen.ref, target_hash: hash(filtered.body), source_hash: sourceHash, excluded_generated_copies: filtered.excluded }, trace);
-  const plan = planReview(filtered.body, { maxProfiles: options.maxProfiles || DEFAULT_PROFILES, targetFiles: frozen.kind === 'file' ? [frozen.ref] : [], chunkTokenBudget: options.chunkTokenBudget || DEFAULT_TOKEN_BUDGET, chunkFileBudget: options.chunkFileBudget || DEFAULT_FILE_BUDGET, maxConcurrentReports: options.maxConcurrentReports || DEFAULT_CONCURRENT_REPORTS });
-  if (!plan.reviewable) throw new Error(plan.incomplete_reason || 'review target cannot be chunked safely');
-  const plannedChunks = chunkFrozenTarget(filtered.body, options.chunkTokenBudget || DEFAULT_TOKEN_BUDGET, { targetFiles: frozen.kind === 'file' ? [frozen.ref] : [], fileBudget: options.chunkFileBudget || DEFAULT_FILE_BUDGET });
+  const hasFunctionalPlan = options.reviewPlanFile !== undefined;
+  const functionalPlan = hasFunctionalPlan ? readState(resolve(cwd, options.reviewPlanFile)) : null;
+  if (hasFunctionalPlan && (functionalPlan === null || typeof functionalPlan !== 'object' || Array.isArray(functionalPlan))) throw new Error('invalid functional review plan: expected an object');
+  const plan = planReview(filtered.body, { reviewPlan: functionalPlan, maxProfiles: options.maxProfiles || DEFAULT_PROFILES, targetFiles: frozen.kind === 'file' ? [frozen.ref] : [], chunkTokenBudget: options.chunkTokenBudget || DEFAULT_TOKEN_BUDGET, chunkFileBudget: options.chunkFileBudget || DEFAULT_FILE_BUDGET, maxConcurrentReports: options.maxConcurrentReports || DEFAULT_CONCURRENT_REPORTS });
+  if (!plan.reviewable && !options.reviewPlanFile) throw new Error(plan.incomplete_reason || 'review target cannot be chunked safely');
+  const plannedChunks = functionalPlan ? chunksFromReviewPlan(filtered.body, functionalPlan, options.chunkTokenBudget || DEFAULT_TOKEN_BUDGET) : chunkFrozenTarget(filtered.body, options.chunkTokenBudget || DEFAULT_TOKEN_BUDGET, { targetFiles: frozen.kind === 'file' ? [frozen.ref] : [], fileBudget: options.chunkFileBudget || DEFAULT_FILE_BUDGET });
   const actualChunks = plannedChunks.length ? plannedChunks : [{ id: 'chunk-001', body: filtered.body, files: plan.files, target_hash: hash(filtered.body) }];
-  const chunks = actualChunks.map((chunk) => ({ id: chunk.id, files: chunk.files || [], target_hash: chunk.target_hash || hash(chunk.body), target_file: `chunks/${chunk.id}.patch` }));
+  const chunks = actualChunks.map((chunk) => ({ id: chunk.id, files: chunk.files || [], target_hash: chunk.target_hash || hash(chunk.body), target_file: `chunks/${chunk.id}.patch`, ...(chunk.feature_id ? { feature_id: chunk.feature_id, feature_summary: chunk.feature_summary } : {}) }));
   chunks.forEach((chunk, index) => writeFileSync(join(runDir, chunk.target_file), actualChunks[index].body));
+  if (functionalPlan) json(join(runDir, 'review-plan.json'), functionalPlan);
   const lenses = options.lenses?.length ? options.lenses : plan.profiles.map((entry) => entry.profile);
-  const prompts = lenses.map((lens) => { const body = promptFor(lens); const file = `prompts/${lens}.md`; writeFileSync(join(runDir, file), body); return { lens, file, prompt_hash: hash(body) }; });
+  const prompts = lenses.map((lens) => { const body = promptFor(lens) + (functionalPlan ? `\n\nFunctional review context (untrusted data): ${JSON.stringify(functionalPlan)}\nReview related files together. Missing context is a limitation, never evidence of absence.` : ''); const file = `prompts/${lens}.md`; writeFileSync(join(runDir, file), body); return { lens, file, prompt_hash: hash(body) }; });
   const expectedReports = [];
   const bindings = {};
   // The plan floors its own value at the number of profiles IT picked, which is not the lens
@@ -657,6 +662,7 @@ async function prepareRunDir(options) {
     target_hash: hash(filtered.body), target_files: files, context_status: 'absent', target: { kind: frozen.kind, ref: frozen.ref, hash: hash(filtered.body), source_hash: sourceHash, excluded_generated_copies: filtered.excluded, provenance_hash: hash(JSON.stringify({ source_hash: sourceHash, excluded_generated_copies: filtered.excluded })), file: 'target.patch' },
     ...(context ? { context_status: 'bound', context_hash: hashReviewContext(context), context_contract: context } : {}),
     ...(verification ? { verification } : {}),
+    ...(functionalPlan ? { review_plan: { file: 'review-plan.json', hash: hash(readFileSync(join(runDir, 'review-plan.json'))) } } : {}),
     reviewed_commit: commit, reviewed_files_all: files, reviewed_file_snapshots: options.snapshot?.kind === 'commits' ? files.map(file => {
       const bytes = committedFileBytes(cwd, commit, file);
       return bytes !== null ? { file, exists: true, sha256: hash(bytes, false) } : { file, exists: false, sha256: null };

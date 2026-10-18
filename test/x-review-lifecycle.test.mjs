@@ -1,3 +1,4 @@
+import { createHash } from 'node:crypto';
 import { afterEach, describe, expect, test } from 'bun:test';
 import { existsSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, rmSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
@@ -601,5 +602,45 @@ describe('xm panel review routing', () => {
     const invalidEngine = spawnSync('node', [PANEL, 'review', '--engine', 'other', 'target.patch'], { cwd: dir, env: process.env, encoding: 'utf8' });
     expect(invalidEngine.status).toBe(2);
     expect(invalidEngine.stderr).toContain('--engine must be native or lifecycle');
+  });
+});
+
+
+describe('functional plan lifecycle binding', () => {
+  test('rejects explicit false-valued plans without legacy splitting', () => {
+    for (const value of [null, false, 0, '']) {
+      const dir = workspace();
+      writeFileSync(join(dir, 'plan.json'), JSON.stringify(value));
+      const result = spawnSync('node', [CLI, 'prepare', 'target.patch', '--review-plan-file', 'plan.json', '--run-id', 'invalid-plan', '--json'], {cwd: dir, env: env(dir), encoding: 'utf8'});
+      expect(result.status).not.toBe(0);
+      expect(JSON.parse(result.stdout).error).toContain('invalid functional review plan');
+      expect(existsSync(join(dir, '.xm/review/runs/invalid-plan/run.json'))).toBe(false);
+    }
+  });
+
+  test('CLI preserves a feature across the legacy file limit and refuses a modified plan on resume', () => {
+    const dir = workspace();
+    const files = ['src/a.js', ...Array.from({length: 8}, (_, i) => `src/caller${i}.js`)];
+    const original = readFileSync(join(dir, 'target.patch'), 'utf8');
+    const patch = [original, ...files.slice(1).map(file => {
+      writeFileSync(join(dir, file), 'export const caller = 2;\n');
+      return `diff --git a/${file} b/${file}\n--- a/${file}\n+++ b/${file}\n@@ -1 +1 @@\n-old\n+export const caller = 2;`;
+    })].join('\n');
+    writeFileSync(join(dir, 'target.patch'), patch);
+    const plan = {schema_version: 1, target_hash: `sha256:${createHash('sha256').update(patch).digest('hex')}`, summary: 'Shared API contract', groups: [{id: 'api', summary: 'Implementation and caller', files}]};
+    writeFileSync(join(dir, 'plan.json'), JSON.stringify(plan));
+    const result = spawnSync('node', [CLI, 'prepare', 'target.patch', '--review-plan-file', 'plan.json', '--chunk-file-budget', '1', '--run-id', 'functional', '--json'], {cwd: dir, env: env(dir), encoding: 'utf8'});
+    expect(result.status).toBe(0);
+    const runDir = join(dir, '.xm/review/runs/functional');
+    const manifest = JSON.parse(readFileSync(join(runDir, 'run.json'), 'utf8'));
+    expect(manifest.chunks[0].feature_id).toBe('api');
+    expect(manifest.chunks[0].files).toEqual(files);
+    expect(manifest.chunks).toHaveLength(1);
+    expect(JSON.parse(readFileSync(join(runDir, 'plan.json'), 'utf8')).chunks).toHaveLength(1);
+    expect(readFileSync(join(runDir, manifest.prompts[0].file), 'utf8')).toContain('Shared API contract');
+    writeFileSync(join(runDir, 'review-plan.json'), JSON.stringify({...plan, summary: 'modified'}));
+    const resumed = spawnSync('node', [CLI, 'resume', 'functional', '--json'], {cwd: dir, env: env(dir), encoding: 'utf8'});
+    expect(resumed.status).not.toBe(0);
+    expect(resumed.stdout).toContain('functional review plan bytes do not match');
   });
 });

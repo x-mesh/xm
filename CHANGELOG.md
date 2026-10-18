@@ -10,6 +10,18 @@ bumps shipped in each marketplace release.
 
 ## [Unreleased]
 
+## [2.41.2] - 2026-10-18
+
+### Added
+
+- **x-review:** `prepare` and `run` accept `--review-plan-file` for functional groups, shared context, and a manifest-bound plan hash.
+
+### Fixed
+
+- **x-review:** explicit plans reject false-valued JSON, stale target hashes, incomplete file assignments, and groups that exceed the token budget.
+
+Plugin versions: x-review 2.16.0, xm 2.41.2.
+
 ## [2.34.0] - 2026-10-04
 
 ### Added

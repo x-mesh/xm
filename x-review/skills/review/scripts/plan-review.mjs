@@ -305,6 +305,34 @@ function relationshipGroups(units, tokenBudget, fileBudget) {
   return groups;
 }
 
+export function chunksFromReviewPlan(body, plan, tokenBudget = DEFAULT_CHUNK_TOKEN_BUDGET) {
+  if (!Number.isInteger(tokenBudget) || tokenBudget < 1_000) throw new Error('chunk token budget must be an integer of at least 1000');
+  if (plan?.schema_version !== 1 || plan.target_hash !== targetHash(body)
+    || typeof plan.summary !== 'string' || !plan.summary.trim() || plan.summary.length > 4000
+    || !Array.isArray(plan.groups) || !plan.groups.length || plan.groups.length > 12) throw new Error('invalid or stale functional review plan');
+  const sections = patchSections(body);
+  const files = changedFilesFromPatch(body);
+  if (!files.length || sections.some(section => section.files.length !== 1)) throw new Error('functional review plan requires a Git patch');
+  const seen = new Set(), ids = new Set();
+  const chunks = plan.groups.map((group, index) => {
+    if (typeof group.id !== 'string' || !/^[a-z][a-z0-9-]{0,63}$/.test(group.id) || ids.has(group.id)
+      || typeof group.summary !== 'string' || !group.summary.trim() || group.summary.length > 2000
+      || !Array.isArray(group.files) || !group.files.length) throw new Error('invalid functional review group');
+    ids.add(group.id);
+    for (const file of group.files) {
+      if (!files.includes(file) || seen.has(file)) throw new Error(`duplicate or unknown functional review file: ${file}`);
+      seen.add(file);
+    }
+    const selected = sections.filter(section => group.files.includes(section.files[0]));
+    const chunkBody = selected.map(section => section.body).join('\n');
+    if (estimateTargetTokens(chunkBody) > tokenBudget) throw new Error(`functional review group ${group.id} exceeds the input budget; revise the explicit plan`);
+    return { id: `chunk-${String(index + 1).padStart(3, '0')}`, body: chunkBody, files: group.files,
+      split: 'functional-group', feature_id: group.id, feature_summary: group.summary };
+  });
+  if (seen.size !== files.length) throw new Error('functional review plan omits changed files');
+  return chunks;
+}
+
 export function chunkFrozenTarget(body, tokenBudget = DEFAULT_CHUNK_TOKEN_BUDGET, options = {}) {
   if (!Number.isInteger(tokenBudget) || tokenBudget < 1_000) {
     throw new Error('chunk token budget must be an integer of at least 1000');
@@ -434,7 +462,7 @@ export function planReview(patch, options = {}) {
     };
   }
   const estimatedTokens = estimateTargetTokens(body);
-  const targetChunks = chunkFrozenTarget(body, tokenBudget, { targetFiles: explicitFiles, fileBudget });
+  const targetChunks = options.reviewPlan ? chunksFromReviewPlan(body, options.reviewPlan, tokenBudget) : chunkFrozenTarget(body, tokenBudget, { targetFiles: explicitFiles, fileBudget });
   const chunkingFailed = targetChunks.length === 0;
   const chunks = targetChunks.map(({ body: chunkBody, ...chunk }) => ({
     ...chunk,

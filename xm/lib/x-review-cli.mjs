@@ -5,7 +5,7 @@ import { resolve } from 'node:path';
 import { startReview, resumeReview, prepareReview, submitReview, finalizeReview, statusReview, closeReview, associateReview, reserveGateAuthoring } from './review-lifecycle.mjs';
 
 function usage() {
-  return 'Native: xm review prepare [target-file|git-ref] [--operation-id ID | --task-id ID | --pr NUMBER --repo OWNER/NAME] [--zero-findings] --json\n        xm review submit ID --report-id ID --attempt-id ID --report FILE --json\n        xm review finalize|status ID --json\n        xm review close|associate ID --reason TEXT [--operation-id ID | --task-id ID]\nGate authoring: xm review author-gate --operation-id ID --context-file FILE --scope-file FILE --reason TEXT\nVerification: --context-file FILE --gate-file FILE (prepare or run)\nNew operation: --operation-id ID --new-operation --approved-by USER --reason TEXT\nBudget exception: --exception full|delta|fix --approved-by USER --reason TEXT\nUsage: xm review run [target-file|git-ref] [--cross-vendor] [--models a,b] [--lenses a,b] [--rounds 1|2] [--run-id id] [--no-trace] [--json]\n       xm review resume <run-id> [--no-trace] [--json]';
+  return 'Native: xm review prepare [target-file|git-ref] [--operation-id ID | --task-id ID | --pr NUMBER --repo OWNER/NAME] [--zero-findings] --json\n        xm review submit ID --report-id ID --attempt-id ID --report FILE --json\n        xm review finalize|status ID --json\n        xm review close|associate ID --reason TEXT [--operation-id ID | --task-id ID]\nGate authoring: xm review author-gate --operation-id ID --context-file FILE --scope-file FILE --reason TEXT\nFunctional plan: --review-plan-file FILE (prepare or run)\nVerification: --context-file FILE --gate-file FILE (prepare or run)\nNew operation: --operation-id ID --new-operation --approved-by USER --reason TEXT\nBudget exception: --exception full|delta|fix --approved-by USER --reason TEXT\nUsage: xm review run [target-file|git-ref] [--cross-vendor] [--models a,b] [--lenses a,b] [--rounds 1|2] [--run-id id] [--no-trace] [--json]\n       xm review resume <run-id> [--no-trace] [--json]';
 }
 
 const FAILURE_RECOVERY = 'Inspect the error and recover the existing lifecycle before continuing. Do not dispatch reviewers directly, reset the budget, or start another review to bypass this failure.';
@@ -25,7 +25,7 @@ function parse(argv) {
   if (!['run', 'resume', 'prepare', 'submit', 'finalize', 'status', 'close', 'associate', 'author-gate'].includes(command)) throw new Error(`unknown command: ${command || '(missing)'}`);
   const options = { command, crossVendor: false, json: false, trace: true };
   const pos = [];
-  const valueFlags = new Set(['--scope-file', '--gate-file', '--legacy-result', '--context-file', '--operation-id', '--task-id', '--repo', '--pr', '--exception', '--approved-by', '--reason', '--base-ref', '--report-id', '--attempt-id', '--report', '--models', '--lenses', '--rounds', '--run-id', '--chunk-file-budget', '--chunk-token-budget', '--max-profiles', '--max-concurrent-reports']);
+  const valueFlags = new Set(['--review-plan-file', '--scope-file', '--gate-file', '--legacy-result', '--context-file', '--operation-id', '--task-id', '--repo', '--pr', '--exception', '--approved-by', '--reason', '--base-ref', '--report-id', '--attempt-id', '--report', '--models', '--lenses', '--rounds', '--run-id', '--chunk-file-budget', '--chunk-token-budget', '--max-profiles', '--max-concurrent-reports']);
   for (let i = 1; i < argv.length; i += 1) {
     const arg = argv[i];
     if (arg === '--cross-vendor') options.crossVendor = true;

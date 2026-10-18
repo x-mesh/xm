@@ -14,7 +14,7 @@
 </p>
 
 <p align="center">
-  <a href="https://github.com/x-mesh/xm/releases"><img src="https://img.shields.io/badge/version-2.41.1-blue" alt="Version" /></a>
+  <a href="https://github.com/x-mesh/xm/releases"><img src="https://img.shields.io/badge/version-2.41.2-blue" alt="Version" /></a>
   <a href="./LICENSE"><img src="https://img.shields.io/badge/license-MIT-green" alt="License: MIT" /></a>
   <a href="https://nodejs.org"><img src="https://img.shields.io/badge/node-%3E%3D18-brightgreen" alt="Node.js" /></a>
   <a href="#플러그인"><img src="https://img.shields.io/badge/plugins-18-orange" alt="Plugins" /></a>
@@ -709,6 +709,12 @@ xm batch status <id> --json       # topic, wave, seal, 통합 검증, merge 상�
 ---
 
 ### x-review
+
+`xm review prepare target.patch --review-plan-file plan.json --json`으로 기능별 리뷰 계획을 전달할 수 있습니다. `run` 명령도 같은 옵션을 지원합니다.
+
+계획에는 `schema_version: 1`, `target_hash`, `summary`, `groups`를 넣습니다. 각 그룹에는 `id`, `summary`, `files`를 지정하며, 모든 변경 파일을 최대 12개 그룹 중 정확히 하나에 배정해야 합니다.
+
+각 그룹은 파일 개수 예산과 관계없이 유지됩니다. 잘못된 계획, 오래된 해시, token 예산을 초과한 그룹은 오류로 거절합니다. manifest에 계획 해시를 고정하고 모든 리뷰 프롬프트에 공통 맥락을 전달합니다.
 
 체크리스트로 패턴을 맞히는 대신, 발견 하나하나의 맥락을 따져 보는 다관점 코드 리뷰.
 

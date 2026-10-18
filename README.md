@@ -14,7 +14,7 @@
 </p>
 
 <p align="center">
-  <a href="https://github.com/x-mesh/xm/releases"><img src="https://img.shields.io/badge/version-2.41.1-blue" alt="Version" /></a>
+  <a href="https://github.com/x-mesh/xm/releases"><img src="https://img.shields.io/badge/version-2.41.2-blue" alt="Version" /></a>
   <a href="./LICENSE"><img src="https://img.shields.io/badge/license-MIT-green" alt="License: MIT" /></a>
   <a href="https://nodejs.org"><img src="https://img.shields.io/badge/node-%3E%3D18-brightgreen" alt="Node.js" /></a>
   <a href="#plugins"><img src="https://img.shields.io/badge/plugins-18-orange" alt="Plugins" /></a>
@@ -708,6 +708,16 @@ Not sure? Run `/xm:op list` to see all strategies with descriptions.
 ---
 
 ### x-review
+
+Use `xm review prepare target.patch --review-plan-file plan.json --json` to supply a functional review plan.
+The `run` command accepts the same option.
+
+The plan contains `schema_version: 1`, the `target_hash`, a `summary`, and `groups` with `id`, `summary`, and `files`.
+Assign each changed file to exactly one group, with at most 12 groups.
+
+Each group stays intact regardless of the file budget.
+The command rejects invalid plans, stale hashes, and groups that exceed the token budget.
+The manifest binds the plan hash, and each review prompt includes the shared context.
 
 Multi-perspective code review that reasons about each finding instead of pattern-matching it against a checklist.
 

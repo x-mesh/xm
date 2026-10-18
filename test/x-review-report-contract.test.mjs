@@ -6,7 +6,7 @@ import { dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { spawnSync } from 'node:child_process';
 import { validateReviewReports } from '../x-review/skills/review/scripts/validate-reports.mjs';
-import { chunkFrozenTarget, estimateTargetTokens, filterGeneratedCopies, planReview } from '../x-review/skills/review/scripts/plan-review.mjs';
+import { chunkFrozenTarget, chunksFromReviewPlan, estimateTargetTokens, filterGeneratedCopies, planReview } from '../x-review/skills/review/scripts/plan-review.mjs';
 import { canonicalReviewContext, hashReviewContext, normalizeReviewContext } from '../x-review/skills/review/scripts/context-contract.mjs';
 import { buildRetryTarget, splitFrozenSections } from '../x-review/skills/review/scripts/retry-target.mjs';
 
@@ -1595,5 +1595,31 @@ describe('x-review lens report coverage contract', () => {
     // chunks before any provider runs, which is how v2.23.11 shipped a review that could not
     // complete. The panel guard may be equal, never smaller.
     expect(Number(panelLimit)).toBeGreaterThanOrEqual(Number(plannerBudget));
+  });
+});
+
+
+describe('external functional review plan', () => {
+  const section = file => `diff --git a/${file} b/${file}\n--- a/${file}\n+++ b/${file}\n@@ -1 +1 @@\n-old\n+new`;
+  const patch = ['src/api.rs', 'src/store.rs', 'tests/api.rs'].map(section).join('\n');
+  const plan = () => ({ schema_version: 1, target_hash: `sha256:${createHash('sha256').update(patch).digest('hex')}`, summary: 'API and storage share one contract.', groups: [{ id: 'request-flow', summary: 'Check the request through persistence and tests.', files: ['src/api.rs', 'src/store.rs', 'tests/api.rs'] }] });
+  test('keeps an approved functional group intact regardless of the legacy file budget', () => {
+    const chunks = chunksFromReviewPlan(patch, plan(), 24_000);
+    expect(chunks).toHaveLength(1);
+    expect(chunks[0].files).toEqual(plan().groups[0].files);
+    expect(chunks[0].body).toBe(patch);
+    expect(chunks[0].feature_id).toBe('request-flow');
+  });
+  test('rejects stale, omitted, duplicate and invented file assignments', () => {
+    for (const mutate of [p => p.target_hash = 'sha256:stale', p => p.groups[0].files.pop(), p => p.groups[0].files.push('src/api.rs'), p => p.groups[0].files.push('absent.rs')]) {
+      const p = plan(); mutate(p);
+      expect(() => chunksFromReviewPlan(patch, p, 24_000)).toThrow();
+    }
+  });
+  test('refuses an oversized functional group instead of splitting or truncating it', () => {
+    const large = section('src/api.rs') + '\n+' + 'x'.repeat(4_000);
+    const p = plan(); p.target_hash = `sha256:${createHash('sha256').update(large).digest('hex')}`;
+    p.groups[0].files = ['src/api.rs'];
+    expect(() => chunksFromReviewPlan(large, p, 1_000)).toThrow('request-flow');
   });
 });
