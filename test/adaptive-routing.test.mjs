@@ -382,6 +382,26 @@ describe('adaptive runtime routing', () => {
     } finally { rmSync(second, { recursive: true, force: true }); }
   });
 
+  // `route start --help` used to ignore --help and open a real lease, which then blocked the actual start.
+  test('route <verb> --help prints options without executing the verb', async () => {
+    const module = await import('../x-build/lib/x-build/adaptive-routing.mjs');
+    const cwd = fixtureRepo();
+    try {
+      const decision = module.decideAdaptiveRoute(eligible);
+      module.recordAdaptiveDecision(decision);
+      const gateArgs = ['--gate-cmd', 'test=node --check src/value.mjs', '--gate-cmd', 'boundary=test -s src/value.mjs'];
+      const cli = join(import.meta.dir, '..', 'x-build', 'lib', 'x-build-cli.mjs');
+      const result = Bun.spawnSync(['node', cli, 'route', 'start', '--decision-id', decision.decision_id, '--expected-files', 'src/value.mjs', ...gateArgs, '--help'], {
+        cwd, env: { ...process.env, X_BUILD_ROOT: root }, stdout: 'pipe', stderr: 'pipe',
+      });
+      expect(result.exitCode).toBe(0);
+      expect(new TextDecoder().decode(result.stdout)).toContain('--allow-dirty');
+      expect(() => module.startAdaptiveRun({
+        decision_id: decision.decision_id, cwd, expected_files: ['src/value.mjs'], gate_commands: [gateArgs[1], gateArgs[3]],
+      })).not.toThrow();
+    } finally { rmSync(cwd, { recursive: true, force: true }); }
+  });
+
   // A planned run had no way out of verification_failed: fallback is direct-only, verify
   // refused a non-started lease, and the failure erased the gate commands.
   test('a planned lease can be re-verified after fixing what failed', async () => {

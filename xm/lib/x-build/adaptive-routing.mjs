@@ -755,9 +755,27 @@ function values(args, name) {
   return result;
 }
 
+const ROUTE_USAGE = 'Usage: xm build route decide|start|verify|finish|status|abandon|close|record|report [options]';
+
+const ROUTE_HELP = {
+  decide: '--kind <kind> --scope bounded|broad --independent|--shared --files a,b --risk low|medium|high --failure-modes <n> --gates test,boundary,... [--class <id>] [--public-contract] [--external-dependency] [--data-migration] [--security-sensitive] [--json]',
+  start: '--decision-id <id> --expected-files a,b --gate-cmd \'<gate>=<command>\' (once per gate; chain several commands with &&) [--allow-dirty] [--fallback]\n  --allow-dirty  start with pre-existing uncommitted files (e.g. an uncommitted plan PRD); their hashes are kept in the baseline',
+  verify: '--decision-id <id> [--expected-files a,b] [--timeout-ms <n>]',
+  finish: '--decision-id <id> [--cost-event-id <id>]',
+  status: '[--decision-id <id>]',
+  abandon: '--decision-id <id>',
+  close: '--decision-id <id>',
+  record: '--decision-id <id> --class <id> --route direct|planned --outcome accepted|escalated|failed --quality pass|fail [--gates-run a,b] [--duration-ms <n>] [--cost-usd <n>] [--json]',
+  report: '[--class <id>]',
+};
+
 export function cmdAdaptiveRoute(args) {
   const [verb] = args;
   const json = has(args, 'json');
+  if (has(args, 'help') || has(args, 'h')) {
+    console.log(ROUTE_HELP[verb] ? `Usage: xm build route ${verb} ${ROUTE_HELP[verb]}` : ROUTE_USAGE);
+    return null;
+  }
   try {
     if (verb === 'decide') {
       const files = list(take(args, 'files'));
@@ -863,7 +881,7 @@ export function cmdAdaptiveRoute(args) {
       console.log(JSON.stringify(result, null, 2));
       return result;
     }
-    throw new Error('Usage: xm build route decide|start|verify|finish|status|abandon|close|record|report [options]');
+    throw new Error(ROUTE_USAGE);
   } catch (error) {
     console.error(`❌ ${error.message}`);
     process.exitCode = 1;
