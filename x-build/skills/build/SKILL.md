@@ -61,6 +61,8 @@ xm build route verify --decision-id <id> --json
 xm build route finish --decision-id <id> --json
 ```
 
+`--gate-cmd`는 gate마다 한 번만 받습니다. 같은 gate에 명령이 여러 개면 `--gate-cmd 'boundary=ruff check ... && black --check ...'`처럼 `&&`로 묶습니다. 같은 gate를 두 번 넘기면 `duplicate gate command`로 거부됩니다. `route start`는 작업 트리가 깨끗해야 시작합니다. 계획 단계에서 만든 PRD처럼 커밋하지 않은 선행 파일이 있으면 먼저 커밋하거나 `--allow-dirty`를 붙입니다. `--allow-dirty`는 그 파일들의 hash를 baseline에 기록합니다. 하위 명령의 옵션은 `xm build route <verb> --help`로 확인합니다.
+
 Direct verification 실패 시 작업 트리를 baseline으로 복원하거나 clean worktree를 준비한 다음 `route start --decision-id <id> --fallback`을 실행합니다. fallback이 끝나면 같은 `verify → finish`를 사용하며 outcome은 자동으로 `escalated`가 됩니다. 비용은 같은 `decision_id`에 결합되고 `cost_source=actual`인 x-build cost event를 `finish`가 자동 합산하며, 없으면 null로 남깁니다. `route record`는 기존 호출자 호환과 수동 복구용이며 기본 workflow에서는 사용하지 않습니다.
 
 planned route의 `verify`가 gate는 모두 통과했는데 선언하지 않은 파일이 바뀌어서만 실패했고, 그 변경이 gate 통과에 필요하다면 되돌리지 말고 `xm build route close --decision-id <id>`로 닫습니다. close는 사유와 파일 목록만 남기고 outcome을 기록하지 않으므로 accepted로 세지 않고 task class를 quality failure로 표시하지도 않습니다. 되돌려도 gate가 통과하는 변경이면 되돌린 뒤 다시 `verify`합니다.
