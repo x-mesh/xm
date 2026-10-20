@@ -396,6 +396,10 @@ describe('adaptive runtime routing', () => {
       });
       expect(result.exitCode).toBe(0);
       expect(new TextDecoder().decode(result.stdout)).toContain('--allow-dirty');
+      const short = Bun.spawnSync(['node', cli, 'route', 'start', '--decision-id', decision.decision_id, '--expected-files', 'src/value.mjs', ...gateArgs, '-h'], {
+        cwd, env: { ...process.env, X_BUILD_ROOT: root }, stdout: 'pipe', stderr: 'pipe',
+      });
+      expect(new TextDecoder().decode(short.stdout)).toContain('--allow-dirty');
       expect(() => module.startAdaptiveRun({
         decision_id: decision.decision_id, cwd, expected_files: ['src/value.mjs'], gate_commands: [gateArgs[1], gateArgs[3]],
       })).not.toThrow();

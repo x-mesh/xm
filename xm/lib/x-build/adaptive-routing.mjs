@@ -772,7 +772,7 @@ const ROUTE_HELP = {
 export function cmdAdaptiveRoute(args) {
   const [verb] = args;
   const json = has(args, 'json');
-  if (has(args, 'help') || has(args, 'h')) {
+  if (has(args, 'help') || args.includes('-h')) {
     console.log(ROUTE_HELP[verb] ? `Usage: xm build route ${verb} ${ROUTE_HELP[verb]}` : ROUTE_USAGE);
     return null;
   }
