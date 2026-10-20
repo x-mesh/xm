@@ -3,7 +3,7 @@ import type { EngineInterface, Register, RenderChildren, SessionReceiveInput } f
 
 import type { AutoReview, Candidate, ChatLine, Conversation, Pair, PendingCommit, Peer, Picker } from '../../types'
 import {
-  ago, buildContextDigest, contextSummaryLine, diffLines, lightReviewText, parseCommitCommand, parseDelivery, parseRelaySend, peerKey,
+  ago, buildContextDigest, contextSummaryLine, diffLines, lightReviewText, ownSessionName, parseCommitCommand, parseDelivery, parseRelaySend, peerKey,
   recentExchanges, secretExcludes, selectDiff, sendArgv, sentRequestId, sessionRows, shortName, summarizeTranscript, transcriptPath,
 } from './parse'
 import { ICON_SVG, LABEL, badgeCells, badgeColumns, cells, displayName, fit, labels, layoutFor, pad, providerOf } from './view'
@@ -32,6 +32,7 @@ const autoReview = atom({ plugin: 'xm', key: 'relayChatAutoReview' } as const, {
 const quietRequests = atom({ plugin: 'xm', key: 'relayChatQuietRequests' } as const, [])
 // The time of the newest peer line the person dismissed from the band; a newer line shows it again.
 const bandDismissedAt = atom({ plugin: 'xm', key: 'relayChatBandDismissedAt' } as const, null)
+const self = atom({ plugin: 'xm', key: 'relayChatSelf' } as const, null)
 
 // Start values, not measured ones; the manifest's userConfig lets a person change them.
 const DEFAULT_AUTO_COOLDOWN_MINUTES = 30
@@ -390,6 +391,7 @@ async function loadCandidates($: EngineInterface, forPair = false) {
     try {
       const ran = await $.process.run(['xm', 'relay', 'sessions', '--provider', provider])
       rows = await Promise.all(sessionRows(ran.stdout, provider, own).map(c => withTranscript($, c, home)))
+      if (provider === 'claude') await update($, self, () => ({ id: own, name: ownSessionName(ran.stdout, own) }))
     } catch (error) {
       note = `${provider} 조회 실패: ${error instanceof Error ? error.message : String(error)}`
     }
@@ -406,6 +408,19 @@ async function loadCandidates($: EngineInterface, forPair = false) {
       }
     })
   }))
+}
+
+// The pane names this session at its top, so a person at another session can
+// tell which row of their own list to pick.
+async function loadSelf($: EngineInterface) {
+  const id = await $.session.id()
+  let name: string | null = null
+  try {
+    name = ownSessionName((await $.process.run(['xm', 'relay', 'sessions', '--provider', 'claude'])).stdout, id)
+  } catch {
+    // An unreadable listing leaves the name null; the pane says it could not read one.
+  }
+  await update($, self, () => ({ id, name }))
 }
 
 // The last 2 MB of a transcript holds its latest title, prompt and reply rows;
@@ -625,6 +640,9 @@ export const register: Register = (on, options) => {
       const key = await read($, activeKey)
       if (key) await select($, key)
       await $.ui.open({ id: PANE, title: 'Relay 대화' })
+      $.clock.after(0, () => {
+        void loadSelf($)
+      })
       // With nobody to talk to yet, show the live sessions instead of an empty
       // pane. The timer starts the load after the command answers, so the pane
       // opens at once. With a pair, the unreviewed commits are listed instead.
@@ -744,6 +762,7 @@ export const register: Register = (on, options) => {
     const open = async () => {
       await $.ui.open({ id: PANE, title: 'Relay 대화', focus: true })
       await select($, newest.c.key)
+      await loadSelf($)
     }
     const dismiss = () => update($, bandDismissedAt, () => newest.line.at)
     // 4 columns of buttons and gaps are kept free of the text.
@@ -778,6 +797,7 @@ export const register: Register = (on, options) => {
     const who = await read($, pair)
     const pending = await read($, commits)
     const auto = await read($, autoReview)
+    const me = await read($, self)
     const now = await $.clock.now()
     const home = await $.env.get('HOME')
     const tilde = (path: string | null) => (path && home && path.startsWith(home) ? `~${path.slice(home.length)}` : path ?? '')
@@ -803,6 +823,15 @@ export const register: Register = (on, options) => {
 
     return (
       <Box flexDirection="column">
+        {me && (
+          <Box>
+            <Text dimColor>이 세션 </Text>
+            <Text bold color="suggestion">{me.name ?? '(이름 확인 불가)'}</Text>
+            <Box flexShrink={1} minWidth={0}>
+              <Text dimColor wrap="truncate-end">{` · ${me.id.slice(0, 8)}${me.name ? ' · 다른 세션의 상대 목록에 이 이름으로 보입니다' : ''}`}</Text>
+            </Box>
+          </Box>
+        )}
         <Box justifyContent="space-between">
           <Text bold>대화 {list.length ? `(${list.length})` : ''}</Text>
           <Box gap={1}>

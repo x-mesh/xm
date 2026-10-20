@@ -58,6 +58,9 @@ export type PendingCommit = { sha: string; subject: string; at: number; root: st
 /** The automatic review option of this project: on or off, when it last asked, and the commit it skipped as too large. */
 export type AutoReview = { enabled: boolean; lastAt: number | null; skippedSha: string | null; skippedLines: number | null }
 
+/** This session as its peers list it: its id, and the name `xm relay sessions` gives it (null when the listing has no row for it or could not be read). */
+export type SelfSession = { id: string; name: string | null }
+
 declare module 'claude-code' {
   interface PluginState {
     xm: {
@@ -70,6 +73,7 @@ declare module 'claude-code' {
       /** request_ids of automatic review requests whose replies stay in the pane. */
       relayChatQuietRequests: string[]
       relayChatBandDismissedAt: number | null
+      relayChatSelf: SelfSession | null
     }
   }
 }
