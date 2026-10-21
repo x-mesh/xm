@@ -12,7 +12,7 @@ import { test, expect, beforeEach, afterEach } from 'bun:test';
 import { execFileSync, spawnSync } from 'node:child_process';
 import { mkdtempSync, rmSync, existsSync, readFileSync, writeFileSync, mkdirSync, chmodSync, statSync, readdirSync, utimesSync } from 'node:fs';
 import { join, basename } from 'node:path';
-import { tmpdir } from 'node:os';
+import { hostname, tmpdir } from 'node:os';
 
 const CLI = join(import.meta.dir, '..', 'x-build', 'lib', 'x-build-cli.mjs');
 const HANDON_SKILL = join(import.meta.dir, '..', 'xm', 'skills', 'handon', 'SKILL.md');
@@ -103,6 +103,14 @@ test('renders a mem-mesh payload matching the add schema', () => {
 
   // Anchors are client-collected — the server has no git access.
   expect(m.payload.anchors.commit_hash).toMatch(/^[0-9a-fA-F]{7,64}$/);
+});
+
+test('records the machine and HEAD so another machine can tell local-only work apart', () => {
+  cli('handoff', '--full', '--narrative-json', FULL_NARRATIVE, 'where fields');
+  const { state } = stateAndMarkdownIdentity();
+  expect(state.where.host).toBe(hostname());
+  expect(state.where.head_sha).toBe(execFileSync('git', ['rev-parse', 'HEAD'], { cwd: repo, encoding: 'utf8' }).trim());
+  expect(state.where.upstream).toBeNull();
 });
 
 test('a required HANDOFF.md write failure is non-zero and preserves the previous state', () => {

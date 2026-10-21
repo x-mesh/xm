@@ -20,6 +20,7 @@ import {
   recordBuildActivity,
 } from './core.mjs';
 import { linkSync } from 'node:fs';
+import { hostname } from 'node:os';
 import { resolveMemMeshProjectId } from '../mem-mesh-identity.mjs';
 import { newBuildId, recordEffectiveness } from './effectiveness.mjs';
 import { formatNextCommand, resolveNext } from './plan.mjs';
@@ -1043,6 +1044,12 @@ export function cmdHandoffFull(args) {
     ahead = parseInt(ab[1]) || 0;
     commitsToday = execSync('git log --oneline --since="24 hours ago"', { encoding: 'utf8' }).trim().split('\n').filter(Boolean);
   } catch {}
+  // A restore on another machine needs to know which work never left this one.
+  const gitLine = (cmd) => {
+    try { return execSync(cmd, { encoding: 'utf8', stdio: ['pipe', 'pipe', 'pipe'] }).trim() || null; } catch { return null; }
+  };
+  const headSha = gitLine('git rev-parse HEAD');
+  const upstream = gitLine('git rev-parse --abbrev-ref --symbolic-full-name @{u}');
 
   // Active projects
   const activeProjects = [];
@@ -1213,6 +1220,9 @@ export function cmdHandoffFull(args) {
 
     where: {
       branch,
+      host: hostname(),
+      head_sha: headSha,
+      upstream,
       last_commits: lastCommits.slice(0, 5),
       uncommitted_files: uncommittedFiles.slice(0, 10),
       ahead, behind,

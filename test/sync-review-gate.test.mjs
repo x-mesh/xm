@@ -34,6 +34,8 @@ test('the sync ownership invariant rejects deletion of every remote row', () => 
   const work = mkdtempSync(join(tmpdir(), 'sync-owner-regression-'));
   try {
     cpSync(join(root, 'x-sync'), join(work, 'x-sync'), { recursive: true });
+    mkdirSync(join(work, 'x-build/lib'), { recursive: true });
+    cpSync(join(root, 'x-build/lib/mem-mesh-identity.mjs'), join(work, 'x-build/lib/mem-mesh-identity.mjs'));
     mkdirSync(join(work, 'test'));
     cpSync(join(root, 'test/sync-lifecycle-integration.test.mjs'), join(work, 'test/sync-lifecycle-integration.test.mjs'));
     const args = ['test', 'test/sync-lifecycle-integration.test.mjs', '--test-name-pattern', '^remote updates replace tracked copies and never echo through another machine$'];

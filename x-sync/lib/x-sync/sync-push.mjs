@@ -5,9 +5,9 @@
  */
 
 import { readFileSync, readdirSync, existsSync } from 'node:fs';
-import { join, resolve, basename } from 'node:path';
+import { join, resolve } from 'node:path';
 import { execSync } from 'node:child_process';
-import { readSyncConfig } from './sync-config.mjs';
+import { readSyncConfig, resolveSyncProjectId } from './sync-config.mjs';
 import { isExcludedHandoffPath } from './sync-handoff.mjs';
 import { contentHash, importedFiles, isSyncablePath, readSyncState, safePath, saveSyncState, withSyncLock } from './sync-storage.mjs';
 
@@ -70,7 +70,7 @@ async function main() {
 
   const projectId = process.argv.includes('--project')
     ? process.argv[process.argv.indexOf('--project') + 1]
-    : basename(resolve(xmDir, '..'));
+    : resolveSyncProjectId(xmDir);
 
   await withSyncLock(xmDir, async () => {
     const state = readSyncState(xmDir);

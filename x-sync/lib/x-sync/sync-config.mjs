@@ -1,10 +1,22 @@
 /**
  * sync-config.mjs — Sync configuration for xm cross-machine sync
  */
-import { readFileSync, writeFileSync, mkdirSync, chmodSync } from 'node:fs';
-import { join } from 'node:path';
+import { readFileSync, writeFileSync, mkdirSync, chmodSync, existsSync, realpathSync } from 'node:fs';
+import { basename, dirname, join, resolve } from 'node:path';
 import { homedir, hostname } from 'node:os';
 import { randomBytes } from 'node:crypto';
+import { execSync } from 'node:child_process';
+import { fileURLToPath, pathToFileURL } from 'node:url';
+
+// The identity module lives in x-build's source tree and is flattened into
+// xm/lib/ by the bundle, so the relative path differs between the two layouts.
+const here = dirname(fileURLToPath(import.meta.url));
+const identityPath = [
+  join(here, '..', 'mem-mesh-identity.mjs'),
+  join(here, '..', '..', '..', 'x-build', 'lib', 'mem-mesh-identity.mjs'),
+].find(existsSync);
+if (!identityPath) throw new Error('mem-mesh-identity.mjs not found next to x-sync');
+const { resolveMemMeshProjectId } = await import(pathToFileURL(identityPath).href);
 
 const SYNC_CONFIG_PATH = join(homedir(), '.xm', 'sync.json');
 
@@ -50,6 +62,32 @@ export function writeSyncConfig(config) {
 /** Get machine_id (auto-generates if needed) */
 export function getMachineId() {
   return readSyncConfig().machine_id;
+}
+
+function realOrSelf(path) {
+  try { return realpathSync(path); } catch { return resolve(path); }
+}
+
+/**
+ * Sync project id for the checkout that owns `xmDir`.
+ *
+ * A `.xm` at the git root follows mem-mesh's identity chain, so a committed
+ * `.mem-mesh/project-id` lines up checkouts whose folder names differ across
+ * machines. A nested `.xm` keeps its folder name: resolving it to the repo id
+ * would merge sibling `.xm` trees, and full-snapshot pushes would tombstone
+ * each other's files. MEM_MESH_PROJECT_ID is ignored because push-all and
+ * pull-all run every project under one environment.
+ */
+export function resolveSyncProjectId(xmDir) {
+  const owner = resolve(xmDir, '..');
+  let toplevel = null;
+  try {
+    toplevel = execSync('git rev-parse --show-toplevel', {
+      cwd: owner, encoding: 'utf8', stdio: ['pipe', 'pipe', 'pipe'],
+    }).trim() || null;
+  } catch {}
+  if (!toplevel || realOrSelf(toplevel) !== realOrSelf(owner)) return basename(owner);
+  return resolveMemMeshProjectId(owner);
 }
 
 /** Check if sync is configured (has server_url + api_key) */

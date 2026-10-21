@@ -26,6 +26,13 @@ Syncs .xm/ project state across machines. Server stores data in SQLite; clients 
 Pull is incremental by a monotonic server **cursor** (id), so same-millisecond pushes never get skipped. Push sends a **full snapshot**, so the server propagates local deletions as tombstones. Clients remove only tracked, unchanged remote copies and preserve local working files.
 
 Pull cursors are scoped to server URL, project ID, and receiving machine ID.
+
+Project ID resolution (push, pull, and status use the same rule; `--project` overrides it):
+- `.xm` at the git root → mem-mesh's identity chain: `git config --local mem-mesh.project-id`, then `.mem-mesh/project-id`, then the repo folder name. A linked worktree resolves the main checkout's `.xm`, so it uses the main checkout's id.
+- `.xm` in a subdirectory, or outside git → that folder's name. Sibling `.xm` trees in one repo must not share an id, because a full snapshot from one would tombstone the other's files.
+- `MEM_MESH_PROJECT_ID` is ignored: push-all and pull-all run every project in one environment.
+
+When checkout folder names differ between machines, commit `.mem-mesh/project-id` so every machine resolves the same id. A `git config --local` value works too, but each machine must set it.
 Downloaded ordinary files have local provenance records in `.sync-state.json`.
 Updates and deletions apply only to tracked, unchanged copies. A locally edited
 canonical file stays local. Edited remote namespace copies stay excluded from push,
@@ -176,7 +183,7 @@ handoff copies are excluded.
 xm sync push
 ```
 
-Optional: `xm sync push --project PROJECT_ID` to override the auto-detected project name.
+Optional: `xm sync push --project PROJECT_ID` to override the resolved project ID.
 
 Output example:
 ```

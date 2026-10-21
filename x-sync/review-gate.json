@@ -10,7 +10,8 @@
     "x-sync/lib/x-sync/sync-pull.mjs",
     "x-sync/lib/x-sync/sync-storage.mjs",
     "x-sync/lib/x-sync/sync-handoff.mjs",
-    "x-sync/lib/x-sync/sync-lessons.mjs"
+    "x-sync/lib/x-sync/sync-lessons.mjs",
+    "x-build/lib/mem-mesh-identity.mjs"
   ],
   "baseline": {
     "argv": [
