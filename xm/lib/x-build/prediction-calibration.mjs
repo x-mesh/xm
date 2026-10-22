@@ -9,7 +9,7 @@
 
 import { createHash, randomBytes } from 'node:crypto';
 import { join } from 'node:path';
-import { ROOT } from './root.mjs';
+import { buildRoot } from './root.mjs';
 import { COST_EVENT_MAX_BYTES, METRICS_MAX_BYTES, predictTaskCost } from './cost-engine.mjs';
 import { appendCostEvent as appendSharedCostEvent, readCostEvents } from '../cost/index.mjs';
 
@@ -17,7 +17,7 @@ const LOG_SCHEMA_VERSION = 1;
 export const DEFAULT_PREDICTION_MAX_AGE_MS = 24 * 60 * 60 * 1000;
 
 export function predictionLogPath() {
-  return join(ROOT, 'metrics', 'prediction_log.jsonl');
+  return join(buildRoot(), 'metrics', 'prediction_log.jsonl');
 }
 
 function opaqueId(prefix) {

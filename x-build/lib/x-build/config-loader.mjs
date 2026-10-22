@@ -1,7 +1,7 @@
 import { readFileSync, existsSync } from 'node:fs';
 import { join } from 'node:path';
 import { homedir } from 'node:os';
-import { ROOT } from './root.mjs';
+import { buildRoot } from './root.mjs';
 
 function readJSON(filePath) {
   if (!existsSync(filePath)) return null;
@@ -34,7 +34,7 @@ export function mergeSharedTiers(global, local) {
 // so the real ~/.xm global never bleeds into a hermetic run (mirrors shared-config's
 // XM_ROOT collapse; cost-engine.test drives config purely via X_BUILD_ROOT).
 export function loadSharedConfig() {
-  const local = readJSON(join(ROOT, '..', 'config.json')) ?? {};
+  const local = readJSON(join(buildRoot(), '..', 'config.json')) ?? {};
   if (process.env.X_BUILD_ROOT || process.env.XM_ROOT) return { ...local };
   const global = readJSON(join(homedir(), '.xm', 'config.json')) ?? {};
   return mergeSharedTiers(global, local);

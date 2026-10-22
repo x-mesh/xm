@@ -8,7 +8,7 @@ import { createHash, randomBytes } from 'node:crypto';
 import { existsSync, mkdirSync, readFileSync, readdirSync, realpathSync, writeFileSync } from 'node:fs';
 import { dirname, isAbsolute, join, normalize, relative, resolve } from 'node:path';
 import { spawnSync } from 'node:child_process';
-import { ROOT } from './root.mjs';
+import { buildRoot } from './root.mjs';
 import {
   COST_EVENT_MAX_BYTES, INHERIT_MODEL, METRICS_MAX_BYTES, resolveRoleModel,
   metricsPath, parseModelSpec, resolveVendorModel,
@@ -32,11 +32,11 @@ const QUALITY_GATES = new Set(['test', 'boundary', 'property', 'schema', 'stress
 const TASK_CLASS_PATTERN = /^[a-z0-9]+(?:-[a-z0-9]+)*$/;
 
 export function adaptiveRoutingPath() {
-  return join(process.env.X_BUILD_ROOT || ROOT, 'metrics', 'adaptive-routing.jsonl');
+  return join(process.env.X_BUILD_ROOT || buildRoot(), 'metrics', 'adaptive-routing.jsonl');
 }
 
 function adaptiveRunDir() {
-  return join(process.env.X_BUILD_ROOT || ROOT, 'adaptive-runs');
+  return join(process.env.X_BUILD_ROOT || buildRoot(), 'adaptive-runs');
 }
 
 function leasePath(decisionId) {

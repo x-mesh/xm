@@ -6,7 +6,7 @@ import { readFileSync, writeFileSync, mkdirSync, existsSync, statSync, openSync,
 import { join, dirname } from 'node:path';
 import { homedir, hostname } from 'node:os';
 import { randomBytes } from 'node:crypto';
-import { ROOT } from './root.mjs';
+import { buildRoot } from './root.mjs';
 import { loadSharedConfig } from './config-loader.mjs';
 import {
   COST_EVENT_MAX_BYTES as CORE_COST_EVENT_MAX_BYTES,
@@ -49,11 +49,11 @@ export function adaptEvent(raw) {
 // ── Metrics path ─────────────────────────────────────────────────────
 
 export function metricsPath() {
-  return join(ROOT, 'metrics', 'sessions.jsonl');
+  return join(buildRoot(), 'metrics', 'sessions.jsonl');
 }
 
 function tokenActualsPath() {
-  return join(ROOT, 'metrics', 'token-actuals.json');
+  return join(buildRoot(), 'metrics', 'token-actuals.json');
 }
 
 const TOKEN_ACTUALS_POLICY = 'explicit-actual-v1';
@@ -1024,7 +1024,7 @@ export function readTaskMetrics() {
 // ── spendCachePath ────────────────────────────────────────────────────
 
 export function spendCachePath() {
-  return join(ROOT, 'metrics', 'spend-cache.json');
+  return join(buildRoot(), 'metrics', 'spend-cache.json');
 }
 
 // ── readSpendCache ────────────────────────────────────────────────────
