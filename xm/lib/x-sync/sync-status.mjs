@@ -5,10 +5,10 @@
  */
 
 import { readFileSync, existsSync } from 'node:fs';
-import { join, resolve, basename } from 'node:path';
+import { join, resolve } from 'node:path';
 import { homedir } from 'node:os';
 import { execSync } from 'node:child_process';
-import { readSyncConfig } from './sync-config.mjs';
+import { readSyncConfig, resolveSyncProjectId } from './sync-config.mjs';
 
 const SYNC_CONFIG_PATH = join(homedir(), '.xm', 'sync.json');
 const SERVER_PID_PATH = '/tmp/x-sync-server.pid';
@@ -66,10 +66,6 @@ function fmtTime(ms) {
   } catch { return String(ms); }
 }
 
-function resolveProjectId(xmDir) {
-  return basename(resolve(xmDir, '..'));
-}
-
 async function main() {
   const config = readSyncConfig();
   const configured = !!(config.server_url && config.api_key);
@@ -78,7 +74,7 @@ async function main() {
 
   const xmDir = resolveXmDir();
   const xmExists = existsSync(xmDir);
-  const projectId = resolveProjectId(xmDir);
+  const projectId = resolveSyncProjectId(xmDir);
 
   // last_pull (server_time from pull response), last_pull_at (local clock when pull happened)
   const lastPullServer = fmtTime(state?.last_pull);

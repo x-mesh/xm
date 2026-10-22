@@ -85,16 +85,18 @@ Build the CLI command:
 > **Fallback** (only when `xm` is not in PATH):
 > ```bash
 > XMB_CLI=$(ls -d ~/.claude/plugins/cache/xm/{build,xm}/*/lib/x-build-cli.mjs 2>/dev/null | sort -V | tail -1)
-> node "$XMB_CLI" handoff --full --narrative-json '<JSON>' "$ARGUMENTS"
+> node "$XMB_CLI" handoff --full --sync --narrative-json '<JSON>' "$ARGUMENTS"
 > ```
 
 ```bash
-xm build handoff --full \
+xm build handoff --full --sync \
   --narrative-json '{"intent":"...","open_questions":[...],"rejected_alternatives":[...],"next_session_should_know":[...],"memory_refs":[{"id":"837fbc8a-9834-4a4a-8506-c6998ba62e65","reason":"latest remote handoff"}],"session_log":{"rejected":[...],"open_forks":[...],"constraints_prefs":[...],"attempts":[...]}}' \
   "$ARGUMENTS"
 ```
 
 `session_log` is optional — omit the key entirely for a trivial session. When present, the CLI persists it into SESSION-STATE.json; `handon --json` strips it to a count so it never bloats a restore. A rich HANDOFF.summary.md can be materialized from the canonical JSON with `xm recall handoff-md`.
+
+`--sync` pushes only `.xm/build/SESSION-STATE.json` to the x-sync server after the save (a partial push: it deletes nothing remotely), so another machine's `/xm:handon` can restore it. The CLI prints exactly one `🔄 sync:` line: `pushed`, `not configured`, `unavailable (x-sync not installed)`, or `FAILED (<error>)`. A failure never fails the handoff. Always pass the flag; plain CLI runs stay offline on purpose.
 
 `$ARGUMENTS` is used as the `why_stopped` reason. If empty, auto-generates from the last commit message.
 
@@ -118,6 +120,8 @@ When Step 2 printed `🧠 mem-mesh mirror PENDING → <path>`:
 ```bash
 xm build handoff --mirror-done <memory_id> --mirror-token <handoff_token>
 ```
+
+4. If the mirror file has a top-level `supersedes` id (the previous mirrored handoff), call `mcp__mem-mesh__link` (load it with `ToolSearch` first if it is deferred) with `source_id` = the new memory id, `target_id` = that `supersedes` id, and `relation_type: "supersedes"`. `supersedes` lives beside `.payload`, never inside it, so step 2 stays verbatim. A failed `link` does not change the mirror status: report it as `(link failed: <error>)` after the 🧠 line and move on.
 
 One `add` call per handoff (do NOT create a pin per open question — pin sprawl).
 
@@ -203,9 +207,9 @@ The handoff is **not done at step 3**. A run that stops there has completed exac
 
 1. **Read this conversation** — identify intent, open questions, rejected alternatives, what the next session must know.
 2. **Compose `narrative` JSON** with the four fields. Empty arrays/strings are valid when genuinely nothing applies.
-3. **Dispatch via Bash** with `--narrative-json '...'` (leader runs it — do not delegate to an Agent).
+3. **Dispatch via Bash** with `--sync --narrative-json '...'` (leader runs it — do not delegate to an Agent).
 4. **Resolve the mem-mesh gate** by attempting, not by inspecting your toolset (see gate above).
-5. **Mirror** (dual-write mode): read the pending payload file, pass `.payload` verbatim to `mcp__mem-mesh__add`, then pass that same file's `.handoff_token` to `xm build handoff --mirror-done <memory_id> --mirror-token <handoff_token>`.
+5. **Mirror** (dual-write mode): read the pending payload file, pass `.payload` verbatim to `mcp__mem-mesh__add`, then pass that same file's `.handoff_token` to `xm build handoff --mirror-done <memory_id> --mirror-token <handoff_token>`. If the file has `supersedes`, link the new memory to it (Step 3, item 4).
 6. **Confirm.** The 🧠 line is governed by the mode you resolved in step 4 — the two modes never overlap:
 
    - **file-only mode** — you never entered dual-write. mem-mesh does not exist for this run: no 🧠 line, no mention of mem-mesh anywhere in the output. This is not "omitting a required line"; there is no line to report.
@@ -214,6 +218,7 @@ The handoff is **not done at step 3**. A run that stops there has completed exac
    ```
    ✅ Session state saved. Narrative captured: intent ✓, N open Q, N rejected alt.
       🧠 mem-mesh: mirrored (<memory_id>)
+      🔄 sync: pushed
       Next session: run /xm:handon to restore.
    ```
 
@@ -225,7 +230,7 @@ The handoff is **not done at step 3**. A run that stops there has completed exac
    | `add` was attempted and failed | `🧠 mem-mesh: FAILED (<error>) — mirror left pending` |
    | mirror file exists but is unreadable | `🧠 mem-mesh: mirror file UNREADABLE — inspect it manually` |
 
-   Read the CLI's own mirror line (step 3 output) and mirror its verdict — do not infer a state it did not report.
+   Read the CLI's own mirror line (step 3 output) and mirror its verdict — do not infer a state it did not report. Copy the CLI's `🔄 sync:` line into the confirmation as printed, in either mode; omit it only when it says `not configured` or `unavailable (…)` (x-sync is not installed — nothing to report).
 
 ## Common Rationalizations (do not skip Step 1)
 

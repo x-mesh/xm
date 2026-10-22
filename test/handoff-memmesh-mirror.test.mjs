@@ -12,7 +12,7 @@ import { test, expect, beforeEach, afterEach } from 'bun:test';
 import { execFileSync, spawnSync } from 'node:child_process';
 import { mkdtempSync, rmSync, existsSync, readFileSync, writeFileSync, mkdirSync, chmodSync, statSync, readdirSync, utimesSync } from 'node:fs';
 import { join, basename } from 'node:path';
-import { tmpdir } from 'node:os';
+import { hostname, tmpdir } from 'node:os';
 
 const CLI = join(import.meta.dir, '..', 'x-build', 'lib', 'x-build-cli.mjs');
 const HANDON_SKILL = join(import.meta.dir, '..', 'xm', 'skills', 'handon', 'SKILL.md');
@@ -94,15 +94,24 @@ test('renders a mem-mesh payload matching the add schema', () => {
   expect(m.payload.content.length).toBeGreaterThanOrEqual(100);
 
   // Tier-2 detail is what makes the mirror worth storing.
-  expect(m.payload.content).toContain('## Rejected (with reasoning)');
-  expect(m.payload.content).toContain('## What was tried & why');
+  expect(m.payload.content).toContain('### Rejected alternatives (full reasoning)');
+  expect(m.payload.content).toContain('### What was tried & why');
   expect(m.payload.content).toContain('## Referenced mem-mesh memories');
   expect(m.payload.content).toContain('Handoff generation: 1');
   expect(m.payload.content).toContain('837fbc8a-9834-4a4a-8506-c6998ba62e65');
-  expect(m.payload.content).toContain('Stopped: testing dual-write');
+  expect(m.payload.content).toContain('**Stopped because:** testing dual-write');
+  expect(m.payload.content.split('\n')[0]).toBe('Handoff generation: 1');
 
   // Anchors are client-collected — the server has no git access.
   expect(m.payload.anchors.commit_hash).toMatch(/^[0-9a-fA-F]{7,64}$/);
+});
+
+test('records the machine and HEAD so another machine can tell local-only work apart', () => {
+  cli('handoff', '--full', '--narrative-json', FULL_NARRATIVE, 'where fields');
+  const { state } = stateAndMarkdownIdentity();
+  expect(state.where.host).toBe(hostname());
+  expect(state.where.head_sha).toBe(execFileSync('git', ['rev-parse', 'HEAD'], { cwd: repo, encoding: 'utf8' }).trim());
+  expect(state.where.upstream).toBeNull();
 });
 
 test('a required HANDOFF.md write failure is non-zero and preserves the previous state', () => {
@@ -261,7 +270,7 @@ test('keeps at most five valid, unique memory references', () => {
   expect(mirror().payload.content).not.toContain(refs[5].id);
 });
 
-test('pads thin sessions past the 100-char content minimum', () => {
+test('thin sessions still clear the 100-char content minimum', () => {
   const thin = JSON.stringify({
     intent: 'Quick fix',
     open_questions: [],
@@ -272,7 +281,84 @@ test('pads thin sessions past the 100-char content minimum', () => {
 
   const m = mirror();
   expect(m.payload.content.length).toBeGreaterThanOrEqual(100);
-  expect(m.payload.content).toContain('## Session facts');
+  expect(m.payload.content).toContain('## Origin machine');
+});
+
+test('the mirror body restores remaining work, decisions, and the origin machine on its own', () => {
+  execFileSync('sh', ['-c', 'echo changed > a.mjs'], { cwd: repo });
+  cli('handoff', '--full', '--narrative-json', FULL_NARRATIVE, 'self-contained');
+  const content = mirror().payload.content;
+  const head = execFileSync('git', ['rev-parse', 'HEAD'], { cwd: repo, encoding: 'utf8' }).trim();
+
+  expect(content.split('\n')[1]).toContain(`${hostname()} · `);
+  expect(content.split('\n')[1]).toContain(`@${head.slice(0, 7)}`);
+  expect(content).toContain('## Done last session');
+  expect(content).toContain('## Remaining');
+  expect(content).toContain('**Uncommitted:**');
+  expect(content).toContain('## Recent commits');
+  expect(content).toContain('## Origin machine');
+  expect(content).toContain(`- Host: ${hostname()}`);
+  expect(content).toContain(`- HEAD: ${head}`);
+  expect(content).toContain('- Uncommitted files: 1');
+});
+
+test('an oversized session drops the detailed log first and stays under the add limit', () => {
+  const huge = JSON.parse(FULL_NARRATIVE);
+  huge.session_log.attempts = Array.from({ length: 60 }, (_, i) => `attempt ${i} ${'x'.repeat(1000)}`);
+  cli('handoff', '--full', '--narrative-json', JSON.stringify(huge), 'oversized');
+  const content = mirror().payload.content;
+
+  expect(content.length).toBeLessThanOrEqual(50000);
+  expect(content).not.toContain('## Detailed session log');
+  expect(content).toContain('## Recent commits');
+  expect(content).toContain('limit: detailed session log;');
+  expect(content).toContain('## Origin machine');
+});
+
+test('a new mirror names the mirrored handoff it supersedes', () => {
+  cli('handoff', '--full', '--narrative-json', FULL_NARRATIVE, 'first');
+  expect(mirror().supersedes).toBeUndefined();
+  mirrorDone('mem_first');
+
+  cli('handoff', '--full', '--narrative-json', FULL_NARRATIVE, 'second');
+  expect(mirror().supersedes).toBe('mem_first');
+  expect(mirror().payload).not.toHaveProperty('supersedes');
+  expect(JSON.parse(cli('handoff', '--mirror-status')).supersedes).toBe('mem_first');
+});
+
+test('a narrative too large even without the detail is cut at the add limit and says so', () => {
+  const huge = JSON.parse(FULL_NARRATIVE);
+  huge.next_session_should_know = Array.from({ length: 60 }, (_, i) => `note ${i} ${'y'.repeat(1000)}`);
+  cli('handoff', '--full', '--narrative-json', JSON.stringify(huge), 'too large');
+  const content = mirror().payload.content;
+
+  expect(content.length).toBe(50000);
+  expect(content.split('\n')[0]).toBe('Handoff generation: 1');
+  expect(content.endsWith('_(truncated at the mem-mesh content limit)_')).toBe(true);
+  expect(content).toContain(`- Host: ${hostname()}`);
+});
+
+test('--mirror-done keeps the supersedes id the skill links from', () => {
+  cli('handoff', '--full', '--narrative-json', FULL_NARRATIVE, 'first');
+  mirrorDone('mem_first');
+  cli('handoff', '--full', '--narrative-json', FULL_NARRATIVE, 'second');
+  mirrorDone('mem_second');
+  expect(mirror().memory_id).toBe('mem_second');
+  expect(mirror().supersedes).toBe('mem_first');
+});
+
+test('a malformed previous memory id is never offered as a link target', () => {
+  cli('handoff', '--full', '--narrative-json', FULL_NARRATIVE, 'first');
+  const p = join(repo, '.xm', 'build', 'memmesh-mirror.json');
+  writeFileSync(p, JSON.stringify({ ...mirror(), status: 'mirrored', memory_id: 'bad id; rm' }));
+  cli('handoff', '--full', '--narrative-json', FULL_NARRATIVE, 'second');
+  expect(mirror().supersedes).toBeUndefined();
+});
+
+test('a pending previous mirror is not linked as superseded', () => {
+  cli('handoff', '--full', '--narrative-json', FULL_NARRATIVE, 'first');
+  cli('handoff', '--full', '--narrative-json', FULL_NARRATIVE, 'second');
+  expect(mirror().supersedes).toBeUndefined();
 });
 
 test('skips the mirror when there is no narrative to mirror', () => {

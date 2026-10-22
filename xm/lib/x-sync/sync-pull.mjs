@@ -1,8 +1,8 @@
 #!/usr/bin/env node
 import { existsSync, readFileSync, readdirSync, rmSync } from 'node:fs';
-import { basename, dirname, extname, join, relative, resolve } from 'node:path';
+import { dirname, extname, join, relative, resolve } from 'node:path';
 import { execSync } from 'node:child_process';
-import { readSyncConfig } from './sync-config.mjs';
+import { isSyncConfigured, readSyncConfig, resolveSyncProjectId } from './sync-config.mjs';
 import { HANDOFF_STATE_PATH, HANDOFF_MARKDOWN_PATH, isCanonicalHandoffPath, isExcludedHandoffPath, reconcileHandoff } from './sync-handoff.mjs';
 import { canonicalLessonPath, mergeLessonVersions, migrateLessonStore } from './sync-lessons.mjs';
 import { contentHash, fileHash, isSyncablePath, readSyncState, safePath, saveSyncState, scopeFor, withSyncLock, writeAtomic } from './sync-storage.mjs';
@@ -50,10 +50,17 @@ function chooseTarget(xmDir, path, machineId, record, shared) {
 }
 
 async function main() {
+  // Exit 2 lets an automatic caller (xm build handon --sync) tell "not set up"
+  // from a failure, without readSyncConfig() creating ~/.xm/sync.json.
+  if (process.argv.includes('--if-configured') && !isSyncConfigured()) {
+    console.log('[x-sync pull] not configured');
+    process.exitCode = 2;
+    return;
+  }
   const config = readSyncConfig();
   if (!config.server_url || !config.api_key) throw new Error('x-sync not configured. Run: x-sync setup');
   const xmDir = resolveXmDir();
-  const projectId = process.argv.includes('--project') ? process.argv[process.argv.indexOf('--project') + 1] : basename(resolve(xmDir, '..'));
+  const projectId = process.argv.includes('--project') ? process.argv[process.argv.indexOf('--project') + 1] : resolveSyncProjectId(xmDir);
   await withSyncLock(xmDir, async () => {
     const state = readSyncState(xmDir);
     const scope = scopeFor(state, config, projectId);

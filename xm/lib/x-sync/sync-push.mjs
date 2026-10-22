@@ -5,10 +5,10 @@
  */
 
 import { readFileSync, readdirSync, existsSync } from 'node:fs';
-import { join, resolve, basename } from 'node:path';
+import { join, resolve } from 'node:path';
 import { execSync } from 'node:child_process';
-import { readSyncConfig } from './sync-config.mjs';
-import { isExcludedHandoffPath } from './sync-handoff.mjs';
+import { isSyncConfigured, readSyncConfig, resolveSyncProjectId } from './sync-config.mjs';
+import { HANDOFF_STATE_PATH, isExcludedHandoffPath } from './sync-handoff.mjs';
 import { contentHash, importedFiles, isSyncablePath, readSyncState, safePath, saveSyncState, withSyncLock } from './sync-storage.mjs';
 
 // Resolve .xm/ directory (worktree-aware — same logic as shared-config.mjs)
@@ -58,6 +58,14 @@ function scanXmFiles(xmDir, state) {
 
 // Main
 async function main() {
+  const handoffOnly = process.argv.includes('--handoff-only');
+  // Exit 2 lets an automatic caller (xm build handoff --sync) tell "not set up"
+  // from a failure, without readSyncConfig() creating ~/.xm/sync.json.
+  if (process.argv.includes('--if-configured') && !isSyncConfigured()) {
+    console.log('[x-sync push] not configured');
+    process.exitCode = 2;
+    return;
+  }
   const config = readSyncConfig();
   if (!config.server_url || !config.api_key) {
     throw new Error('x-sync not configured. Run: x-sync setup');
@@ -70,12 +78,20 @@ async function main() {
 
   const projectId = process.argv.includes('--project')
     ? process.argv[process.argv.indexOf('--project') + 1]
-    : basename(resolve(xmDir, '..'));
+    : resolveSyncProjectId(xmDir);
 
   await withSyncLock(xmDir, async () => {
     const state = readSyncState(xmDir);
-    const files = scanXmFiles(xmDir, state);
-    console.log(`[x-sync push] ${files.length} local files from ${projectId} (${config.machine_id})`);
+    let files;
+    if (handoffOnly) {
+      const statePath = safePath(xmDir, HANDOFF_STATE_PATH);
+      if (!existsSync(statePath)) throw new Error(`No ${HANDOFF_STATE_PATH} to push.`);
+      const content = readFileSync(statePath, 'utf8');
+      files = [{ path: HANDOFF_STATE_PATH, content, hash: contentHash(content) }];
+    } else {
+      files = scanXmFiles(xmDir, state);
+    }
+    console.log(`[x-sync push] ${handoffOnly ? 'handoff only' : `${files.length} local files`} from ${projectId} (${config.machine_id})`);
     const res = await fetch(`${config.server_url.replace(/\/+$/, '')}/sync/push`, {
       method: 'POST',
       signal: AbortSignal.timeout(30_000),
@@ -85,7 +101,8 @@ async function main() {
       },
       // full_snapshot: scanXmFiles always sends the complete .xm file set, so the
       // server can tombstone paths absent from this push (deletion propagation).
-      body: JSON.stringify({ machine_id: config.machine_id, project_id: projectId, files, full_snapshot: true }),
+      // A handoff-only push is partial, so it must not tombstone the paths it omits.
+      body: JSON.stringify({ machine_id: config.machine_id, project_id: projectId, files, full_snapshot: !handoffOnly }),
     });
 
     if (!res.ok) {
@@ -101,6 +118,12 @@ async function main() {
     if (result.repaired) extra.push(`${result.repaired} materialized`);
     console.log(`[x-sync push] accepted: ${result.accepted}, skipped: ${result.skipped}${extra.length ? ', ' + extra.join(', ') : ''}`);
     if (result.rejected || result.write_errors?.length) throw new Error('Server did not finish the snapshot; retry after resolving the reported errors');
+
+    if (handoffOnly) {
+      state.last_handoff_push = Date.now();
+      saveSyncState(xmDir, state);
+      return;
+    }
 
     // Save last_push state (merge with existing state instead of overwriting last_pull)
     state.last_push = Date.now();

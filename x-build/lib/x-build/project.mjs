@@ -20,6 +20,9 @@ import {
   recordBuildActivity,
 } from './core.mjs';
 import { linkSync } from 'node:fs';
+import { hostname } from 'node:os';
+import { execFileSync, spawnSync } from 'node:child_process';
+import { fileURLToPath } from 'node:url';
 import { resolveMemMeshProjectId } from '../mem-mesh-identity.mjs';
 import { newBuildId, recordEffectiveness } from './effectiveness.mjs';
 import { formatNextCommand, resolveNext } from './plan.mjs';
@@ -1043,6 +1046,12 @@ export function cmdHandoffFull(args) {
     ahead = parseInt(ab[1]) || 0;
     commitsToday = execSync('git log --oneline --since="24 hours ago"', { encoding: 'utf8' }).trim().split('\n').filter(Boolean);
   } catch {}
+  // A restore on another machine needs to know which work never left this one.
+  const gitLine = (cmd) => {
+    try { return execSync(cmd, { encoding: 'utf8', stdio: ['pipe', 'pipe', 'pipe'] }).trim() || null; } catch { return null; }
+  };
+  const headSha = gitLine('git rev-parse HEAD');
+  const upstream = gitLine('git rev-parse --abbrev-ref --symbolic-full-name @{u}');
 
   // Active projects
   const activeProjects = [];
@@ -1213,6 +1222,9 @@ export function cmdHandoffFull(args) {
 
     where: {
       branch,
+      host: hostname(),
+      head_sha: headSha,
+      upstream,
       last_commits: lastCommits.slice(0, 5),
       uncommitted_files: uncommittedFiles.slice(0, 10),
       ahead, behind,
@@ -1279,6 +1291,11 @@ export function cmdHandoffFull(args) {
   // reads .xm/build/config.json, a different layer).
   const mirrorEnabled = loadSharedConfig()?.memmesh?.mirror !== false;
   const mirror = mirrorEnabled ? buildMemMeshMirror(state) : null;
+  // Lets the skill link the new memory to the handoff it replaces, so a search
+  // hit on an old handoff leads forward instead of looking current.
+  if (mirror && prevMirror?.status === 'mirrored' && /^[a-zA-Z0-9_-]{1,100}$/.test(prevMirror.memory_id || '')) {
+    mirror.supersedes = prevMirror.memory_id;
+  }
   let mirrorWritten = false;
   if (mirror) {
     try {
@@ -1343,6 +1360,80 @@ export function cmdHandoffFull(args) {
   } else {
     console.log(`   mem-mesh mirror: skipped (narrative too thin — under the ${MIRROR_MIN_CONTENT}-char minimum mem-mesh requires)`);
   }
+
+  if (args.includes('--sync')) console.log(`🔄 sync: ${_syncLine(_runSync('push', ['--handoff-only']))}`);
+}
+
+// ── x-sync bridge (opt-in with --sync) ───────────────────────────────
+//
+// Opt-in rather than "whenever sync is configured": plain CLI runs, including
+// the test suite under a real HOME, must never reach a user's sync server.
+
+const SYNC_TIMEOUT_MS = 20_000; // below the scripts' own 30s fetch abort
+const SYNC_NOT_CONFIGURED_EXIT = 2;
+
+// x-sync sits beside x-build in the xm bundle and in the source tree; an
+// x-build-only plugin install has no x-sync at all.
+function _syncScript(name) {
+  const here = dirname(fileURLToPath(import.meta.url));
+  return [
+    join(here, '..', 'x-sync', `sync-${name}.mjs`),
+    join(here, '..', '..', '..', 'x-sync', 'lib', 'x-sync', `sync-${name}.mjs`),
+  ].find(existsSync) || null;
+}
+
+function _runSync(name, args) {
+  const script = _syncScript(name);
+  if (!script) return { status: 'unavailable', detail: 'x-sync not installed' };
+  const r = spawnSync(process.execPath, [script, '--if-configured', ...args], {
+    cwd: repoRoot(), encoding: 'utf8', timeout: SYNC_TIMEOUT_MS, stdio: ['ignore', 'pipe', 'pipe'],
+  });
+  if (r.error) {
+    const detail = r.error.code === 'ETIMEDOUT' ? `timed out after ${SYNC_TIMEOUT_MS / 1000}s` : r.error.message;
+    return { status: 'failed', detail };
+  }
+  if (r.status === SYNC_NOT_CONFIGURED_EXIT) return { status: 'not_configured' };
+  const lastLine = (text) => (text || '').trim().split('\n').filter(Boolean).pop() || '';
+  if (r.status !== 0) return { status: 'failed', detail: lastLine(r.stderr) || lastLine(r.stdout) || `exit ${r.status}` };
+  return { status: name === 'push' ? 'pushed' : 'pulled', detail: lastLine(r.stdout) };
+}
+
+function _syncLine(result) {
+  if (result.status === 'not_configured') return 'not configured';
+  if (result.status === 'unavailable') return `unavailable (${result.detail})`;
+  if (result.status === 'failed') return `FAILED (${result.detail})`;
+  return result.status;
+}
+
+// A state promoted from another machine describes that machine's checkout.
+// Absent for states saved before where.host existed — no warning beats a false one.
+function _originMachine(state) {
+  const w = state.where || {};
+  if (!w.host || w.host === hostname()) return null;
+  let headAvailable = null;
+  // The sha arrives from another machine's file, so validate before handing it to git.
+  if (typeof w.head_sha === 'string' && /^[0-9a-f]{7,64}$/i.test(w.head_sha)) {
+    try {
+      execFileSync('git', ['cat-file', '-e', `${w.head_sha}^{commit}`], { cwd: repoRoot(), stdio: 'ignore' });
+      headAvailable = true;
+    } catch { headAvailable = false; }
+  }
+  return {
+    host: w.host,
+    saved_at: state.saved_at || null,
+    head_sha: w.head_sha || null,
+    head_available: headAvailable,
+    uncommitted_files: (w.uncommitted_files || []).length,
+    stashes: (state.context?.stashes || []).length,
+  };
+}
+
+function _originMachineLine(origin) {
+  const parts = [];
+  if (origin.head_available === false) parts.push(`HEAD ${origin.head_sha.slice(0, 8)} is not in this clone (push it there, then fetch here)`);
+  if (origin.uncommitted_files) parts.push(`${origin.uncommitted_files} uncommitted file(s)`);
+  if (origin.stashes) parts.push(`${origin.stashes} stash(es)`);
+  return parts.length ? `saved on ${origin.host}; only there: ${parts.join(', ')}` : `saved on ${origin.host}`;
 }
 
 // ── mem-mesh mirror (dual-write) ─────────────────────────────────────
@@ -1358,6 +1449,7 @@ export function cmdHandoffFull(args) {
 // (NOT `type`) and `content` of at least MIRROR_MIN_CONTENT chars.
 
 const MIRROR_MIN_CONTENT = 100;
+const MIRROR_MAX_CONTENT = 50_000;
 
 export function mirrorPath() {
   return join(repoRoot(), '.xm', 'build', 'memmesh-mirror.json');
@@ -1385,47 +1477,53 @@ function _mirrorProjectId() {
   return (resolved.replace(/[^a-zA-Z0-9_-]/g, '-').slice(0, 100)) || 'project';
 }
 
+// The mirror is the only copy a machine without sync can restore from, so it
+// carries the whole rendered state, not just the narrative.
 function _mirrorContent(state) {
-  const nar = state.narrative || {};
-  const sl = state.session_log || {};
   const w = state.where || {};
-  const ctx = state.context || {};
-  const L = [];
+  const head = [];
+  if (state.handoff_generation) head.push(`Handoff generation: ${state.handoff_generation}`);
+  head.push([
+    state.narrative?.intent || state.context?.current_focus || 'Session handoff',
+    state.saved_at,
+    w.host,
+    w.branch && `${w.branch}${w.head_sha ? `@${w.head_sha.slice(0, 7)}` : ''}`,
+  ].filter(Boolean).join(' · '));
 
-  if (state.handoff_generation) L.push(`Handoff generation: ${state.handoff_generation}`);
-  L.push(nar.intent || ctx.current_focus || 'Session handoff');
-  L.push(`Stopped: ${state.why_stopped || '—'}`);
-  L.push('');
+  const origin = [
+    '## Origin machine',
+    `- Host: ${w.host || '—'}`,
+    `- HEAD: ${w.head_sha || '—'}${w.upstream ? ` (upstream ${w.upstream})` : ''}`,
+    `- Uncommitted files: ${(w.uncommitted_files || []).length}`,
+    `- Stashes: ${(state.context?.stashes || []).length}`,
+  ].join('\n');
 
-  const sec = (title, items) => {
-    if (!items || !items.length) return;
-    L.push(`## ${title}`);
-    for (const it of items) L.push(`- ${it}`);
-    L.push('');
-  };
+  // Origin goes before the body so the final hard cut can only shorten the body.
+  const compose = (s, omitted) => [
+    head.join('\n'),
+    origin,
+    _sessionStateToHandoffMd(s).trim(),
+    omitted.length ? `_(omitted to fit mem-mesh's ${MIRROR_MAX_CONTENT}-char limit: ${omitted.join(', ')}; the full state is in .xm/build/SESSION-STATE.json)_` : '',
+  ].filter(Boolean).join('\n\n');
 
-  // Tier-2 detail when present, tier-1 narrative as fallback.
-  sec('Open questions & forks', sl.open_forks?.length ? sl.open_forks : nar.open_questions);
-  sec('Rejected (with reasoning)', sl.rejected?.length ? sl.rejected : nar.rejected_alternatives);
-  sec('Constraints & preferences', sl.constraints_prefs);
-  sec('What was tried & why', sl.attempts);
-  sec('Next session should know', nar.next_session_should_know);
-  sec('Referenced mem-mesh memories', nar.memory_refs?.map(ref => `${ref.id} — ${ref.reason}`));
-
-  let content = L.join('\n').trim();
-
-  // `add` rejects content under 100 chars. A thin session would fail schema
-  // validation, so top it up with the git facts rather than dropping the mirror.
-  if (content.length < MIRROR_MIN_CONTENT) {
-    const tail = [];
-    if (w.branch) tail.push(`Branch: ${w.branch}`);
-    if (state.what_done?.length) tail.push(`Commits this session: ${state.what_done.length}`);
-    if (w.last_commits?.length) tail.push(`Last commit: ${w.last_commits[0]}`);
-    if (ctx.test_status) tail.push(`Tests: ${ctx.test_status}`);
-    if (state.saved_at) tail.push(`Saved: ${state.saved_at}`);
-    if (tail.length) content = `${content}\n\n## Session facts\n${tail.map(t => `- ${t}`).join('\n')}`;
+  // Drop the bulkiest retrieval-only detail first; `add` rejects anything longer.
+  const cuts = [
+    ['detailed session log', s => ({ ...s, session_log: null })],
+    ['recent commits', s => ({ ...s, where: { ...s.where, last_commits: [] } })],
+  ];
+  let trimmed = state;
+  const omitted = [];
+  let content = compose(trimmed, omitted);
+  for (const [label, cut] of cuts) {
+    if (content.length <= MIRROR_MAX_CONTENT) break;
+    trimmed = cut(trimmed);
+    omitted.push(label);
+    content = compose(trimmed, omitted);
   }
-
+  if (content.length > MIRROR_MAX_CONTENT) {
+    const marker = '\n\n_(truncated at the mem-mesh content limit)_';
+    content = content.slice(0, MIRROR_MAX_CONTENT - marker.length) + marker;
+  }
   return content;
 }
 
@@ -1611,6 +1709,7 @@ export function cmdHandoffMirror(args) {
     status: aged.status,
     from_earlier_handoff: aged.from_earlier_handoff,
     memory_id: state.memory_id,
+    supersedes: state.supersedes,
     handoff_token: state.handoff_token,
     created_at: state.created_at,
     mirrored_at: state.mirrored_at,
@@ -1714,6 +1813,10 @@ export function cmdHandon(args) {
   const isJson = args.includes('--json');
   const buildDir = join(repoRoot(), '.xm', 'build');
   const statePath = join(buildDir, 'SESSION-STATE.json');
+  // Pull before the existence check: a machine with no local state is exactly
+  // the one that needs the promoted remote handoff.
+  const sync = args.includes('--sync') ? _runSync('pull', []) : null;
+  if (sync && !isJson) console.log(`🔄 sync: ${_syncLine(sync)}`);
   try {
     if (existsSync(buildDir)) withHandoffLock(buildDir, () => {});
   } catch (error) {
@@ -1723,7 +1826,7 @@ export function cmdHandon(args) {
   }
 
   if (!existsSync(statePath)) {
-    if (isJson) { console.log(JSON.stringify({ error: 'no_session_state' })); return; }
+    if (isJson) { console.log(JSON.stringify({ error: 'no_session_state', ...(sync ? { sync } : {}) })); return; }
     console.log('No session state found. Run: xmb handoff --full');
     return;
   }
@@ -1764,6 +1867,9 @@ export function cmdHandon(args) {
     } catch {}
     state.since_handoff = { new_commits: newCommits.length, commits: newCommits.slice(0, 5) };
     state.memmesh_mirror = _mirrorStatusFor(state);
+    if (sync) state.sync = sync;
+    const origin = _originMachine(state);
+    if (origin) state.origin_machine = origin;
     // Strip tier-2 detail from the injected payload — replace with a summary so
     // the restore stays high-signal and the log loads only on `handon --log`.
     if (state.session_log) {
@@ -1814,6 +1920,8 @@ export function cmdHandon(args) {
   }
 
   const attention = [];
+  const origin = _originMachine(state);
+  if (origin) attention.push(_originMachineLine(origin));
   if (mirrorStatus.status === 'pending') {
     const from = mirrorStatus.from_earlier_handoff ? ' from an earlier handoff' : '';
     attention.push(`mem-mesh mirror is pending${from}; repair or explicitly skip it`);
