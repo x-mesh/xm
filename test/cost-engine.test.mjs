@@ -476,7 +476,7 @@ describe('appendCostEvent — payload and write lock', () => {
     }));
 
     await Promise.all(children);
-    const lines = readFileSync(metricsFile(), 'utf8').trim().split('\n');
+    const lines = readFileSync(join(TEST_ROOT, 'metrics', 'sessions.jsonl'), 'utf8').trim().split('\n');
     expect(lines).toHaveLength(10);
     const events = lines.map(line => JSON.parse(line));
     expect(new Set(events.map(event => event.worker)).size).toBe(10);
