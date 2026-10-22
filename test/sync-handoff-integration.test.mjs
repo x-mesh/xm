@@ -1,13 +1,14 @@
 import { afterEach, beforeEach, expect, test } from 'bun:test';
 import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
-import { tmpdir } from 'node:os';
+import { hostname, tmpdir } from 'node:os';
 import { execFileSync } from 'node:child_process';
 
 const ROOT = join(import.meta.dir, '..');
 const PUSH = join(ROOT, 'x-sync', 'lib', 'x-sync', 'sync-push.mjs');
 const PULL = join(ROOT, 'x-sync', 'lib', 'x-sync', 'sync-pull.mjs');
 const BUILD = join(ROOT, 'x-build', 'lib', 'x-build-cli.mjs');
+const BUNDLED_BUILD = join(ROOT, 'xm', 'lib', 'x-build-cli.mjs');
 
 async function run(script, args, cwd, env) {
   const proc = Bun.spawn(['node', script, ...args], {
@@ -271,4 +272,83 @@ test('--sync without sync setup reports one line and creates no sync config', as
   const restored = await run(BUILD, ['handon', '--json', '--sync'], alpha, unset);
   expect(JSON.parse(restored.stdout).sync).toEqual({ status: 'not_configured' });
   expect(existsSync(join(fixture, 'home', '.xm', 'sync.json'))).toBe(false);
+});
+
+test('a failing sync server never blocks the handoff, and handon reports the failed pull', async () => {
+  server = Bun.serve({ port: 0, fetch: () => new Response('boom', { status: 500 }) });
+  const env = { XM_SYNC_SERVER_URL: `http://127.0.0.1:${server.port}`, XM_SYNC_API_KEY: 'test-key', XM_SYNC_MACHINE_ID: 'alpha-host' };
+  const alpha = sharedCheckout('alpha', { commit: true });
+  const beta = sharedCheckout('beta');
+
+  const saved = await run(BUILD, ['handoff', '--full', '--sync', 'server down'], alpha, env);
+  expect(saved.exitCode).toBe(0);
+  expect(saved.stdout).toContain('🔄 sync: FAILED (');
+  expect(saved.stdout).toContain('Server error 500');
+  expect(JSON.parse(readFileSync(join(alpha, '.xm', 'build', 'SESSION-STATE.json'), 'utf8')).why_stopped).toBe('server down');
+
+  const restored = await run(BUILD, ['handon', '--json', '--sync'], beta, env);
+  expect(restored.exitCode).toBe(0);
+  const out = JSON.parse(restored.stdout);
+  expect(out.error).toBe('no_session_state');
+  expect(out.sync.status).toBe('failed');
+  expect(out.sync.detail).toContain('Server error 500');
+});
+
+test('the bundled CLI reaches the bundled x-sync and resolves the shared project id', async () => {
+  const { store, env } = fakeSyncServer();
+  const alpha = sharedCheckout('alpha', { commit: true });
+  const saved = await run(BUNDLED_BUILD, ['handoff', '--full', '--sync', 'bundled'], alpha, { ...env, XM_SYNC_MACHINE_ID: 'alpha-host' });
+  expect(saved.exitCode).toBe(0);
+  expect(saved.stdout).toContain('🔄 sync: pushed');
+  expect([...store.keys()]).toEqual(['shared']);
+});
+
+test('a same-host state carries no origin warning; a clone that has the HEAD reports only the local-only work', async () => {
+  const { store, env } = fakeSyncServer();
+  const alpha = sharedCheckout('alpha', { commit: true });
+  await run(BUILD, ['handoff', '--full', '--sync', 'origin check'], alpha, { ...env, XM_SYNC_MACHINE_ID: 'alpha-host' });
+
+  const own = JSON.parse((await run(BUILD, ['handon', '--json'], alpha, env)).stdout);
+  expect(own.where.host).toBe(hostname());
+  expect(own.origin_machine).toBeUndefined();
+
+  const beta = join(fixture, 'beta');
+  execFileSync('git', ['clone', '-q', alpha, beta]);
+  const file = store.get('shared').files[0];
+  const remoteState = JSON.parse(file.content);
+  remoteState.where.host = 'alpha-machine';
+  remoteState.where.uncommitted_files = ['wip.txt'];
+  file.content = JSON.stringify(remoteState);
+
+  const pretty = await run(BUILD, ['handon', '--sync'], beta, { ...env, XM_SYNC_MACHINE_ID: 'beta-host' });
+  expect(pretty.exitCode).toBe(0);
+  expect(pretty.stdout).toContain('🔄 sync: pulled');
+  expect(pretty.stdout).toContain('saved on alpha-machine; only there: 1 uncommitted file(s)');
+  expect(pretty.stdout).not.toContain('is not in this clone');
+
+  const json = JSON.parse((await run(BUILD, ['handon', '--json'], beta, env)).stdout);
+  expect(json.origin_machine.head_available).toBe(true);
+});
+
+test('--handoff-only refuses a missing state and leaves the full-snapshot bookkeeping alone', async () => {
+  const { store, requests, env } = fakeSyncServer();
+  const alpha = sharedCheckout('alpha', { commit: true });
+  mkdirSync(join(alpha, '.xm', 'build'), { recursive: true });
+  const machine = { ...env, XM_SYNC_MACHINE_ID: 'alpha-host' };
+
+  const missing = await run(PUSH, ['--handoff-only'], alpha, machine);
+  expect(missing.exitCode).toBe(1);
+  expect(missing.stderr).toContain('No build/SESSION-STATE.json to push.');
+  expect(requests).toEqual([]);
+
+  writeFileSync(join(alpha, '.xm', 'build', 'SESSION-STATE.json'), JSON.stringify({ v: 1, saved_at: new Date().toISOString(), context: {} }));
+  mkdirSync(join(alpha, '.xm', 'plan'), { recursive: true });
+  writeFileSync(join(alpha, '.xm', 'plan', 'p.md'), '# plan\n');
+  expect((await run(PUSH, ['--handoff-only'], alpha, machine)).exitCode).toBe(0);
+
+  const full = await run(PUSH, [], alpha, machine);
+  expect(full.exitCode).toBe(0);
+  const body = store.get('shared');
+  expect(body.full_snapshot).toBe(true);
+  expect(body.files.map((f) => f.path).sort()).toEqual(['build/SESSION-STATE.json', 'plan/p.md']);
 });

@@ -326,6 +326,34 @@ test('a new mirror names the mirrored handoff it supersedes', () => {
   expect(JSON.parse(cli('handoff', '--mirror-status')).supersedes).toBe('mem_first');
 });
 
+test('a narrative too large even without the detail is cut at the add limit and says so', () => {
+  const huge = JSON.parse(FULL_NARRATIVE);
+  huge.next_session_should_know = Array.from({ length: 60 }, (_, i) => `note ${i} ${'y'.repeat(1000)}`);
+  cli('handoff', '--full', '--narrative-json', JSON.stringify(huge), 'too large');
+  const content = mirror().payload.content;
+
+  expect(content.length).toBe(50000);
+  expect(content.split('\n')[0]).toBe('Handoff generation: 1');
+  expect(content.endsWith('_(truncated at the mem-mesh content limit)_')).toBe(true);
+});
+
+test('--mirror-done keeps the supersedes id the skill links from', () => {
+  cli('handoff', '--full', '--narrative-json', FULL_NARRATIVE, 'first');
+  mirrorDone('mem_first');
+  cli('handoff', '--full', '--narrative-json', FULL_NARRATIVE, 'second');
+  mirrorDone('mem_second');
+  expect(mirror().memory_id).toBe('mem_second');
+  expect(mirror().supersedes).toBe('mem_first');
+});
+
+test('a malformed previous memory id is never offered as a link target', () => {
+  cli('handoff', '--full', '--narrative-json', FULL_NARRATIVE, 'first');
+  const p = join(repo, '.xm', 'build', 'memmesh-mirror.json');
+  writeFileSync(p, JSON.stringify({ ...mirror(), status: 'mirrored', memory_id: 'bad id; rm' }));
+  cli('handoff', '--full', '--narrative-json', FULL_NARRATIVE, 'second');
+  expect(mirror().supersedes).toBeUndefined();
+});
+
 test('a pending previous mirror is not linked as superseded', () => {
   cli('handoff', '--full', '--narrative-json', FULL_NARRATIVE, 'first');
   cli('handoff', '--full', '--narrative-json', FULL_NARRATIVE, 'second');
