@@ -33,6 +33,17 @@ const DEFAULT_CONFIG = {
  *    XM_SYNC_MACHINE_ID → machine_id
  */
 export function readSyncConfig() {
+  const config = readStoredSyncConfig();
+  if (!config.machine_id) {
+    config.machine_id = `${hostname()}-${randomBytes(2).toString('hex')}`;
+    writeSyncConfig(config);
+  }
+  return config;
+}
+
+// File + environment only. Never writes, so callers that merely ask "is sync
+// set up?" do not leave a ~/.xm/sync.json behind on machines that never use it.
+function readStoredSyncConfig() {
   let config = { ...DEFAULT_CONFIG };
   try {
     config = { ...DEFAULT_CONFIG, ...JSON.parse(readFileSync(SYNC_CONFIG_PATH, 'utf8')) };
@@ -42,11 +53,6 @@ export function readSyncConfig() {
   if (process.env.XM_SYNC_SERVER_URL) config.server_url = process.env.XM_SYNC_SERVER_URL;
   if (process.env.XM_SYNC_API_KEY)    config.api_key = process.env.XM_SYNC_API_KEY;
   if (process.env.XM_SYNC_MACHINE_ID) config.machine_id = process.env.XM_SYNC_MACHINE_ID;
-
-  if (!config.machine_id) {
-    config.machine_id = `${hostname()}-${randomBytes(2).toString('hex')}`;
-    writeSyncConfig(config);
-  }
   return config;
 }
 
@@ -92,6 +98,6 @@ export function resolveSyncProjectId(xmDir) {
 
 /** Check if sync is configured (has server_url + api_key) */
 export function isSyncConfigured() {
-  const config = readSyncConfig();
+  const config = readStoredSyncConfig();
   return !!(config.server_url && config.api_key);
 }

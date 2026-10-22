@@ -5,7 +5,7 @@ import { spawn } from 'node:child_process';
 
 const rules = [
   { id: 'skip-empty', invariant_id: 'SYNC_EMPTY', test: 'an empty final snapshot deletes the last remote file', edits: [
-    ['x-sync/lib/x-sync/sync-push.mjs', 'const files = scanXmFiles(xmDir, state);', 'const files = scanXmFiles(xmDir, state); if (!files.length) return;'],
+    ['x-sync/lib/x-sync/sync-push.mjs', 'files = scanXmFiles(xmDir, state);', 'files = scanXmFiles(xmDir, state); if (!files.length) return;'],
   ] },
   { id: 'echo-imports', invariant_id: 'SYNC_ORIGIN', test: 'remote updates replace tracked copies and never echo through another machine', edits: [
     ['x-sync/lib/x-sync/sync-push.mjs', 'if (imports.some(', 'if (false && imports.some('],

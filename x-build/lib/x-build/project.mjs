@@ -21,6 +21,8 @@ import {
 } from './core.mjs';
 import { linkSync } from 'node:fs';
 import { hostname } from 'node:os';
+import { execFileSync, spawnSync } from 'node:child_process';
+import { fileURLToPath } from 'node:url';
 import { resolveMemMeshProjectId } from '../mem-mesh-identity.mjs';
 import { newBuildId, recordEffectiveness } from './effectiveness.mjs';
 import { formatNextCommand, resolveNext } from './plan.mjs';
@@ -1353,6 +1355,80 @@ export function cmdHandoffFull(args) {
   } else {
     console.log(`   mem-mesh mirror: skipped (narrative too thin — under the ${MIRROR_MIN_CONTENT}-char minimum mem-mesh requires)`);
   }
+
+  if (args.includes('--sync')) console.log(`🔄 sync: ${_syncLine(_runSync('push', ['--handoff-only']))}`);
+}
+
+// ── x-sync bridge (opt-in with --sync) ───────────────────────────────
+//
+// Opt-in rather than "whenever sync is configured": plain CLI runs, including
+// the test suite under a real HOME, must never reach a user's sync server.
+
+const SYNC_TIMEOUT_MS = 20_000; // below the scripts' own 30s fetch abort
+const SYNC_NOT_CONFIGURED_EXIT = 2;
+
+// x-sync sits beside x-build in the xm bundle and in the source tree; an
+// x-build-only plugin install has no x-sync at all.
+function _syncScript(name) {
+  const here = dirname(fileURLToPath(import.meta.url));
+  return [
+    join(here, '..', 'x-sync', `sync-${name}.mjs`),
+    join(here, '..', '..', '..', 'x-sync', 'lib', 'x-sync', `sync-${name}.mjs`),
+  ].find(existsSync) || null;
+}
+
+function _runSync(name, args) {
+  const script = _syncScript(name);
+  if (!script) return { status: 'unavailable', detail: 'x-sync not installed' };
+  const r = spawnSync(process.execPath, [script, '--if-configured', ...args], {
+    cwd: repoRoot(), encoding: 'utf8', timeout: SYNC_TIMEOUT_MS, stdio: ['ignore', 'pipe', 'pipe'],
+  });
+  if (r.error) {
+    const detail = r.error.code === 'ETIMEDOUT' ? `timed out after ${SYNC_TIMEOUT_MS / 1000}s` : r.error.message;
+    return { status: 'failed', detail };
+  }
+  if (r.status === SYNC_NOT_CONFIGURED_EXIT) return { status: 'not_configured' };
+  const lastLine = (text) => (text || '').trim().split('\n').filter(Boolean).pop() || '';
+  if (r.status !== 0) return { status: 'failed', detail: lastLine(r.stderr) || lastLine(r.stdout) || `exit ${r.status}` };
+  return { status: name === 'push' ? 'pushed' : 'pulled', detail: lastLine(r.stdout) };
+}
+
+function _syncLine(result) {
+  if (result.status === 'not_configured') return 'not configured';
+  if (result.status === 'unavailable') return `unavailable (${result.detail})`;
+  if (result.status === 'failed') return `FAILED (${result.detail})`;
+  return result.status;
+}
+
+// A state promoted from another machine describes that machine's checkout.
+// Absent for states saved before where.host existed — no warning beats a false one.
+function _originMachine(state) {
+  const w = state.where || {};
+  if (!w.host || w.host === hostname()) return null;
+  let headAvailable = null;
+  // The sha arrives from another machine's file, so validate before handing it to git.
+  if (typeof w.head_sha === 'string' && /^[0-9a-f]{7,64}$/i.test(w.head_sha)) {
+    try {
+      execFileSync('git', ['cat-file', '-e', `${w.head_sha}^{commit}`], { cwd: repoRoot(), stdio: 'ignore' });
+      headAvailable = true;
+    } catch { headAvailable = false; }
+  }
+  return {
+    host: w.host,
+    saved_at: state.saved_at || null,
+    head_sha: w.head_sha || null,
+    head_available: headAvailable,
+    uncommitted_files: (w.uncommitted_files || []).length,
+    stashes: (state.context?.stashes || []).length,
+  };
+}
+
+function _originMachineLine(origin) {
+  const parts = [];
+  if (origin.head_available === false) parts.push(`HEAD ${origin.head_sha.slice(0, 8)} is not in this clone (push it there, then fetch here)`);
+  if (origin.uncommitted_files) parts.push(`${origin.uncommitted_files} uncommitted file(s)`);
+  if (origin.stashes) parts.push(`${origin.stashes} stash(es)`);
+  return parts.length ? `saved on ${origin.host}; only there: ${parts.join(', ')}` : `saved on ${origin.host}`;
 }
 
 // ── mem-mesh mirror (dual-write) ─────────────────────────────────────
@@ -1724,6 +1800,10 @@ export function cmdHandon(args) {
   const isJson = args.includes('--json');
   const buildDir = join(repoRoot(), '.xm', 'build');
   const statePath = join(buildDir, 'SESSION-STATE.json');
+  // Pull before the existence check: a machine with no local state is exactly
+  // the one that needs the promoted remote handoff.
+  const sync = args.includes('--sync') ? _runSync('pull', []) : null;
+  if (sync && !isJson) console.log(`🔄 sync: ${_syncLine(sync)}`);
   try {
     if (existsSync(buildDir)) withHandoffLock(buildDir, () => {});
   } catch (error) {
@@ -1733,7 +1813,7 @@ export function cmdHandon(args) {
   }
 
   if (!existsSync(statePath)) {
-    if (isJson) { console.log(JSON.stringify({ error: 'no_session_state' })); return; }
+    if (isJson) { console.log(JSON.stringify({ error: 'no_session_state', ...(sync ? { sync } : {}) })); return; }
     console.log('No session state found. Run: xmb handoff --full');
     return;
   }
@@ -1774,6 +1854,9 @@ export function cmdHandon(args) {
     } catch {}
     state.since_handoff = { new_commits: newCommits.length, commits: newCommits.slice(0, 5) };
     state.memmesh_mirror = _mirrorStatusFor(state);
+    if (sync) state.sync = sync;
+    const origin = _originMachine(state);
+    if (origin) state.origin_machine = origin;
     // Strip tier-2 detail from the injected payload — replace with a summary so
     // the restore stays high-signal and the log loads only on `handon --log`.
     if (state.session_log) {
@@ -1824,6 +1907,8 @@ export function cmdHandon(args) {
   }
 
   const attention = [];
+  const origin = _originMachine(state);
+  if (origin) attention.push(_originMachineLine(origin));
   if (mirrorStatus.status === 'pending') {
     const from = mirrorStatus.from_earlier_handoff ? ' from an earlier handoff' : '';
     attention.push(`mem-mesh mirror is pending${from}; repair or explicitly skip it`);

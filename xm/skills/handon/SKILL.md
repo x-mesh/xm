@@ -43,12 +43,18 @@ mem-mesh에 더 새 `handoff` + `session-state` 레코드가 없을 때 primary�
 > **Fallback** (only when `xm` is not in PATH):
 > ```bash
 > XMB_CLI=$(ls -d ~/.claude/plugins/cache/xm/{build,xm}/*/lib/x-build-cli.mjs 2>/dev/null | sort -V | tail -1)
-> node "$XMB_CLI" handon --json
+> node "$XMB_CLI" handon --json --sync
 > ```
 
 ```bash
-xm build handon --json
+xm build handon --json --sync
 ```
+
+`--sync` runs `xm sync pull` inside the CLI before the local file is read, so a
+handoff saved on another machine is already promoted to the local path when the
+JSON comes back. The result is in the `sync` field (see Step 2). Never drop the
+flag to save time: without it, a machine with no local state never sees the
+other machine's handoff.
 
 If the command prints `{"error":"no_session_state"}`, 로컬 상태가 없다고만 기록하고
 멈추지 않습니다. Step 3.5에서 mem-mesh handoff를 조회합니다. 원격에도 없을 때만:
@@ -56,9 +62,10 @@ If the command prints `{"error":"no_session_state"}`, 로컬 상태가 없다고
 
 를 출력하고 멈춥니다.
 
-`xm sync pull` may have promoted another machine's newest verified JSON to this
+The sync pull may have promoted another machine's newest verified JSON to this
 canonical local path. Treat it exactly like any other local candidate; its
-`handoff_generation` and `saved_at` were already reconciled by x-sync.
+`handoff_generation` and `saved_at` were already reconciled by x-sync. The
+three-source comparison in Step 3 therefore stays local-vs-mem-mesh.
 
 If the command itself fails (`command not found`, `Cannot find module`, non-JSON output), that is an **invocation failure, not a missing handoff** — report the actual error to the user and try the fallback above. Never translate a broken invocation into "no previous session state": the state file may exist and be perfectly readable.
 
@@ -91,6 +98,8 @@ The JSON contains these sections that you MUST use as your working context:
 | `session_log_summary` | **A count of tier-2 detail (rejected/open_forks/constraints_prefs/attempts). The full archive is deliberately NOT in this JSON — do not treat its absence as "no detail." Announce it (Step 3) and load on demand (below).** |
 | `why_stopped` | This is why the last session ended |
 | `since_handoff.new_commits` | This many changes happened since the handoff (by others or other sessions) |
+| `sync` | Present only with `--sync`. `status`: `pulled` / `not_configured` (no sync setup — say nothing) / `unavailable` (x-sync not installed — say nothing) / `failed` (report `detail` in one line; restore continues from the local file) |
+| `origin_machine` | Present only when the state was saved on another host. Lead the summary with it: "`{host}`에서 저장한 상태입니다", then name what exists only there — `head_available: false` means HEAD `{head_sha}` is not in this clone (push it on `{host}`, then fetch here), plus `uncommitted_files` and `stashes` counts. Treat `where.uncommitted_files` and `context.stashes` as that host's working tree, never this one's. |
 | `memmesh_mirror.status` | Did the last handoff reach mem-mesh? `mirrored` / `pending` (it did not — surface this, even when `from_earlier_handoff` is true) / `skipped` (user dismissed it) / `stale` (an already-mirrored record from an older handoff) / `unreadable` (mirror file is corrupt — report it, offer no repair, never overwrite it) / `none` |
 
 **Step 3: Select the newest handoff, then output the summary**

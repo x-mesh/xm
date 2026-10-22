@@ -1,5 +1,5 @@
 import { afterEach, beforeEach, expect, test } from 'bun:test';
-import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { tmpdir } from 'node:os';
 import { execFileSync } from 'node:child_process';
@@ -184,4 +184,91 @@ test('checkouts with different folder names meet through .mem-mesh/project-id', 
   expect(pulled.stdout).toContain('handoff updated from alpha-host');
   const restored = JSON.parse(readFileSync(join(machines.beta, '.xm', 'build', 'SESSION-STATE.json'), 'utf8'));
   expect(restored.context.current_focus).toBe('from-alpha');
+});
+
+function fakeSyncServer() {
+  const store = new Map();
+  const requests = [];
+  server = Bun.serve({
+    port: 0,
+    fetch: async (req) => {
+      const url = new URL(req.url);
+      requests.push(`${req.method} ${url.pathname}`);
+      if (req.method === 'POST' && url.pathname === '/sync/push') {
+        const body = await req.json();
+        store.set(body.project_id, body);
+        return Response.json({ accepted: body.files.length, skipped: 0, deleted: 0 });
+      }
+      if (req.method === 'GET' && url.pathname === '/sync/pull') {
+        const body = store.get(url.searchParams.get('project_id'));
+        const files = (body?.files ?? []).map((file, index) => ({
+          ...file, machine_id: body.machine_id, pushed_at: index + 1, deleted: 0,
+        }));
+        return Response.json({ files, cursor: files.length, server_time: Date.now() });
+      }
+      return new Response('not found', { status: 404 });
+    },
+  });
+  return { store, requests, env: { XM_SYNC_SERVER_URL: `http://127.0.0.1:${server.port}`, XM_SYNC_API_KEY: 'test-key' } };
+}
+
+function sharedCheckout(name, { commit = false } = {}) {
+  const dir = join(fixture, name);
+  mkdirSync(join(dir, '.mem-mesh'), { recursive: true });
+  writeFileSync(join(dir, '.mem-mesh', 'project-id'), 'shared\n');
+  execFileSync('git', ['init', '-q', '.'], { cwd: dir });
+  if (commit) {
+    writeFileSync(join(dir, 'a.txt'), 'a\n');
+    execFileSync('git', ['add', '-A'], { cwd: dir });
+    execFileSync('git', ['-c', 'user.email=t@example.com', '-c', 'user.name=T', 'commit', '-qm', 'init'], { cwd: dir });
+  }
+  return dir;
+}
+
+test('handoff --sync pushes only the handoff, and handon --sync restores it on another checkout', async () => {
+  const { store, env } = fakeSyncServer();
+  const alpha = sharedCheckout('alpha', { commit: true });
+  const beta = sharedCheckout('beta');
+
+  const saved = await run(BUILD, ['handoff', '--full', '--sync', 'switch machine'], alpha, { ...env, XM_SYNC_MACHINE_ID: 'alpha-host' });
+  expect(saved.exitCode).toBe(0);
+  expect(saved.stdout).toContain('🔄 sync: pushed');
+  const pushed = store.get('shared');
+  expect(pushed.full_snapshot).toBe(false);
+  expect(pushed.files.map((file) => file.path)).toEqual(['build/SESSION-STATE.json']);
+
+  // Both checkouts live on this test machine, so stamp the pushed state as another host's.
+  const file = pushed.files[0];
+  const remoteState = JSON.parse(file.content);
+  remoteState.where.host = 'alpha-machine';
+  file.content = JSON.stringify(remoteState);
+
+  const restored = await run(BUILD, ['handon', '--json', '--sync'], beta, { ...env, XM_SYNC_MACHINE_ID: 'beta-host' });
+  expect(restored.exitCode).toBe(0);
+  const state = JSON.parse(restored.stdout);
+  expect(state.sync.status).toBe('pulled');
+  expect(state.why_stopped).toBe('switch machine');
+  expect(state.origin_machine.host).toBe('alpha-machine');
+  expect(state.origin_machine.head_sha).toBe(remoteState.where.head_sha);
+  expect(state.origin_machine.head_available).toBe(false);
+});
+
+test('handon without --sync never contacts the sync server', async () => {
+  const { requests, env } = fakeSyncServer();
+  const beta = sharedCheckout('beta');
+  const restored = await run(BUILD, ['handon', '--json'], beta, env);
+  expect(restored.exitCode).toBe(0);
+  expect(JSON.parse(restored.stdout).error).toBe('no_session_state');
+  expect(requests).toEqual([]);
+});
+
+test('--sync without sync setup reports one line and creates no sync config', async () => {
+  const alpha = sharedCheckout('alpha', { commit: true });
+  const unset = { XM_SYNC_SERVER_URL: '', XM_SYNC_API_KEY: '', XM_SYNC_MACHINE_ID: '' };
+  const saved = await run(BUILD, ['handoff', '--full', '--sync'], alpha, unset);
+  expect(saved.exitCode).toBe(0);
+  expect(saved.stdout).toContain('🔄 sync: not configured');
+  const restored = await run(BUILD, ['handon', '--json', '--sync'], alpha, unset);
+  expect(JSON.parse(restored.stdout).sync).toEqual({ status: 'not_configured' });
+  expect(existsSync(join(fixture, 'home', '.xm', 'sync.json'))).toBe(false);
 });

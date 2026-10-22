@@ -185,6 +185,10 @@ xm sync push
 
 Optional: `xm sync push --project PROJECT_ID` to override the resolved project ID.
 
+Flags used by the handoff bridge (`xm build handoff --full --sync`, `xm build handon --sync`):
+- `--handoff-only` — push only `build/SESSION-STATE.json` with `full_snapshot: false`, so the server tombstones nothing. Records `last_handoff_push` and leaves the full-push fields alone.
+- `--if-configured` (push and pull) — when no server URL or API key is set, print `not configured` and exit 2 without creating `~/.xm/sync.json`.
+
 Output example:
 ```
 [x-sync push] 42 files from my-project (macbook-a1b2)
