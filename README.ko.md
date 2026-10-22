@@ -14,7 +14,7 @@
 </p>
 
 <p align="center">
-  <a href="https://github.com/x-mesh/xm/releases"><img src="https://img.shields.io/badge/version-2.42.0-blue" alt="Version" /></a>
+  <a href="https://github.com/x-mesh/xm/releases"><img src="https://img.shields.io/badge/version-2.43.0-blue" alt="Version" /></a>
   <a href="./LICENSE"><img src="https://img.shields.io/badge/license-MIT-green" alt="License: MIT" /></a>
   <a href="https://nodejs.org"><img src="https://img.shields.io/badge/node-%3E%3D18-brightgreen" alt="Node.js" /></a>
   <a href="#플러그인"><img src="https://img.shields.io/badge/plugins-18-orange" alt="Plugins" /></a>
@@ -1150,12 +1150,25 @@ x-sync pull       # 현재 프로젝트의 데이터만 pull
 x-sync push-all   # ~/work 아래 모든 .xm/ 프로젝트 push (--root 로 변경 가능)
 x-sync pull-all   # ~/work 아래 모든 .xm/ 프로젝트 pull
 x-sync status     # 설정 + 현재 cwd projectId + 마지막 pull/push 상태
+x-sync push --if-configured   # sync가 설정되지 않았으면 종료 코드 2 (pull도 지원)
+x-sync push --handoff-only    # .xm/build/SESSION-STATE.json만 push, 원격 파일은 지우지 않음
 ```
 
 `handoff`는 이기종 머신 동기화를 지원합니다. `push`는 canonical
 `SESSION-STATE.json`/`HANDOFF.md`를 보내고, `pull`은 `handoff_generation`과
 `saved_at` fallback으로 가장 최신의 유효한 handoff를 canonical 로컬 경로에
 승격합니다. 일반 `.xm` 충돌 파일은 기존처럼 머신별 namespaced 경로를 사용합니다.
+
+`/xm:handoff`는 세션 상태를 저장한 뒤 sync 서버로 push하고, `/xm:handon`은
+복원하기 전에 pull합니다. 그래서 다른 머신에서도 세션을 복원할 수 있습니다.
+CLI에서는 `xm build handoff --full --sync`와 `xm build handon --sync`로 같은
+동작을 실행하며, 각 명령은 `🔄 sync:` 줄을 하나 출력합니다. sync가 실패해도
+handoff는 실패하지 않습니다.
+
+sync 프로젝트 id는 `.xm`의 위치에 따라 정해집니다. `.xm`이 git 루트에 있으면
+mem-mesh 프로젝트 id(`.mem-mesh/project-id` 또는 `git config mem-mesh.project-id`)를
+사용하므로, 머신마다 폴더 이름이 달라도 같은 프로젝트로 맞춰집니다. 중첩된 `.xm`은
+폴더 이름을 사용합니다. `MEM_MESH_PROJECT_ID`는 무시합니다.
 
 Claude Code 안에서도 사용 가능: `/xm:sync push`, `/xm:sync pull`, `/xm:sync setup`
 

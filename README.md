@@ -14,7 +14,7 @@
 </p>
 
 <p align="center">
-  <a href="https://github.com/x-mesh/xm/releases"><img src="https://img.shields.io/badge/version-2.42.0-blue" alt="Version" /></a>
+  <a href="https://github.com/x-mesh/xm/releases"><img src="https://img.shields.io/badge/version-2.43.0-blue" alt="Version" /></a>
   <a href="./LICENSE"><img src="https://img.shields.io/badge/license-MIT-green" alt="License: MIT" /></a>
   <a href="https://nodejs.org"><img src="https://img.shields.io/badge/node-%3E%3D18-brightgreen" alt="Node.js" /></a>
   <a href="#plugins"><img src="https://img.shields.io/badge/plugins-18-orange" alt="Plugins" /></a>
@@ -1153,12 +1153,25 @@ x-sync pull       # pull current project's data
 x-sync push-all   # push every .xm/ project under ~/work (use --root to override)
 x-sync pull-all   # pull every .xm/ project under ~/work
 x-sync status     # show config, current cwd projectId, last pull/push
+x-sync push --if-configured   # exit 2 when sync is not set up (pull accepts it too)
+x-sync push --handoff-only    # push only .xm/build/SESSION-STATE.json; delete nothing remotely
 ```
 
 `handoff` is cross-machine aware: `push` sends the canonical
 `SESSION-STATE.json`/`HANDOFF.md`, and `pull` promotes the newest valid remote
 handoff to the canonical local path using `handoff_generation` with a
 `saved_at` fallback. Ordinary `.xm` conflicts remain machine-namespaced.
+
+`/xm:handoff` pushes the session state after it saves it. `/xm:handon` pulls
+before it restores, so a second machine can restore the session. From the CLI,
+run `xm build handoff --full --sync` and `xm build handon --sync`. Each command
+prints one `🔄 sync:` line. A sync failure does not fail the handoff.
+
+The sync project id depends on the location of `.xm`. If `.xm` is at the git
+root, x-sync uses the mem-mesh project id (`.mem-mesh/project-id` or
+`git config mem-mesh.project-id`). Thus checkouts with different folder names
+share one project. A nested `.xm` uses its folder name. x-sync ignores
+`MEM_MESH_PROJECT_ID`.
 
 Or use directly in Claude Code: `/xm:sync push`, `/xm:sync pull`, `/xm:sync setup`
 
