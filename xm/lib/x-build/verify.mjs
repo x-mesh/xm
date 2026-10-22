@@ -616,6 +616,31 @@ function getAllowedFiles(triage) {
   return Array.isArray(files) ? files : [];
 }
 
+// sync-bundle copies each standalone source into xm/ byte for byte, and the
+// checksum registry is rebuilt from those copies, so a fix to an allowed source
+// also changes them. Only copies identical to an allowed source, and a registry
+// that still verifies, count as generated; a hand edit under xm/ stays out of scope.
+const BUNDLE_DIR = 'xm/';
+const BUNDLE_REGISTRY = 'xm/skills.checksums.json';
+
+function generatedBundleFiles(allowedFiles, candidates) {
+  const generated = new Set();
+  const sourceDigests = new Set(allowedFiles
+    .filter(file => !file.startsWith(BUNDLE_DIR))
+    .map(file => currentFileSnapshot(file).sha256)
+    .filter(Boolean));
+  for (const file of candidates) {
+    if (!file.startsWith(BUNDLE_DIR) || file === BUNDLE_REGISTRY || allowedFiles.includes(file)) continue;
+    if (sourceDigests.has(currentFileSnapshot(file).sha256)) generated.add(file);
+  }
+  const checker = join(workspaceRoot(), 'xm', 'scripts', 'skills-checksum.mjs');
+  if (candidates.includes(BUNDLE_REGISTRY) && existsSync(checker)) {
+    const result = spawnSync('node', [checker, '--check'], { cwd: workspaceRoot(), encoding: 'utf8', timeout: 60000 });
+    if (result.status === 0) generated.add(BUNDLE_REGISTRY);
+  }
+  return generated;
+}
+
 function getVerificationItems(triage) {
   const items = triage?.verification || triage?.fix_scope?.verification || [];
   return Array.isArray(items) ? items : [];
@@ -1434,8 +1459,11 @@ export async function verifyReviewFixContent(args) {
     if (triage.review_snapshot_digest !== freshness.digest) {
       failures.push('triage.json review_snapshot_digest does not match last-result.json; re-run verify-review-fix --init');
     }
+    const changedFiles = collectChangedFilesSinceReview(review.reviewed_commit);
+    const generated = generatedBundleFiles(allowedFiles, [...new Set([...freshness.changed, ...changedFiles])]);
+    const inScope = file => allowedFiles.includes(file) || generated.has(file);
     const unauthorizedChanges = fixAuthorized
-      ? freshness.changed.filter(file => !allowedFiles.includes(file))
+      ? freshness.changed.filter(file => !inScope(file))
       : freshness.changed;
     if (unauthorizedChanges.length > 0) {
       failures.push(fixAuthorized
@@ -1512,7 +1540,6 @@ export async function verifyReviewFixContent(args) {
       failures.push('verification must list at least one command or evidence check');
     }
 
-    const changedFiles = collectChangedFilesSinceReview(review.reviewed_commit);
     const drift = changedFiles.filter(file =>
       !baselineFiles.has(file) &&
       file !== '.xm/review/triage.json' &&
@@ -1520,7 +1547,7 @@ export async function verifyReviewFixContent(args) {
       file !== '.xm/review/finding-lifecycle.json' &&
       file !== '.xm/review/triage-ledger.jsonl' &&
       !file.startsWith('.xm/review/history/') &&
-      !allowedFiles.includes(file)
+      !inScope(file)
     );
 
     if (drift.length > 0) {

@@ -599,6 +599,47 @@ describe('review-precision: ledger written by verify-review-fix', () => {
     }
   });
 
+  test('a bundle copy stays in scope only while it is byte-identical to its allowed source', () => {
+    const source = 'x-build/lib/x-build/foo.mjs';
+    const copy = 'xm/lib/x-build/foo.mjs';
+    const approvedTmp = (label) => {
+      const tmp = mkdtempSync(join(tmpdir(), `xb-rp-bundle-${label}-`));
+      setupProject(tmp);
+      writeReviewResult(tmp, {
+        findings: [{ severity: 'high', lens: 'logic', file: source, line: 1, summary: 'Bundle drift' }],
+        reviewed_files_all: [source, copy],
+      });
+      initAndEditTriage(tmp, triage => {
+        triage.fix_scope.allowed_files = [source];
+        triage.target_findings[0].evidence = 'Reproduced';
+      });
+      expect(run(['verify-review-fix'], { cwd: tmp }).exitCode).toBe(0);
+      return tmp;
+    };
+
+    const regeneratedTmp = approvedTmp('regenerated');
+    try {
+      writeFileSync(join(regeneratedTmp, source), 'fixed\n');
+      writeFileSync(join(regeneratedTmp, copy), 'fixed\n');
+      const regenerated = run(['verify-review-fix', '--reverify', 'F1', '--outcome', 'resolved', '--evidence', 'fixed', '--command', 'true'], { cwd: regeneratedTmp });
+      expect(regenerated.stdout).not.toContain('outside fix_scope.allowed_files');
+      expect(regenerated.exitCode).toBe(0);
+    } finally {
+      rmSync(regeneratedTmp, { recursive: true, force: true });
+    }
+
+    const handEditedTmp = approvedTmp('hand-edited');
+    try {
+      writeFileSync(join(handEditedTmp, source), 'fixed\n');
+      writeFileSync(join(handEditedTmp, copy), 'hand edit\n');
+      const handEdited = run(['verify-review-fix'], { cwd: handEditedTmp });
+      expect(handEdited.exitCode).not.toBe(0);
+      expect(handEdited.stdout).toContain(`outside fix_scope.allowed_files: ${copy}`);
+    } finally {
+      rmSync(handEditedTmp, { recursive: true, force: true });
+    }
+  });
+
   test('the latest outcome wins per file snapshot while exact re-runs stay idempotent', () => {
     const tmp = mkdtempSync(join(tmpdir(), 'xb-rp-'));
     try {
