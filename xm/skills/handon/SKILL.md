@@ -123,6 +123,16 @@ The JSON contains these sections that you MUST use as your working context:
 `SESSION-STATE.json`을 추측해 덮어쓰지 않습니다. 다음 정상 `/xm:handoff`가 현재
 세션을 로컬·mem-mesh에 함께 저장해 두 원본을 다시 맞춥니다.
 
+A remote handoff body renders the full session state: `## Remaining` (active
+projects, uncommitted files), `## Decisions carried forward`, `## Recent commits`,
+and a closing `## Origin machine` (host, HEAD sha, uncommitted and stash counts).
+Restore from those sections when the remote handoff is selected. If the origin
+host differs from this machine, report it the way the CLI reports
+`origin_machine`: run `git cat-file -e <sha>^{commit}` (only for a 7-64 char hex
+sha) and say when that HEAD is missing here, plus any uncommitted or stash counts
+that exist only on the origin machine. Older handoff bodies lack these sections;
+then say nothing about them rather than guessing.
+
 선택한 후보를 흡수한 뒤 다음 형식으로 요약합니다. 원격이 선택된 경우 로컬에서만
 나오는 필드는 생략하고 원격 본문에 있는 사실만 말합니다.
 

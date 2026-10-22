@@ -121,6 +121,8 @@ When Step 2 printed `🧠 mem-mesh mirror PENDING → <path>`:
 xm build handoff --mirror-done <memory_id> --mirror-token <handoff_token>
 ```
 
+4. If the mirror file has a top-level `supersedes` id (the previous mirrored handoff), call `mcp__mem-mesh__link` (load it with `ToolSearch` first if it is deferred) with `source_id` = the new memory id, `target_id` = that `supersedes` id, and `relation_type: "supersedes"`. `supersedes` lives beside `.payload`, never inside it, so step 2 stays verbatim. A failed `link` does not change the mirror status: report it as `(link failed: <error>)` after the 🧠 line and move on.
+
 One `add` call per handoff (do NOT create a pin per open question — pin sprawl).
 
 If Step 2 printed `mem-mesh mirror: skipped (no narrative to mirror)` instead, there is no payload — skip Step 3 and say so in the confirmation.
@@ -207,7 +209,7 @@ The handoff is **not done at step 3**. A run that stops there has completed exac
 2. **Compose `narrative` JSON** with the four fields. Empty arrays/strings are valid when genuinely nothing applies.
 3. **Dispatch via Bash** with `--sync --narrative-json '...'` (leader runs it — do not delegate to an Agent).
 4. **Resolve the mem-mesh gate** by attempting, not by inspecting your toolset (see gate above).
-5. **Mirror** (dual-write mode): read the pending payload file, pass `.payload` verbatim to `mcp__mem-mesh__add`, then pass that same file's `.handoff_token` to `xm build handoff --mirror-done <memory_id> --mirror-token <handoff_token>`.
+5. **Mirror** (dual-write mode): read the pending payload file, pass `.payload` verbatim to `mcp__mem-mesh__add`, then pass that same file's `.handoff_token` to `xm build handoff --mirror-done <memory_id> --mirror-token <handoff_token>`. If the file has `supersedes`, link the new memory to it (Step 3, item 4).
 6. **Confirm.** The 🧠 line is governed by the mode you resolved in step 4 — the two modes never overlap:
 
    - **file-only mode** — you never entered dual-write. mem-mesh does not exist for this run: no 🧠 line, no mention of mem-mesh anywhere in the output. This is not "omitting a required line"; there is no line to report.

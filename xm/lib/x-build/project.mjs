@@ -1291,6 +1291,11 @@ export function cmdHandoffFull(args) {
   // reads .xm/build/config.json, a different layer).
   const mirrorEnabled = loadSharedConfig()?.memmesh?.mirror !== false;
   const mirror = mirrorEnabled ? buildMemMeshMirror(state) : null;
+  // Lets the skill link the new memory to the handoff it replaces, so a search
+  // hit on an old handoff leads forward instead of looking current.
+  if (mirror && prevMirror?.status === 'mirrored' && /^[a-zA-Z0-9_-]{1,100}$/.test(prevMirror.memory_id || '')) {
+    mirror.supersedes = prevMirror.memory_id;
+  }
   let mirrorWritten = false;
   if (mirror) {
     try {
@@ -1444,6 +1449,7 @@ function _originMachineLine(origin) {
 // (NOT `type`) and `content` of at least MIRROR_MIN_CONTENT chars.
 
 const MIRROR_MIN_CONTENT = 100;
+const MIRROR_MAX_CONTENT = 50_000;
 
 export function mirrorPath() {
   return join(repoRoot(), '.xm', 'build', 'memmesh-mirror.json');
@@ -1471,47 +1477,52 @@ function _mirrorProjectId() {
   return (resolved.replace(/[^a-zA-Z0-9_-]/g, '-').slice(0, 100)) || 'project';
 }
 
+// The mirror is the only copy a machine without sync can restore from, so it
+// carries the whole rendered state, not just the narrative.
 function _mirrorContent(state) {
-  const nar = state.narrative || {};
-  const sl = state.session_log || {};
   const w = state.where || {};
-  const ctx = state.context || {};
-  const L = [];
+  const head = [];
+  if (state.handoff_generation) head.push(`Handoff generation: ${state.handoff_generation}`);
+  head.push([
+    state.narrative?.intent || state.context?.current_focus || 'Session handoff',
+    state.saved_at,
+    w.host,
+    w.branch && `${w.branch}${w.head_sha ? `@${w.head_sha.slice(0, 7)}` : ''}`,
+  ].filter(Boolean).join(' · '));
 
-  if (state.handoff_generation) L.push(`Handoff generation: ${state.handoff_generation}`);
-  L.push(nar.intent || ctx.current_focus || 'Session handoff');
-  L.push(`Stopped: ${state.why_stopped || '—'}`);
-  L.push('');
+  const origin = [
+    '## Origin machine',
+    `- Host: ${w.host || '—'}`,
+    `- HEAD: ${w.head_sha || '—'}${w.upstream ? ` (upstream ${w.upstream})` : ''}`,
+    `- Uncommitted files: ${(w.uncommitted_files || []).length}`,
+    `- Stashes: ${(state.context?.stashes || []).length}`,
+  ].join('\n');
 
-  const sec = (title, items) => {
-    if (!items || !items.length) return;
-    L.push(`## ${title}`);
-    for (const it of items) L.push(`- ${it}`);
-    L.push('');
-  };
+  const compose = (s, omitted) => [
+    head.join('\n'),
+    _sessionStateToHandoffMd(s).trim(),
+    origin,
+    omitted.length ? `_(omitted to fit mem-mesh's ${MIRROR_MAX_CONTENT}-char limit: ${omitted.join(', ')}; the full state is in .xm/build/SESSION-STATE.json)_` : '',
+  ].filter(Boolean).join('\n\n');
 
-  // Tier-2 detail when present, tier-1 narrative as fallback.
-  sec('Open questions & forks', sl.open_forks?.length ? sl.open_forks : nar.open_questions);
-  sec('Rejected (with reasoning)', sl.rejected?.length ? sl.rejected : nar.rejected_alternatives);
-  sec('Constraints & preferences', sl.constraints_prefs);
-  sec('What was tried & why', sl.attempts);
-  sec('Next session should know', nar.next_session_should_know);
-  sec('Referenced mem-mesh memories', nar.memory_refs?.map(ref => `${ref.id} — ${ref.reason}`));
-
-  let content = L.join('\n').trim();
-
-  // `add` rejects content under 100 chars. A thin session would fail schema
-  // validation, so top it up with the git facts rather than dropping the mirror.
-  if (content.length < MIRROR_MIN_CONTENT) {
-    const tail = [];
-    if (w.branch) tail.push(`Branch: ${w.branch}`);
-    if (state.what_done?.length) tail.push(`Commits this session: ${state.what_done.length}`);
-    if (w.last_commits?.length) tail.push(`Last commit: ${w.last_commits[0]}`);
-    if (ctx.test_status) tail.push(`Tests: ${ctx.test_status}`);
-    if (state.saved_at) tail.push(`Saved: ${state.saved_at}`);
-    if (tail.length) content = `${content}\n\n## Session facts\n${tail.map(t => `- ${t}`).join('\n')}`;
+  // Drop the bulkiest retrieval-only detail first; `add` rejects anything longer.
+  const cuts = [
+    ['detailed session log', s => ({ ...s, session_log: null })],
+    ['recent commits', s => ({ ...s, where: { ...s.where, last_commits: [] } })],
+  ];
+  let trimmed = state;
+  const omitted = [];
+  let content = compose(trimmed, omitted);
+  for (const [label, cut] of cuts) {
+    if (content.length <= MIRROR_MAX_CONTENT) break;
+    trimmed = cut(trimmed);
+    omitted.push(label);
+    content = compose(trimmed, omitted);
   }
-
+  if (content.length > MIRROR_MAX_CONTENT) {
+    const marker = '\n\n_(truncated at the mem-mesh content limit)_';
+    content = content.slice(0, MIRROR_MAX_CONTENT - marker.length) + marker;
+  }
   return content;
 }
 
@@ -1697,6 +1708,7 @@ export function cmdHandoffMirror(args) {
     status: aged.status,
     from_earlier_handoff: aged.from_earlier_handoff,
     memory_id: state.memory_id,
+    supersedes: state.supersedes,
     handoff_token: state.handoff_token,
     created_at: state.created_at,
     mirrored_at: state.mirrored_at,
