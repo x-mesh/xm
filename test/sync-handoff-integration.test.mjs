@@ -352,3 +352,25 @@ test('--handoff-only refuses a missing state and leaves the full-snapshot bookke
   expect(body.full_snapshot).toBe(true);
   expect(body.files.map((f) => f.path).sort()).toEqual(['build/SESSION-STATE.json', 'plan/p.md']);
 });
+
+test('the install.sh client layout loads sync-config with its flat file list', async () => {
+  const installer = readFileSync(join(ROOT, 'x-sync', 'install.sh'), 'utf8');
+  const client = installer.slice(installer.indexOf('install_client()'));
+  const lib = join(fixture, 'share', 'x-sync');
+  mkdirSync(lib, { recursive: true });
+  const loop = client.match(/for f in ([^;]+); do\s+curl -fsSL "\$REPO_URL\/(\S+)\/\$f"/);
+  for (const name of loop[1].trim().split(/\s+/)) {
+    writeFileSync(join(lib, name), readFileSync(join(ROOT, loop[2], name)));
+  }
+  for (const [, src, dest] of client.matchAll(/curl -fsSL "\$REPO_URL\/([^"$]+)" -o "\$lib_dir\/([^"]+)"/g)) {
+    writeFileSync(join(lib, dest), readFileSync(join(ROOT, src)));
+  }
+
+  const repo = sharedCheckout('alpha', { commit: true });
+  mkdirSync(join(repo, '.xm'), { recursive: true });
+  const unset = { XM_SYNC_SERVER_URL: '', XM_SYNC_API_KEY: '', XM_SYNC_MACHINE_ID: '' };
+  const pushed = await run(join(lib, 'sync-push.mjs'), ['--if-configured'], repo, unset);
+  expect(pushed.stderr).toBe('');
+  expect(pushed.exitCode).toBe(2);
+  expect(pushed.stdout).toContain('[x-sync push] not configured');
+});

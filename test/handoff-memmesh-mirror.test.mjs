@@ -335,6 +335,7 @@ test('a narrative too large even without the detail is cut at the add limit and 
   expect(content.length).toBe(50000);
   expect(content.split('\n')[0]).toBe('Handoff generation: 1');
   expect(content.endsWith('_(truncated at the mem-mesh content limit)_')).toBe(true);
+  expect(content).toContain(`- Host: ${hostname()}`);
 });
 
 test('--mirror-done keeps the supersedes id the skill links from', () => {

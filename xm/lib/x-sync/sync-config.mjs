@@ -8,10 +8,12 @@ import { randomBytes } from 'node:crypto';
 import { execSync } from 'node:child_process';
 import { fileURLToPath, pathToFileURL } from 'node:url';
 
-// The identity module lives in x-build's source tree and is flattened into
-// xm/lib/ by the bundle, so the relative path differs between the two layouts.
+// The identity module lives in x-build's source tree, is flattened into xm/lib/
+// by the bundle, and sits beside this file in the install.sh client, so the
+// relative path differs across the three layouts.
 const here = dirname(fileURLToPath(import.meta.url));
 const identityPath = [
+  join(here, 'mem-mesh-identity.mjs'),
   join(here, '..', 'mem-mesh-identity.mjs'),
   join(here, '..', '..', '..', 'x-build', 'lib', 'mem-mesh-identity.mjs'),
 ].find(existsSync);

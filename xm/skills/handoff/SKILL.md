@@ -230,7 +230,7 @@ The handoff is **not done at step 3**. A run that stops there has completed exac
    | `add` was attempted and failed | `🧠 mem-mesh: FAILED (<error>) — mirror left pending` |
    | mirror file exists but is unreadable | `🧠 mem-mesh: mirror file UNREADABLE — inspect it manually` |
 
-   Read the CLI's own mirror line (step 3 output) and mirror its verdict — do not infer a state it did not report. Copy the CLI's `🔄 sync:` line into the confirmation as printed, in either mode; omit it only when it says `not configured`.
+   Read the CLI's own mirror line (step 3 output) and mirror its verdict — do not infer a state it did not report. Copy the CLI's `🔄 sync:` line into the confirmation as printed, in either mode; omit it only when it says `not configured` or `unavailable (…)` (x-sync is not installed — nothing to report).
 
 ## Common Rationalizations (do not skip Step 1)
 

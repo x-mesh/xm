@@ -62,6 +62,11 @@ If the command prints `{"error":"no_session_state"}`, 로컬 상태가 없다고
 
 를 출력하고 멈춥니다.
 
+That JSON also carries `sync` when `--sync` ran. If `sync.status` is `failed`,
+print `Sync pull failed (<detail>) — another machine's handoff could not be
+fetched` before the line above, so an unreachable sync server is never reported
+as "no previous session".
+
 The sync pull may have promoted another machine's newest verified JSON to this
 canonical local path. Treat it exactly like any other local candidate; its
 `handoff_generation` and `saved_at` were already reconciled by x-sync. The
@@ -125,7 +130,8 @@ The JSON contains these sections that you MUST use as your working context:
 
 A remote handoff body renders the full session state: `## Remaining` (active
 projects, uncommitted files), `## Decisions carried forward`, `## Recent commits`,
-and a closing `## Origin machine` (host, HEAD sha, uncommitted and stash counts).
+and an `## Origin machine` section right after the summary line (host, HEAD sha,
+uncommitted and stash counts).
 Restore from those sections when the remote handoff is selected. If the origin
 host differs from this machine, report it the way the CLI reports
 `origin_machine`: run `git cat-file -e <sha>^{commit}` (only for a 7-64 char hex

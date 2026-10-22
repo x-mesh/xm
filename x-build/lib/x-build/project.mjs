@@ -1498,10 +1498,11 @@ function _mirrorContent(state) {
     `- Stashes: ${(state.context?.stashes || []).length}`,
   ].join('\n');
 
+  // Origin goes before the body so the final hard cut can only shorten the body.
   const compose = (s, omitted) => [
     head.join('\n'),
-    _sessionStateToHandoffMd(s).trim(),
     origin,
+    _sessionStateToHandoffMd(s).trim(),
     omitted.length ? `_(omitted to fit mem-mesh's ${MIRROR_MAX_CONTENT}-char limit: ${omitted.join(', ')}; the full state is in .xm/build/SESSION-STATE.json)_` : '',
   ].filter(Boolean).join('\n\n');
 

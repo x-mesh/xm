@@ -69,6 +69,8 @@ install_client() {
   for f in sync-push.mjs sync-pull.mjs sync-push-all.mjs sync-pull-all.mjs sync-config.mjs sync-storage.mjs sync-handoff.mjs sync-lessons.mjs; do
     curl -fsSL "$REPO_URL/xm/lib/x-sync/$f" -o "$lib_dir/$f"
   done
+  # sync-config.mjs resolves the project id through this module.
+  curl -fsSL "$REPO_URL/xm/lib/mem-mesh-identity.mjs" -o "$lib_dir/mem-mesh-identity.mjs"
 
   # Create unified CLI wrapper
   cat > "$BIN_DIR/x-sync" << 'WRAPPER'
