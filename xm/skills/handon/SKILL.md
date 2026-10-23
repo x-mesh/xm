@@ -62,10 +62,13 @@ If the command prints `{"error":"no_session_state"}`, 로컬 상태가 없다고
 
 를 출력하고 멈춥니다.
 
-That JSON also carries `sync` when `--sync` ran. If `sync.status` is `failed`,
-print `Sync pull failed (<detail>) — another machine's handoff could not be
-fetched` before the line above, so an unreachable sync server is never reported
-as "no previous session".
+Every handon JSON, `no_session_state` included, carries `sync` when `--sync`
+ran. If `sync.status` is `failed`, print `Sync pull failed (<detail>) — another
+machine's handoff could not be fetched` as the first output line on every
+restore path: before the no-state message above, and before the Step 3 summary
+when the local file or a mem-mesh handoff is restored. A handoff restored from
+those sources can be older than the one the sync server holds, so the failure
+stays visible even when a restore succeeds.
 
 The sync pull may have promoted another machine's newest verified JSON to this
 canonical local path. Treat it exactly like any other local candidate; its
@@ -103,7 +106,7 @@ The JSON contains these sections that you MUST use as your working context:
 | `session_log_summary` | **A count of tier-2 detail (rejected/open_forks/constraints_prefs/attempts). The full archive is deliberately NOT in this JSON — do not treat its absence as "no detail." Announce it (Step 3) and load on demand (below).** |
 | `why_stopped` | This is why the last session ended |
 | `since_handoff.new_commits` | This many changes happened since the handoff (by others or other sessions) |
-| `sync` | Present only with `--sync`. `status`: `pulled` / `not_configured` (no sync setup — say nothing) / `unavailable` (x-sync not installed — say nothing) / `failed` (report `detail` in one line; restore continues from the local file) |
+| `sync` | Present only with `--sync`. `status`: `pulled` / `not_configured` (no sync setup — say nothing) / `unavailable` (x-sync not installed — say nothing) / `failed` (print the Step 1 failure line first on every path; restore continues from the local file or mem-mesh) |
 | `origin_machine` | Present only when the state was saved on another host. Lead the summary with it: "`{host}`에서 저장한 상태입니다", then name what exists only there — `head_available: false` means HEAD `{head_sha}` is not in this clone (push it on `{host}`, then fetch here), plus `uncommitted_files` and `stashes` counts. Treat `where.uncommitted_files` and `context.stashes` as that host's working tree, never this one's. |
 | `memmesh_mirror.status` | Did the last handoff reach mem-mesh? `mirrored` / `pending` (it did not — surface this, even when `from_earlier_handoff` is true) / `skipped` (user dismissed it) / `stale` (an already-mirrored record from an older handoff) / `unreadable` (mirror file is corrupt — report it, offer no repair, never overwrite it) / `none` |
 
