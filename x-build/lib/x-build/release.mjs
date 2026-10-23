@@ -13,7 +13,7 @@
 
 import { readFileSync, writeFileSync, existsSync, readdirSync, mkdirSync, unlinkSync } from 'node:fs';
 import { join, resolve } from 'node:path';
-import { execSync } from 'node:child_process';
+import { execSync, spawnSync } from 'node:child_process';
 import { checkBudget, exitFail, findCurrentProject } from './core.mjs';
 
 // ── Constants ─────────────────────────────────────────────────────────
@@ -174,34 +174,44 @@ function reportFullSuite(cwd) {
   }
   console.log(`\n🧪 Full suite (report only, not a gate): ${cmd}`);
   const started = Date.now();
-  let out = '';
-  let failed = false;
-  try {
-    out = execSync(cmd, { cwd, encoding: 'utf8', timeout: 900000, stdio: ['ignore', 'pipe', 'pipe'] });
-  } catch (e) {
-    failed = true;
-    out = `${e.stdout || ''}${e.stderr || ''}`;
-  }
+  const ran = spawnSync(cmd, {
+    cwd, shell: true, encoding: 'utf8', timeout: FULL_SUITE_TIMEOUT_MS,
+    maxBuffer: 256 * 1024 * 1024, stdio: ['ignore', 'pipe', 'pipe'],
+  });
   const secs = Math.round((Date.now() - started) / 1000);
+  for (const line of fullSuiteReport(ran, secs)) console.log(line);
+}
+
+// bun prints its "N pass / N fail" summary on stderr, so both streams are read
+// on every outcome. The full suite takes about 15 minutes; the old 900 s cap
+// killed runs that went a few seconds over and reported them as failures.
+const FULL_SUITE_TIMEOUT_MS = 30 * 60 * 1000;
+
+/**
+ * Turn a finished full-suite run into report lines.
+ * @param {{ status: number|null, signal?: string|null, error?: Error & { code?: string }, stdout?: string, stderr?: string }} ran
+ * @param {number} secs
+ * @returns {string[]}
+ */
+export function fullSuiteReport(ran, secs) {
+  if (ran.error?.code === 'ETIMEDOUT') {
+    return [`   timed out after ${secs}s (limit ${FULL_SUITE_TIMEOUT_MS / 1000}s); no result. Run the test command directly.`];
+  }
+  const out = `${ran.stdout || ''}\n${ran.stderr || ''}`;
   const pass = (out.match(/^\s*(\d+) pass/m) || [])[1];
   const fail = (out.match(/^\s*(\d+) fail/m) || [])[1];
-
-  if (pass || fail) {
-    const n = Number(fail || 0);
-    const line = `   ${pass || '?'} pass / ${fail || '0'} fail  (${secs}s)`;
-    if (n > 0) {
-      console.log(`⚠ Full suite is RED — the release is not blocked by it, but the tree is not clean.`);
-      console.log(line);
-      for (const m of out.matchAll(/^\(fail\)\s+(.+?)(?:\s+\[[\d.]+ms\])?$/gm)) {
-        console.log(`     ✗ ${m[1]}`);
-      }
-      console.log('   Compare against the previous release before shipping: a NEW failure here is a regression.');
-    } else {
-      console.log(`✅ Full suite green — ${line.trim()}`);
-    }
-  } else {
-    console.log(`   ${failed ? 'command failed' : 'completed'} in ${secs}s; no pass/fail summary parsed.`);
+  if (!pass && !fail) {
+    const how = ran.error ? `could not run (${ran.error.message})` : ran.status === 0 ? 'completed' : `command failed (exit ${ran.status ?? ran.signal})`;
+    return [`   ${how} in ${secs}s; no pass/fail summary parsed.`];
   }
+  const line = `   ${pass || '?'} pass / ${fail || '0'} fail  (${secs}s)`;
+  if (Number(fail || 0) === 0) return [`✅ Full suite green — ${line.trim()}`];
+  return [
+    '⚠ Full suite is RED — the release is not blocked by it, but the tree is not clean.',
+    line,
+    ...[...out.matchAll(/^\(fail\)\s+(.+?)(?:\s+\[[\d.]+ms\])?$/gm)].map((m) => `     ✗ ${m[1]}`),
+    '   Compare against the previous release before shipping: a NEW failure here is a regression.',
+  ];
 }
 
 function runReleaseStateCheck(cwd) {
