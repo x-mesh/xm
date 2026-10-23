@@ -68,7 +68,25 @@ export async function chatCandidates(context, projectName, provider) {
     if (result.value.partial) notes.push(`${name} 목록 일부를 확인하지 못했습니다.`);
     for (const note of result.value.notes || []) notes.push(displayText(note));
   }
-  return { candidates, notes };
+  return { candidates: collapseShared(candidates), notes };
+}
+
+// Same rule as the relay-chat pane: a Claude conversation reopened in several
+// processes lists one row per process, and `relay send` refuses that id, so it
+// is offered once and marked unsendable.
+function collapseShared(candidates) {
+  const counts = new Map();
+  for (const row of candidates) counts.set(`${row.provider}:${row.id}`, (counts.get(`${row.provider}:${row.id}`) || 0) + 1);
+  const listed = new Set();
+  return candidates.flatMap(row => {
+    const key = `${row.provider}:${row.id}`;
+    if (listed.has(key)) return [];
+    listed.add(key);
+    const count = counts.get(key);
+    return count > 1 && row.provider === 'claude'
+      ? [{ ...row, sendable: false, unavailable: `같은 세션을 프로세스 ${count}개가 실행 중이라 보낼 대상을 고를 수 없습니다.` }]
+      : [row];
+  });
 }
 
 export async function runChat(options, context, ui = { createRL, menuSelect, ask, startSpinner: startSessionSpinner }) {

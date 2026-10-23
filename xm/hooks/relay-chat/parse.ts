@@ -464,7 +464,25 @@ export function sessionRows(stdout: string, provider: Provider, ownSessionId: st
       unavailable: row.capabilities?.send === false ? text(row.unavailable_reason) ?? 'send is not available' : null,
     })
   }
-  return rows
+  return collapseShared(rows)
+}
+
+// `claude -c` in several terminals reopens one conversation in several
+// processes, and the inventory lists one row per process. The pane keys a row
+// by provider and id, and `xm relay send` refuses a Claude id that several
+// processes share, so the id is listed once and marked unsendable.
+function collapseShared(rows: Candidate[]): Candidate[] {
+  const counts = new Map<string, number>()
+  for (const row of rows) counts.set(row.id, (counts.get(row.id) ?? 0) + 1)
+  const listed = new Set<string>()
+  const out: Candidate[] = []
+  for (const row of rows) {
+    if (listed.has(row.id)) continue
+    listed.add(row.id)
+    const count = counts.get(row.id) ?? 1
+    out.push(count > 1 && row.provider === 'claude' ? { ...row, unavailable: `같은 세션을 프로세스 ${count}개가 실행 중` } : row)
+  }
+  return out
 }
 
 // $.session has no display name; the row other sessions pick this one from carries it.

@@ -95,6 +95,16 @@ test('lists exact Claude session UUIDs, keeps unavailable AGY visible, and isola
   expect(snapshot.notes[0]).toContain('daemon unavailable');
 });
 
+test('offers a Claude session shared by several processes once, as unsendable', async () => {
+  const snapshot = await chatCandidates(context({ listProvider: async provider => ({ sessions: provider === 'claude' ? [
+    { session_id: ID, pid: 1, cwd: '/repo' },
+    { session_id: ID, pid: 2, cwd: '/repo' },
+    { session_id: OTHER, pid: 3, cwd: '/repo' },
+  ] : [] }) }), null, 'claude');
+  expect(snapshot.candidates.map(row => [row.id, row.sendable])).toEqual([[ID, false], [OTHER, true]]);
+  expect(snapshot.candidates[0].unavailable).toContain('프로세스 2개');
+});
+
 test('omits saved sessions from recipient selection', async () => {
   const result = await chatCandidates(context({ listProvider: async provider => ({ sessions: provider === 'claude' ? [] : [{ thread_id: ID, session_id: ID, live_status: 'unverified' }] }) }));
   expect(result.candidates).toEqual([]);
