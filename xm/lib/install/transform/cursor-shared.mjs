@@ -84,7 +84,11 @@ export function buildHooksJson(settings, ctx) {
         try {
           assertSafeCommand(probe);
         } catch (err) {
-          throw new Error(`hooks.json: command rejected for ${cursorEvent}: ${err.message}`);
+          // A caller that collects skips gets the rest of the hooks rendered; the
+          // rejected command is still never written.
+          if (!ctx.skipped) throw new Error(`hooks.json: command rejected for ${cursorEvent}: ${err.message}`);
+          ctx.skipped.push(`${event}: ${h.command.slice(0, 60)}`);
+          continue;
         }
         const item = /** @type {{ command: string, matcher?: string, timeout?: number }} */ ({
           command: rewritten,
@@ -176,7 +180,12 @@ export function renderCursorShared({ projectRoot, pluginRoots, scope }) {
 
   // hooks.json
   const settings = readClaudeSettings(projectRoot);
-  const hooksJson = buildHooksJson(settings, { scope });
+  /** @type {string[]} */
+  const skipped = [];
+  const hooksJson = buildHooksJson(settings, { scope, skipped });
+  for (const hook of skipped) {
+    notes.push(`cursor: skipped a hook with shell metacharacters (not installed): ${hook}`);
+  }
   outputs.push({
     relativePath: '.cursor/hooks.json',
     content: JSON.stringify(hooksJson, null, 2) + '\n',
