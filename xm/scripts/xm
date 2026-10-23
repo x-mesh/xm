@@ -1165,6 +1165,12 @@ case "$CMD" in
                 } catch { process.stdout.write("(parse error)"); }
               })' 2>/dev/null)"
             echo "    $SUMMARY"
+            printf '%s' "$PROPAGATE_OUT" | node -e '
+              let s=""; process.stdin.on("data",c=>s+=c).on("end",()=>{
+                try {
+                  for (const row of JSON.parse(s).results || []) for (const note of row.notes || []) console.log(`    note: ${note}`);
+                } catch {}
+              })' 2>/dev/null
 
             CODEX_FAILED="$(printf '%s' "$PROPAGATE_OUT" | node -e '
               let s=""; process.stdin.on("data",c=>s+=c).on("end",()=>{

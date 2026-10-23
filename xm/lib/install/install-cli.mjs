@@ -655,8 +655,13 @@ export function run(argv) {
       if (args.allowUnverified) subArgv.push('--allow-unverified');
       const sub = run(subArgv);
       const subWarnings = sub.stderr.split('\n').filter((line) => line.includes('marker block content changed'));
+      // A skipped hook stays uninstalled on every re-render, so the note is
+      // carried for an unchanged target too; `xm update` prints only this JSON.
+      const notes = sub.stdout.split('\n')
+        .map((line) => line.trim().replace(/^note: /, ''))
+        .filter((line) => line.includes('skipped a hook with shell metacharacters'));
       if (sub.exitCode !== 0) {
-        results.push({ target, scope, status: 'failed', filesChanged: 0, filesSkipped: 0, warnings: subWarnings, error: sub.stderr.trim() });
+        results.push({ target, scope, status: 'failed', filesChanged: 0, filesSkipped: 0, warnings: subWarnings, notes, error: sub.stderr.trim() });
         continue;
       }
 
@@ -670,9 +675,9 @@ export function run(argv) {
         : (!intactBefore || readManifestBytes() !== manifestBytesBefore) ? 'updated'
         : 'skipped';
       if (status === 'skipped') {
-        results.push({ target, scope, status, filesChanged: 0, filesSkipped: fileCount, error: null });
+        results.push({ target, scope, status, filesChanged: 0, filesSkipped: fileCount, notes, error: null });
       } else {
-        results.push({ target, scope, status, filesChanged: fileCount, filesSkipped: 0, warnings: subWarnings, error: null });
+        results.push({ target, scope, status, filesChanged: fileCount, filesSkipped: 0, warnings: subWarnings, notes, error: null });
       }
     }
 
