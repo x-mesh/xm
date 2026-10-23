@@ -83,6 +83,12 @@ installed_version() {
   printf '%s' "$version"
 }
 
+marketplace_xm_version() {
+  local path="$1"
+  [ -f "$path" ] || return 0
+  node -e 'try { const j=JSON.parse(require("fs").readFileSync(process.argv[1],"utf8")); process.stdout.write((j.plugins||[]).find(p=>p.name==="xm")?.version||""); } catch {}' "$path" 2>/dev/null
+}
+
 version_is_newer() {
   node -e '
     const parse=(v)=>String(v).split("+",1)[0].split("-",1)[0].split(".").map(Number);
@@ -114,9 +120,11 @@ ensure_bundle() {
     return 0
   fi
 
-  local cache_cli=""
-  cache_cli="$(find "$CLAUDE_PLUGINS_DIR/cache/xm/xm" -mindepth 4 -maxdepth 4 -path '*/lib/install/install-cli.mjs' -print 2>/dev/null | sort -V | tail -1 || true)"
-  if [ -n "$cache_cli" ]; then
+  # Only the cache of the target release qualifies. After a Claude update that
+  # did not take effect, the newest cache is still the previous release, and a
+  # Codex install from it rewrites nothing while it reports success.
+  local cache_cli="$CLAUDE_PLUGINS_DIR/cache/xm/xm/$TARGET_VERSION/lib/install/install-cli.mjs"
+  if [ -n "$TARGET_VERSION" ] && [ -f "$cache_cli" ]; then
     cd "$(dirname "$cache_cli")/../.." && pwd
     return 0
   fi
@@ -200,7 +208,10 @@ if command -v claude >/dev/null 2>&1; then
   claude plugin marketplace add x-mesh/xm >/dev/null 2>&1 || true
   if [ "$DO_UPDATE" = "1" ]; then
     info "Updating xm marketplace and installed plugins..."
-    claude plugin marketplace update xm >/dev/null 2>&1 || warn "Marketplace refresh failed; continuing with cached metadata."
+    if ! MARKET_OUT="$(claude plugin marketplace update xm 2>&1)"; then
+      warn "Marketplace refresh failed; continuing with cached metadata."
+      [ -z "$MARKET_OUT" ] || warn "  $(printf '%s' "$MARKET_OUT" | tail -1)"
+    fi
   else
     info "Installing missing xm plugins via claude CLI..."
   fi
@@ -211,6 +222,14 @@ if command -v claude >/dev/null 2>&1; then
   PLAN_SOURCE="$CACHED_MARKETPLACE"
   if [ ! -f "$PLAN_SOURCE" ]; then
     PLAN_SOURCE=""
+  fi
+
+  # claude installs from the clone, so a refresh that exits 0 without moving it
+  # leaves every plugin on the old release while the plan below calls it current.
+  CLONE_VERSION="$(marketplace_xm_version "$CACHED_MARKETPLACE")"
+  if [ "$DO_UPDATE" = "1" ] && [ -n "$CLONE_VERSION" ] && version_is_newer "$CLONE_VERSION" "$TARGET_VERSION"; then
+    CLAUDE_INCOMPLETE=1
+    error "The xm marketplace clone is still at $CLONE_VERSION, but $TARGET_VERSION is released; claude installs from that clone."
   fi
 
   # Emit one "action|plugin|from|to" line per plugin. A pipe delimiter is used
@@ -311,7 +330,32 @@ PLAN
   if [ "$CURRENT" -gt 0 ]; then
     info "  $CURRENT plugin(s) already at the marketplace version; skipped."
   fi
-  if [ "$CHANGED" = "0" ] && [ "$HELD" = "0" ]; then
+
+  # `claude plugin update` can exit 0 without moving a plugin, so judge the
+  # registry it rewrites rather than its exit status.
+  UNREACHED="$(node -e '
+    const fs=require("fs");
+    let reg={}; try { reg=JSON.parse(fs.readFileSync(process.argv[1],"utf8")); } catch {}
+    const out=[];
+    for (const line of process.argv[2].split("\n")) {
+      const [action,name,,to]=line.split("|");
+      if (!name || !to || (action!=="update" && action!=="install")) continue;
+      const raw=(reg.plugins||{})[name+"@xm"];
+      const list=Array.isArray(raw)?raw:(raw?[raw]:[]);
+      const entry=list.find((e)=>e&&e.scope==="user")||(list.length===1?list[0]:null);
+      const have=entry?.version||"not installed";
+      if (have!==to) out.push(name+" "+have+" (expected "+to+")");
+    }
+    process.stdout.write(out.join(", "));
+  ' "$INSTALLED_REG" "$PLUGIN_PLAN" 2>/dev/null || true)"
+  if [ -n "$UNREACHED" ]; then
+    CLAUDE_INCOMPLETE=1
+    error "Claude plugins did not reach the marketplace version: $UNREACHED"
+  fi
+
+  if [ "${CLAUDE_INCOMPLETE:-0}" = "1" ]; then
+    error "Claude plugin update is incomplete. Run: claude plugin marketplace update xm   then: xm update"
+  elif [ "$CHANGED" = "0" ] && [ "$HELD" = "0" ]; then
     ok "Claude plugins are already current. No restart needed."
   elif [ "$CHANGED" = "0" ]; then
     ok "Claude plugins unchanged; $HELD plugin(s) have a newer version available."
@@ -354,4 +398,8 @@ if "$DEST" version >/dev/null 2>&1; then
   ok "xm CLI ready. Try: xm help"
 else
   warn "Dispatcher installed, but no Claude plugin cache is available yet; Codex skills are still installed independently."
+fi
+
+if [ "${CLAUDE_INCOMPLETE:-0}" = "1" ]; then
+  exit 1
 fi
