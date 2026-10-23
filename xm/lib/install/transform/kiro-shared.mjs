@@ -199,7 +199,14 @@ export function renderKiroShared({ projectRoot, scope }) {
           `"${hooksRoot}`,
         );
         const baseName = `xm-${event.toLowerCase()}-${counter++}`;
-        const built = buildKiroHook(baseName, event, entry.matcher, { command: rewritten });
+        let built;
+        try {
+          built = buildKiroHook(baseName, event, entry.matcher, { command: rewritten });
+        } catch {
+          // Skip only the rejected hook; the command is still never written.
+          notes.push(`kiro: skipped a hook with shell metacharacters (not installed): ${event}: ${h.command.slice(0, 60)}`);
+          continue;
+        }
         if (!built.json) {
           notes.push(built.note ?? '');
           continue;

@@ -1081,6 +1081,9 @@ export function run(argv) {
 
   // Real install — renderers are wired per target.
   const cwd = process.cwd();
+  // A global install reads hooks from the global Claude settings, where xm init
+  // registers them. Reading them from cwd made `xm update` depend on where it ran.
+  const hookRoot = args.scope === 'global' ? homedir() : cwd;
   const lines = [];
   let stderrMergeWarnings = '';
   for (const target of targets) {
@@ -1102,14 +1105,14 @@ export function run(argv) {
       if (target === 'cursor') {
         skillOuts = renderCursorWithDiagnostics(skills, ctx);
         sharedOuts = renderCursorShared({
-          projectRoot: cwd,
+          projectRoot: hookRoot,
           pluginRoots: discoverPluginRoots(cwd),
           scope: args.scope,
         });
       } else if (target === 'codex') {
         const codex = renderCodexWithDiagnostics(skills, ctx);
         skillOuts = { outputs: codex.outputs, warnings: codex.warnings };
-        const shared = renderCodexShared({ projectRoot: cwd, scope: args.scope });
+        const shared = renderCodexShared({ projectRoot: hookRoot, scope: args.scope });
         // Vendor layer (t7): xm-owned role/profile TOMLs + feature-gate note.
         // Merged into sharedOuts so its outputs flow through the manifest and its
         // notes print alongside the hooks notes.
@@ -1121,7 +1124,7 @@ export function run(argv) {
       } else if (target === 'kiro') {
         const kiro = renderKiroWithDiagnostics(skills, ctx);
         skillOuts = { outputs: kiro.outputs, warnings: kiro.warnings };
-        sharedOuts = renderKiroShared({ projectRoot: cwd, scope: args.scope });
+        sharedOuts = renderKiroShared({ projectRoot: hookRoot, scope: args.scope });
       } else if (target === 'antigravity') {
         const ag = renderAntigravityWithDiagnostics(skills, ctx);
         skillOuts = { outputs: ag.outputs, warnings: ag.warnings };

@@ -129,7 +129,11 @@ export function buildCodexHooks(settings, ctx) {
         try {
           assertSafeCommand(probe);
         } catch (err) {
-          throw new Error(`codex hooks.json: ${event} command rejected: ${err.message}`);
+          // A caller that collects skips gets the rest of the hooks rendered; the
+          // rejected command is still never written.
+          if (!ctx.skipped) throw new Error(`codex hooks.json: ${event} command rejected: ${err.message}`);
+          ctx.skipped.push(`${event}: ${h.command.slice(0, 60)}`);
+          continue;
         }
         const item = /** @type {{ type: 'command', command: string, timeout?: number }} */ ({
           type: 'command',
@@ -319,7 +323,12 @@ export function renderCodexShared({ projectRoot, scope }) {
   const notes = [];
 
   const settings = readClaudeSettings(projectRoot);
-  const hooksJson = buildCodexHooks(settings, { scope });
+  /** @type {string[]} */
+  const skipped = [];
+  const hooksJson = buildCodexHooks(settings, { scope, skipped });
+  for (const hook of skipped) {
+    notes.push(`codex: skipped a hook with shell metacharacters (not installed): ${hook}`);
+  }
   const hooksPath = join('.codex', 'hooks.json');
   outputs.push({
     relativePath: hooksPath,
