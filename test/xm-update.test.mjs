@@ -173,4 +173,36 @@ describe('xm update cross-target convergence', () => {
     const plugin = JSON.parse(readFileSync(join(home, 'plugins', 'xm', '.codex-plugin', 'plugin.json'), 'utf8'));
     expect(plugin.version).toMatch(new RegExp(`^${VERSION.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}\\+codex\\.local-`));
   });
+
+  // The renderers skip a hook they cannot install and say so, but `xm update`
+  // prints only the propagate JSON, so the note has to travel through it.
+  test('prints the hooks a target skipped while propagating', () => {
+    const home = mkdtempSync(join(tmpdir(), 'xm-update-skip-'));
+    const bin = join(home, 'bin');
+    mkdirSync(bin, { recursive: true });
+    mkdirSync(join(home, '.claude'), { recursive: true });
+    writeFileSync(join(home, '.claude', 'settings.json'), JSON.stringify({ hooks: {
+      PostToolUse: [{ matcher: 'Bash', hooks: [{ type: 'command', command: `printf '%s\\n' '{"x":1}'` }] }],
+      Stop: [{ hooks: [{ type: 'command', command: 'echo stop-ok' }] }],
+    } }));
+    const env = { ...BASE_ENV, HOME: home, XM_LIB: REPO, PATH: `${bin}:${dirname(process.execPath)}:${process.env.PATH}` };
+
+    const installed = spawnSync(process.execPath, [CLI, '--target', 'codex', '--global', '--yes', '--force',
+      '--skills-dir', SKILLS, '--lib-dir', LIB], { cwd: home, env, encoding: 'utf8' });
+    expect(installed.status).toBe(0);
+    const cache = join(home, '.claude', 'plugins', 'cache', 'xm', 'xm', VERSION);
+    mkdirSync(join(cache, '.claude-plugin'), { recursive: true });
+    cpSync(LIB, join(cache, 'lib'), { recursive: true });
+    cpSync(SKILLS, join(cache, 'skills'), { recursive: true });
+    copyFileSync(join(REPO, 'xm', 'skills.checksums.json'), join(cache, 'skills.checksums.json'));
+    copyFileSync(join(REPO, 'xm', '.claude-plugin', 'plugin.json'), join(cache, '.claude-plugin', 'plugin.json'));
+    writeFileSync(join(home, '.claude', 'plugins', 'installed_plugins.json'), JSON.stringify({ plugins: { 'xm@xm': [{ version: VERSION }] } }));
+    executable(join(bin, 'curl'), `printf '%s' '{"plugins":[{"name":"xm","version":"${VERSION}"}]}'`);
+    executable(join(bin, 'claude'), 'exit 0');
+    executable(join(bin, 'codex'), 'exit 0');
+
+    const result = spawnSync('bash', [SCRIPT, 'update', '--no-cli'], { cwd: home, env, encoding: 'utf8', timeout: 60_000 });
+    if (result.status !== 0) throw new Error(`stdout:\n${result.stdout}\nstderr:\n${result.stderr}`);
+    expect(result.stdout).toContain('note: codex: skipped a hook with shell metacharacters (not installed): PostToolUse: printf');
+  });
 });

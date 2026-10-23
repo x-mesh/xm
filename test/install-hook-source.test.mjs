@@ -65,4 +65,22 @@ describe('global install hook source', () => {
     expect(hooks).toContain('echo from-home');
     expect(hooks).not.toContain('echo from-project');
   }, 60_000);
+
+  test('--propagate carries the skipped-hook note in its JSON result', () => {
+    const home = dirWithHooks('xm-hook-propagate-', {
+      PostToolUse: [{ matcher: 'Bash', hooks: [{ type: 'command', command: UNSAFE }] }],
+      Stop: stopHook('echo stop-ok'),
+    });
+    const env = { ...process.env, HOME: home };
+    const install = spawnSync('node', [CLI, '--target', 'codex', '--global', '--yes', '--force',
+      '--skills-dir', SKILLS, '--lib-dir', LIB], { cwd: home, env, encoding: 'utf8', timeout: 60_000 });
+    if (install.status !== 0) throw new Error(`stdout:\n${install.stdout}\nstderr:\n${install.stderr}`);
+
+    const propagate = spawnSync('node', [CLI, '--propagate', '--skills-dir', SKILLS, '--lib-dir', LIB],
+      { cwd: home, env, encoding: 'utf8', timeout: 60_000 });
+    expect(propagate.status).toBe(0);
+    const codex = JSON.parse(propagate.stdout).results.find((row) => row.target === 'codex');
+    expect(codex.notes).toHaveLength(1);
+    expect(codex.notes[0]).toStartWith('codex: skipped a hook with shell metacharacters (not installed): PostToolUse:');
+  }, 60_000);
 });
