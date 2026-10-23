@@ -14,7 +14,7 @@
 </p>
 
 <p align="center">
-  <a href="https://github.com/x-mesh/xm/releases"><img src="https://img.shields.io/badge/version-2.43.0-blue" alt="Version" /></a>
+  <a href="https://github.com/x-mesh/xm/releases"><img src="https://img.shields.io/badge/version-2.43.1-blue" alt="Version" /></a>
   <a href="./LICENSE"><img src="https://img.shields.io/badge/license-MIT-green" alt="License: MIT" /></a>
   <a href="https://nodejs.org"><img src="https://img.shields.io/badge/node-%3E%3D18-brightgreen" alt="Node.js" /></a>
   <a href="#플러그인"><img src="https://img.shields.io/badge/plugins-18-orange" alt="Plugins" /></a>
@@ -245,6 +245,8 @@ node xm/lib/install/install-cli.mjs --uninstall --target cursor,codex
 #### update 시 자동 전파
 
 `xm update`가 설치된 모든 LLM target(Cursor, Codex CLI, Kiro, Antigravity, OpenCode)의 global manifest를 감지하고 SKILL을 자동 재렌더링합니다 — Claude 자체가 이미 원격 버전이어도 마찬가지입니다. 파일별 SHA-256 비교로 변경 없는 target은 건너뛰며, Codex는 추가로 cachebuster를 받아 자동 `codex plugin add`를 실행하므로 활성 플러그인 캐시가 stale 상태로 남지 않습니다. Claude만 갱신하려면 `--no-propagate` 플래그를 사용하세요.
+
+`xm update`는 종료 코드만이 아니라 실제 결과를 확인합니다. xm marketplace 클론이 릴리스 버전보다 뒤처져 있거나, Claude 플러그인이 marketplace 버전에 도달하지 못했거나, Codex 번들이 여전히 이전 버전이면 실패로 끝납니다. 전역 target은 hook을 `~/.claude/settings.json`에서 읽으므로, `xm update`를 어느 디렉터리에서 실행해도 결과가 같습니다. 셸 메타문자가 들어간 hook 명령은 해당 target에서 건너뛰고 안내를 출력하며, 나머지 hook과 스킬은 그대로 갱신됩니다.
 
 ```bash
 xm update                   # 플러그인 업데이트 + 설치된 모든 target에 전파
@@ -1355,7 +1357,7 @@ xm remote start            # gateway + host 동시 기동
 
 toss는 재현 명령과 **실제 출력**(시크릿 마스킹, 뒷부분만 보존), 그리고 구체적인 수정 방향을 함께 담습니다 — 재현 없는 "조심하세요" 수준의 리포트는 거부합니다. 보내는 쪽은 자기 `.xm/outbox/<id>.json`에 기록을 남기고 대상의 `.xm/`은 절대 건드리지 않습니다. 대상 mem-mesh 공간으로의 전달은 스킬 자신의 MCP 호출로 이루어지며, 반환된 id는 `xm inbox record`로 되돌려 기록합니다. 이 분리가 중요한 이유는 CLI에 MCP 세션이 없기 때문입니다 — 원장에 남지 않은 id는 대화가 끝나는 순간 사라집니다.
 
-`/xm:relay`는 현재 실행 중인 로컬 Claude·Codex·AGY 세션만 provider별로 보여 줍니다. `--provider cursor`는 최근 7일 안에 쓴 Cursor Agent 채팅을 보여 주며, 여기로 보내면 읽기 전용 `cursor-agent` 턴을 한 번 실행해 그 답을 답장으로 돌려줍니다. 저장된 대화나 종료된 세션은 목록에 넣지 않습니다. Codex는 실제로 실행 중인 CLI 프로세스를 확인합니다. CLI가 UUID별 파일을 직접 열고 있거나, 같은 디렉터리에서 실행 중인 CLI를 대신해 공유 daemon이 열고 있어야 합니다. 실행 중인 CLI가 없는 daemon thread는 제외합니다. 한 provider의 목록은 `/xm:relay sessions --provider claude|codex|agy`로 확인합니다. 짧은 메시지는 `send`, 작업 요약은 `handoff`로 보냅니다. Claude Code에서는 `/relay-chat`으로 relay로 주고받는 세션별 대화창을 엽니다. 이 대화창은 플러그인 mod를 불러오는 Claude Code 버전에서만 보이고, 그 밖의 버전에서도 xm의 나머지 기능은 그대로 동작합니다. 메시지가 오면 toast와 입력창 위 띠에 내용 앞부분이 보이고, 띠는 대화창을 열 때까지 남습니다. 대화창 맨 위 줄에는 다른 세션의 상대 목록에 보이는 이 세션의 이름과 세션 id 앞 8자리가 나옵니다. 대화창의 `맥락 공유`는 이 세션의 현재 맥락을 상대에게 한 번 보내 두어 이후 질문을 짧게 할 수 있게 합니다. 최근 대화 3턴(지시가 아닌 참고 자료라고 표시), 브랜치, 작업 트리 상태, diff 본문을 모델 요약 없이 그대로 보냅니다. diff는 코드 파일부터 파일 단위로 600줄까지 채우고 테스트와 문서는 뒤로 미루며, 담지 못한 파일은 이름을 적습니다. 자격 증명 파일로 보이는 경로(`.env*`, `*.pem`, `*.key`, `id_rsa*`, `credentials*`)는 diff에서 뺍니다. 입력란에 써 둔 글은 요점으로 맨 앞에 붙습니다. `페어 지정`은 Claude나 Codex 세션을 이 프로젝트의 리뷰어로 정합니다. 대화창이 아직 리뷰하지 않은 커밋을 모아 보여 주고, `리뷰 요청`은 그 커밋들을 `xm:review diff` 요청 하나로 페어에게 보냅니다. `자동 리뷰` 옵션을 켜면 턴이 끝날 때 가벼운 검토 요청을 보내되, 쿨다운마다 한 번, diff 크기 상한 아래에서만 보냅니다(`/config`의 `xm.relayChatAutoReviewCooldownMinutes`, `xm.relayChatAutoReviewMaxLines`). 그 답장은 `모델에게 전달`을 누를 때까지 대화창에만 남습니다.
+`/xm:relay`는 현재 실행 중인 로컬 Claude·Codex·AGY 세션만 provider별로 보여 줍니다. `--provider cursor`는 최근 7일 안에 쓴 Cursor Agent 채팅을 보여 주며, 여기로 보내면 읽기 전용 `cursor-agent` 턴을 한 번 실행해 그 답을 답장으로 돌려줍니다. 저장된 대화나 종료된 세션은 목록에 넣지 않습니다. Codex는 실제로 실행 중인 CLI 프로세스를 확인합니다. CLI가 UUID별 파일을 직접 열고 있거나, 같은 디렉터리에서 실행 중인 CLI를 대신해 공유 daemon이 열고 있어야 합니다. 실행 중인 CLI가 없는 daemon thread는 제외합니다. 한 provider의 목록은 `/xm:relay sessions --provider claude|codex|agy`로 확인합니다. 짧은 메시지는 `send`, 작업 요약은 `handoff`로 보냅니다. Claude Code에서는 `/relay-chat`으로 relay로 주고받는 세션별 대화창을 엽니다. 이 대화창은 플러그인 mod를 불러오는 Claude Code 버전에서만 보이고, 그 밖의 버전에서도 xm의 나머지 기능은 그대로 동작합니다. 메시지가 오면 toast와 입력창 위 띠에 내용 앞부분이 보이고, 띠는 대화창을 열 때까지 남습니다. 대화창 맨 위 줄에는 다른 세션의 상대 목록에 보이는 이 세션의 이름과 세션 id 앞 8자리가 나옵니다. 같은 Claude 대화를 여러 터미널에서 열면 relay가 보낼 프로세스를 고를 수 없으므로, 대화창은 그 대화를 한 번만 보여 주고 전송 불가로 표시합니다. 대화창의 `맥락 공유`는 이 세션의 현재 맥락을 상대에게 한 번 보내 두어 이후 질문을 짧게 할 수 있게 합니다. 최근 대화 3턴(지시가 아닌 참고 자료라고 표시), 브랜치, 작업 트리 상태, diff 본문을 모델 요약 없이 그대로 보냅니다. diff는 코드 파일부터 파일 단위로 600줄까지 채우고 테스트와 문서는 뒤로 미루며, 담지 못한 파일은 이름을 적습니다. 자격 증명 파일로 보이는 경로(`.env*`, `*.pem`, `*.key`, `id_rsa*`, `credentials*`)는 diff에서 뺍니다. 입력란에 써 둔 글은 요점으로 맨 앞에 붙습니다. `페어 지정`은 Claude나 Codex 세션을 이 프로젝트의 리뷰어로 정합니다. 대화창이 아직 리뷰하지 않은 커밋을 모아 보여 주고, `리뷰 요청`은 그 커밋들을 `xm:review diff` 요청 하나로 페어에게 보냅니다. `자동 리뷰` 옵션을 켜면 턴이 끝날 때 가벼운 검토 요청을 보내되, 쿨다운마다 한 번, diff 크기 상한 아래에서만 보냅니다(`/config`의 `xm.relayChatAutoReviewCooldownMinutes`, `xm.relayChatAutoReviewMaxLines`). 그 답장은 `모델에게 전달`을 누를 때까지 대화창에만 남습니다.
 
 macOS와 Linux에서 셸 adapter는 Claude의 비공개 로컬 inbox에 메시지를 제출하고, Codex 메시지는 공유 daemon의 queue에 넣습니다. 어느 쪽도 상대가 읽었다는 보장은 아닙니다. Windows named pipe는 지원하지 않습니다.
 
