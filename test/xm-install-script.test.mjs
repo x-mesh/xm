@@ -55,13 +55,47 @@ function seedPluginState(home, { market, registry }) {
   writeFileSync(join(regDir, 'installed_plugins.json'), JSON.stringify({ version: 2, plugins }));
 }
 
+// install.sh now checks the registry after `claude plugin update/install`, so the
+// stub has to do what claude does: record the version the marketplace clone
+// offers (the repo's marketplace when the clone lacks it). XM_TEST_CLAUDE_NOOP=1
+// makes it exit 0 and change nothing, which is the failure being guarded.
+const CLAUDE_REGISTRY_STUB = `
+const fs = require('fs');
+const path = require('path');
+if (process.env.XM_TEST_CLAUDE_NOOP === '1') process.exit(0);
+const plugins = path.join(process.env.CLAUDE_CONFIG_DIR, 'plugins');
+const regPath = path.join(plugins, 'installed_plugins.json');
+const name = String(process.argv[2] || '').split('@')[0];
+const read = (p) => { try { return JSON.parse(fs.readFileSync(p, 'utf8')); } catch { return null; } };
+const versionIn = (m) => ((m && m.plugins) || []).find((p) => p.name === name)?.version;
+const version = versionIn(read(path.join(plugins, 'marketplaces', 'xm', '.claude-plugin', 'marketplace.json')))
+  || versionIn(read(process.env.XM_TEST_REPO_MARKET));
+if (!version) process.exit(0);
+// A corrupt registry is rewritten, as claude rewrites the whole file on install.
+const reg = read(regPath) || { version: 2, plugins: {} };
+const installPath = path.join(plugins, 'cache', 'xm', name, version);
+fs.mkdirSync(installPath, { recursive: true });
+reg.plugins = reg.plugins || {};
+reg.plugins[name + '@xm'] = [{ scope: 'user', installPath, version }];
+fs.mkdirSync(plugins, { recursive: true });
+fs.writeFileSync(regPath, JSON.stringify(reg));
+`;
+
 function fixture({ installedVersion, withClaude = false } = {}) {
   const home = mkdtempSync(join(tmpdir(), 'xm-install-script-'));
   const bin = join(home, 'bin');
   const calls = join(home, 'calls.log');
   mkdirSync(bin, { recursive: true });
   executable(join(bin, 'codex'), 'echo "codex $*" >> "$XM_TEST_CALLS"');
-  if (withClaude) executable(join(bin, 'claude'), 'echo "claude $*" >> "$XM_TEST_CALLS"');
+  if (withClaude) {
+    writeFileSync(join(home, 'claude-registry-stub.js'), CLAUDE_REGISTRY_STUB);
+    executable(join(bin, 'claude'), [
+      'echo "claude $*" >> "$XM_TEST_CALLS"',
+      'case "$1 $2" in',
+      `  "plugin update"|"plugin install") node "${join(home, 'claude-registry-stub.js')}" "$3" ;;`,
+      'esac',
+    ].join('\n'));
+  }
   if (installedVersion) {
     mkdirSync(join(home, '.claude', 'plugins'), { recursive: true });
     // installPath must exist: install.sh skips a plugin only when the registry
@@ -88,6 +122,7 @@ function fixture({ installedVersion, withClaude = false } = {}) {
     CLAUDE_CONFIG_DIR: join(home, '.claude'),
     XM_BIN_DIR: join(home, '.local', 'bin'),
     XM_TEST_CALLS: calls,
+    XM_TEST_REPO_MARKET: join(REPO, '.claude-plugin', 'marketplace.json'),
     PATH: `${bin}:${dirname(process.execPath)}:${pathWithoutClaude()}`,
   };
   return { home, calls, env };
@@ -242,5 +277,34 @@ describe('xm install.sh', () => {
     if (result.status !== 0) throw new Error(`stdout:\n${result.stdout}\nstderr:\n${result.stderr}`);
 
     expect(readFileSync(calls, 'utf8')).toContain('claude plugin install build@xm -s user');
+  }, 30_000);
+
+  // `claude plugin marketplace update` can exit 0 without moving the clone. The
+  // plan then compares the registry with the stale clone, calls everything
+  // current, and the run used to report success while installing nothing.
+  test('fails when the marketplace clone stays behind the released version', () => {
+    const { home, env } = fixture({ installedVersion: '0.0.1', withClaude: true });
+    seedPluginState(home, { market: { xm: '0.0.1' }, registry: { xm: '0.0.1' } });
+
+    const result = spawnSync('bash', [SCRIPT, '--yes'], { cwd: home, env, encoding: 'utf8', timeout: 60_000 });
+
+    expect(result.status).toBe(1);
+    expect(result.stderr).toContain(`The xm marketplace clone is still at 0.0.1, but ${VERSION} is released`);
+    expect(result.stdout).not.toContain('Claude plugins are already current');
+    expect(result.stdout).not.toContain('Claude plugins are ready');
+  }, 30_000);
+
+  test('fails when claude plugin update exits 0 without moving the plugin', () => {
+    const { home, env } = fixture({ installedVersion: '0.1.0', withClaude: true });
+    seedPluginState(home, { market: { xm: VERSION }, registry: { xm: '0.1.0' } });
+
+    const result = spawnSync('bash', [SCRIPT, '--yes'], {
+      cwd: home, env: { ...env, XM_TEST_CLAUDE_NOOP: '1' }, encoding: 'utf8', timeout: 60_000,
+    });
+
+    expect(result.status).toBe(1);
+    expect(result.stderr).toContain('Claude plugins did not reach the marketplace version:');
+    expect(result.stderr).toContain(`xm 0.1.0 (expected ${VERSION})`);
+    expect(result.stdout).not.toContain('Claude plugins are ready');
   }, 30_000);
 });

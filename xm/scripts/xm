@@ -953,14 +953,26 @@ case "$CMD" in
         echo "🔍 Dry run — would run the xm installer and refresh xm@personal."
         exit 0
       fi
-      echo "→ Codex-only installation detected; running the xm installer"
+      echo "→ The active xm lib is the Codex bundle; running the xm installer"
+      INSTALL_EXIT=0
       if [ -n "${XM_INSTALL_SCRIPT:-}" ]; then
-        bash "$XM_INSTALL_SCRIPT" --yes
+        bash "$XM_INSTALL_SCRIPT" --yes || INSTALL_EXIT=$?
       else
         UPDATE_INSTALLER="$(mktemp "${TMPDIR:-/tmp}/xm-installer-XXXXXX.sh")"
         trap 'rm -f "$UPDATE_INSTALLER"' EXIT INT TERM
         curl -fsSL "$REPO_URL/xm/scripts/install.sh" -o "$UPDATE_INSTALLER"
-        bash "$UPDATE_INSTALLER" --yes
+        bash "$UPDATE_INSTALLER" --yes || INSTALL_EXIT=$?
+      fi
+      if [ "$INSTALL_EXIT" != "0" ]; then
+        echo "xm update: the xm installer exited $INSTALL_EXIT; the update is incomplete." >&2
+        exit "$INSTALL_EXIT"
+      fi
+      # The installer can finish without rewriting the bundle, so success is
+      # what the bundle now declares, not that the installer returned.
+      CODEX_VERSION="$(_read_version "$HOME/plugins/xm/.codex-plugin/plugin.json")"
+      if [ "${CODEX_VERSION%%+*}" != "$REMOTE_VERSION" ]; then
+        echo "xm update: the Codex bundle is still ${CODEX_VERSION:-unknown}, not $REMOTE_VERSION." >&2
+        exit 1
       fi
       echo "✅ Codex installation updated to $REMOTE_VERSION"
       exit 0

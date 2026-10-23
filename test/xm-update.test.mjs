@@ -49,9 +49,55 @@ describe('xm update cross-target convergence', () => {
       encoding: 'utf8',
     });
     if (result.status !== 0) throw new Error(`stdout:\n${result.stdout}\nstderr:\n${result.stderr}`);
-    expect(result.stdout).toContain('Codex-only installation detected');
+    expect(result.stdout).toContain('The active xm lib is the Codex bundle');
     expect(result.stdout).toContain(`Codex installation updated to ${VERSION}`);
     expect(readFileSync(calls, 'utf8')).toContain('installer --yes');
+  });
+
+  // The installer can return 0 after reinstalling Codex from a stale Claude
+  // cache. Success has to come from the version the bundle now declares.
+  test('Codex bundle the installer did not move is reported as a failure', () => {
+    const home = mkdtempSync(join(tmpdir(), 'xm-update-codex-stale-'));
+    const bin = join(home, 'bin');
+    const installer = join(home, 'install.sh');
+    mkdirSync(join(home, '.codex', 'xm', 'lib'), { recursive: true });
+    mkdirSync(join(home, 'plugins', 'xm', '.codex-plugin'), { recursive: true });
+    mkdirSync(bin, { recursive: true });
+    writeFileSync(join(home, 'plugins', 'xm', '.codex-plugin', 'plugin.json'), JSON.stringify({ version: '0.1.0+codex.local-1' }));
+    executable(join(bin, 'codex'), 'exit 0');
+    executable(join(bin, 'curl'), `printf '%s' '{"plugins":[{"name":"xm","version":"${VERSION}"}]}'`);
+    executable(installer, 'exit 0');
+
+    const result = spawnSync('bash', [SCRIPT, 'update'], {
+      cwd: home,
+      env: { ...BASE_ENV, HOME: home, PATH: `${bin}:${dirname(process.execPath)}:${process.env.PATH}`, XM_INSTALL_SCRIPT: installer },
+      encoding: 'utf8',
+    });
+    expect(result.status).toBe(1);
+    expect(result.stderr).toContain(`the Codex bundle is still 0.1.0+codex.local-1, not ${VERSION}`);
+    expect(result.stdout).not.toContain('Codex installation updated');
+  });
+
+  test('a failing installer stops the Codex update with its exit status', () => {
+    const home = mkdtempSync(join(tmpdir(), 'xm-update-codex-fail-'));
+    const bin = join(home, 'bin');
+    const installer = join(home, 'install.sh');
+    mkdirSync(join(home, '.codex', 'xm', 'lib'), { recursive: true });
+    mkdirSync(join(home, 'plugins', 'xm', '.codex-plugin'), { recursive: true });
+    mkdirSync(bin, { recursive: true });
+    writeFileSync(join(home, 'plugins', 'xm', '.codex-plugin', 'plugin.json'), JSON.stringify({ version: VERSION }));
+    executable(join(bin, 'codex'), 'exit 0');
+    executable(join(bin, 'curl'), `printf '%s' '{"plugins":[{"name":"xm","version":"${VERSION}"}]}'`);
+    executable(installer, 'exit 3');
+
+    const result = spawnSync('bash', [SCRIPT, 'update', '--force'], {
+      cwd: home,
+      env: { ...BASE_ENV, HOME: home, PATH: `${bin}:${dirname(process.execPath)}:${process.env.PATH}`, XM_INSTALL_SCRIPT: installer },
+      encoding: 'utf8',
+    });
+    expect(result.status).toBe(3);
+    expect(result.stderr).toContain('the xm installer exited 3');
+    expect(result.stdout).not.toContain('Codex installation updated');
   });
 
   test('Codex-only dry-run does not invoke the installer', () => {
