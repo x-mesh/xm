@@ -106,6 +106,17 @@ describe('sessionRows', () => {
   test('reports a failed inventory', () => {
     expect(() => sessionRows(JSON.stringify({ ok: false, error: 'daemon down' }), 'codex', OWN)).toThrow('daemon down')
   })
+
+  test('collapses rows that share one Claude session id into one unsendable row', () => {
+    const claude = JSON.stringify({ ok: true, sessions: [
+      { session_id: PEER, pid: 1, name: 'edc-0f', cwd: '/w/edc' },
+      { session_id: PEER, pid: 2, name: 'edc-e1', cwd: '/w/edc' },
+      { session_id: PEER, pid: 3, name: 'edc-9a', cwd: '/w/edc' },
+    ] })
+    const rows = sessionRows(claude, 'claude', OWN)
+    expect(rows).toHaveLength(1)
+    expect(rows[0]).toMatchObject({ provider: 'claude', id: PEER, name: 'edc-0f', unavailable: '같은 세션을 프로세스 3개가 실행 중' })
+  })
 })
 
 describe('transcript summary', () => {
@@ -290,6 +301,33 @@ describe('unsendable sessions', () => {
     expect(await ui.find({ type: 'Text', text: 'agentic' }), 'dimmed AGY name').toBeDefined()
     expect(await ui.find({ type: 'Text', text: /전송 불가 · AGY 세션 안에서만 보낼 수 있음/ })).toBeDefined()
     expect(await ui.find({ key: `pick-claude-${PEER}` })).toBeDefined()
+    await ui.unmount()
+  })
+
+  // `claude -c` in several terminals reopens one conversation in several
+  // processes, and `xm relay sessions` lists one row per process. Two rows with
+  // one id used to draw the same Raster key twice, and the Pane refused the tree.
+  test('lists a Claude session shared by several processes once, as unsendable', async ($, on) => {
+    mock.clock(on, { now: Date.parse('2026-10-07T08:34:52.000Z') })
+    mock.env(on, { HOME: '/Users/me' })
+    on('session.id', () => ({ value: OWN }))
+    on('fs.exists', () => ({ value: false }))
+    on('process.run', (_$, e) => {
+      const sessions = e.argv[4] === 'claude' ? [
+        { session_id: PEER, pid: 101, name: 'edc-0f', cwd: '/Users/me/work/edc', status: 'idle' },
+        { session_id: PEER, pid: 102, name: 'edc-e1', cwd: '/Users/me/work/edc', status: 'idle' },
+        { session_id: CODEX, pid: 103, name: 'gk-fa', cwd: '/Users/me/work/gk', status: 'idle' },
+      ] : []
+      return { value: { exitCode: 0, stderr: '', isStdoutTruncated: false, isStderrTruncated: false, stdout: JSON.stringify({ ok: true, sessions }) } }
+    })
+    const ui = await $.ui.mount({
+      plugin: 'xm', surface: 'terminal', component: 'Pane', requestId: 'relay-chat',
+      props: { title: 'Relay 대화', isFocused: true, bodyColumns: 100, placement: 'dock', scroll: { offset: 0, bodyRows: 40 }, view: {} },
+    })
+    await ui.press({ key: 'add' })
+    expect(await ui.find({ key: `pick-claude-${PEER}` }), 'no button for a shared session').toBeUndefined()
+    expect(await ui.find({ type: 'Text', text: /전송 불가 · 같은 세션을 프로세스 2개가 실행 중/ })).toBeDefined()
+    expect(await ui.find({ key: `pick-claude-${CODEX}` })).toBeDefined()
     await ui.unmount()
   })
 })
