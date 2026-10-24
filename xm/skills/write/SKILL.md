@@ -364,10 +364,10 @@ Skip this step for `release`, `changelog`, `commit`, and whenever `--for ship` i
      (`xm:batch`, `xm:build`, or any other), a subagent, or a delegated agent prompt asks.
    - The human's typed message in the current turn asks to create or publish the PR ("PR 올려",
      "PR 보내", "open a PR"). Invoking the skill alone (`/xm:write pr`) is not such a request.
-   - Head is a topic branch: it differs from base, it is not the repository's default branch,
-     `gh api repos/<owner>/<repo>/branches/<head> --jq .protected` returns `false`, and no
-     PR, open or closed, has used it as base (`gh pr list --base <head> --state all --limit 1`
-     is empty). Shared branches such as `develop` or `release/*` therefore ask.
+   - Head is a new branch: it differs from base, and it does not exist on the remote that the
+     push targets yet. `git ls-remote --exit-code --heads <remote> refs/heads/<head>` must exit
+     with 2. Exit 0 means the branch is already on the remote, which includes every shared
+     branch such as `develop`, `main`, or `release/*`. Any other exit is an error. Both ask.
 
    When the question is skipped, still show the same text and target before publishing.
 2. PR only: if the branch has no upstream or is ahead of it, include the push in the same
