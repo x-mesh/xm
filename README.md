@@ -14,7 +14,7 @@
 </p>
 
 <p align="center">
-  <a href="https://github.com/x-mesh/xm/releases"><img src="https://img.shields.io/badge/version-2.43.5-blue" alt="Version" /></a>
+  <a href="https://github.com/x-mesh/xm/releases"><img src="https://img.shields.io/badge/version-2.43.6-blue" alt="Version" /></a>
   <a href="./LICENSE"><img src="https://img.shields.io/badge/license-MIT-green" alt="License: MIT" /></a>
   <a href="https://nodejs.org"><img src="https://img.shields.io/badge/node-%3E%3D18-brightgreen" alt="Node.js" /></a>
   <a href="#plugins"><img src="https://img.shields.io/badge/plugins-18-orange" alt="Plugins" /></a>
@@ -1228,7 +1228,7 @@ Release automation: squash WIP commits, bump the version, push. Works on xm mark
 /xm:write changelog     # CHANGELOG.md entries (text only)
 ```
 
-For `pr` and `issue`, the skill shows the final text and asks one time. Then it runs `gh` and reads the saved text back from GitHub. The `release`, `changelog`, and `commit` modes return text only, because `/xm:ship` owns the commit, the tag, and the release.
+For `pr` and `issue`, the skill shows the final text and asks one time. If you type a request to open a new PR from a branch that is not on the remote yet, the skill shows the text and does not ask. Then it runs `gh` and reads the saved text back from GitHub. The `release`, `changelog`, and `commit` modes return text only, because `/xm:ship` owns the commit, the tag, and the release.
 
 The skill uses the GitHub PR or issue template of the repository. If the repository has no template, it uses the default template of the organization or account. If neither exists, it uses the x-kit formats.
 

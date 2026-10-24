@@ -14,7 +14,7 @@
 </p>
 
 <p align="center">
-  <a href="https://github.com/x-mesh/xm/releases"><img src="https://img.shields.io/badge/version-2.43.5-blue" alt="Version" /></a>
+  <a href="https://github.com/x-mesh/xm/releases"><img src="https://img.shields.io/badge/version-2.43.6-blue" alt="Version" /></a>
   <a href="./LICENSE"><img src="https://img.shields.io/badge/license-MIT-green" alt="License: MIT" /></a>
   <a href="https://nodejs.org"><img src="https://img.shields.io/badge/node-%3E%3D18-brightgreen" alt="Node.js" /></a>
   <a href="#플러그인"><img src="https://img.shields.io/badge/plugins-18-orange" alt="Plugins" /></a>
@@ -1225,7 +1225,7 @@ Claude Code 안에서도 사용 가능: `/xm:sync push`, `/xm:sync pull`, `/xm:s
 /xm:write changelog     # CHANGELOG.md 항목 (텍스트만)
 ```
 
-`pr`과 `issue`는 최종 제목과 본문을 보여 주고 한 번 확인받은 뒤 `gh`로 올리고, GitHub에 저장된 내용을 다시 읽어 확인합니다. `release`, `changelog`, `commit`은 텍스트만 돌려줍니다. 커밋, 태그, 릴리스는 `/xm:ship`이 맡기 때문입니다.
+`pr`과 `issue`는 최종 제목과 본문을 보여 주고 한 번 확인받은 뒤 `gh`로 올리고, GitHub에 저장된 내용을 다시 읽어 확인합니다. 원격에 아직 없는 브랜치에서 "PR 올려"처럼 새 PR을 직접 요청하면 본문만 보여 주고 확인 없이 올립니다. 이때도 GitHub에 저장된 내용을 다시 읽어 확인합니다. `release`, `changelog`, `commit`은 텍스트만 돌려줍니다. 커밋, 태그, 릴리스는 `/xm:ship`이 맡기 때문입니다.
 
 저장소에 GitHub PR·issue 템플릿이 있으면 그 템플릿을 쓰고, 없으면 조직이나 계정의 기본 템플릿을 씁니다. 둘 다 없을 때만 x-kit 기본 형식을 씁니다.
 
