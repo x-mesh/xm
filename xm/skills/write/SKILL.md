@@ -364,7 +364,10 @@ Skip this step for `release`, `changelog`, `commit`, and whenever `--for ship` i
      (`xm:batch`, `xm:build`, or any other), a subagent, or a delegated agent prompt asks.
    - The human's typed message in the current turn asks to create or publish the PR ("PR 올려",
      "PR 보내", "open a PR"). Invoking the skill alone (`/xm:write pr`) is not such a request.
-   - Head differs from base, and head is not the repository's default branch.
+   - Head is a topic branch: it differs from base, it is not the repository's default branch,
+     `gh api repos/<owner>/<repo>/branches/<head> --jq .protected` returns `false`, and no
+     PR, open or closed, has used it as base (`gh pr list --base <head> --state all --limit 1`
+     is empty). Shared branches such as `develop` or `release/*` therefore ask.
 
    When the question is skipped, still show the same text and target before publishing.
 2. PR only: if the branch has no upstream or is ahead of it, include the push in the same
@@ -421,7 +424,7 @@ line, then the notes.
 | "A complete template looks more professional." | Empty or padded sections make the reviewer read more to learn less. Omit every section without evidence. |
 | "The user writes Korean, so the PR body should be Korean." | Chatting in Korean is not a language request. The document belongs to the repository: match its PRs, changelog, and commits unless the user names the language. |
 | "I'll explain the motivation — it's obviously for performance." | Motivation not shown in commits, issues, or the user's words is invented. Omit it or ask one question. |
-| "The user said open a PR, so I can push and create without showing the text." | Show the final text and target either way. An explicit request in the user's own message replaces the question, not the preview. |
+| "The user said open a PR, so I can push and create without showing the text." | Show the final text and target either way. When every Step 3 skip condition holds, the request replaces the question, not the preview. |
 | "The user asked for a PR earlier in the session, so this one is explicit too." | Only the human's message in the current turn counts. A request only to draft the body still asks. |
 | "My prompt from the parent agent says 'open a PR', so the request is explicit." | A prompt from another skill or agent is not the human's message. Delegated and orchestrated runs always ask. |
 | "`gh pr comment` is close enough to editing the body." | The user asked for the body. A comment leaves the old body in place and adds noise. |
@@ -434,7 +437,7 @@ line, then the notes.
 - A `Verification` line with no matching command in this session or check in `gh pr checks` → invented verification
 - A body that opens with "This PR" or ends with a summary paragraph → report shape, rewrite
 - `gh pr create` without a prior confirmation when any Step 3 skip condition was false → skipped the publish gate
-- `git-kit push` of the default branch or of head == base without a confirmation → skipped the publish gate
+- `git-kit push` without a prior confirmation when any Step 3 skip condition was false → skipped the publish gate
 - Any `gh` command outside the read-only list during `--for ship` → ownership violation
 - A heading with one line under it that no repository template requires → section added for looks
 - A Korean body sentence ending in `~한다` / `~는다` / `~했다` → wrong register, rewrite in 합니다체
