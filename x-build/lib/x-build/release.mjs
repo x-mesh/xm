@@ -308,18 +308,28 @@ export function cmdReleaseDetect(args) {
   //                                 SKILL-only fix report "no changes" and silently never ship.
   //   3. xm/commands/<name>.md    — same rule: xm-native commands (xm.md, handoff.md, …) have no
   //                                 x-<name> source and sync-bundle leaves them untouched.
+  //   4. xm/lib/<path>            — ONLY when no x-*/lib/<path> exists. sync-bundle copies lib
+  //                                 files to the same path under xm/lib, so install/, x-inbox/
+  //                                 and x-relay-chat.mjs have no source and are xm's own code.
+  //   5. xm/hooks/<path>          — ONLY when no .claude/hooks/<path> exists. trace-session.mjs
+  //                                 is copied from there; relay-chat/** (the mod) is xm's own.
   // Membership is derived from the filesystem, never a hardcoded list, so a new xm-native skill
   // or command is picked up automatically (Lesson L8).
   const changed = Object.entries(pluginChanges)
     .filter(([name]) => name !== 'xm')
     .map(([name, files]) => ({ name, current: versions[name] || '?', files }));
 
+  const pluginSourceDirs = readdirSync(cwd).filter(d => d.startsWith('x-'));
   const xmOwnFiles = (pluginChanges['xm'] || []).filter(f => {
     if (f.startsWith('xm/scripts/')) return true;
     const skill = f.match(/^xm\/skills\/([^/]+)\//);
     if (skill) return !existsSync(join(cwd, `x-${skill[1]}`));
     const cmd = f.match(/^xm\/commands\/([^/]+)\.md$/);
     if (cmd) return !existsSync(join(cwd, `x-${cmd[1]}`));
+    const lib = f.match(/^xm\/lib\/(.+)$/);
+    if (lib) return !pluginSourceDirs.some(d => existsSync(join(cwd, d, 'lib', lib[1])));
+    const hook = f.match(/^xm\/hooks\/(.+)$/);
+    if (hook) return !existsSync(join(cwd, '.claude', 'hooks', hook[1]));
     return false;
   });
   if (xmOwnFiles.length) changed.push({ name: 'xm', current: versions['xm'] || '?', files: xmOwnFiles });
@@ -724,17 +734,16 @@ export function cmdReleaseTest(args) {
   }
 
   console.error(`🧪 Running: ${command}`);
-  try {
-    const output = execSync(command, { encoding: 'utf8', timeout: 300000, stdio: ['pipe', 'pipe', 'pipe'] });
-    const lines = output.trim().split('\n');
-    const summary = lines.slice(-3).join(' | ').trim();
-    console.log(JSON.stringify({ passed: true, command, summary }));
-  } catch (e) {
-    const output = (e.stdout || '') + (e.stderr || '');
-    const lines = output.trim().split('\n');
-    const summary = lines.slice(-3).join(' | ').trim();
-    console.log(JSON.stringify({ passed: false, command, summary }));
-  }
+  const started = Date.now();
+  // Same capture as the bump report: bun's summary is on stderr, and a full
+  // suite outlasts the old 300 s cap.
+  const ran = spawnSync(command, {
+    cwd, shell: true, encoding: 'utf8', timeout: FULL_SUITE_TIMEOUT_MS,
+    maxBuffer: 256 * 1024 * 1024, stdio: ['pipe', 'pipe', 'pipe'],
+  });
+  const secs = Math.round((Date.now() - started) / 1000);
+  const summary = fullSuiteReport(ran, secs).map((line) => line.trim()).join(' | ');
+  console.log(JSON.stringify({ passed: ran.status === 0 && !ran.error, command, summary }));
 }
 
 // ── cmdReleaseBumpStandalone ──────────────────────────────────────────

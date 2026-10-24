@@ -46,6 +46,11 @@ describe('release detect/bump — xm dispatcher handling (l9/l10)', () => {
   test('a mirror-only xm/lib change does NOT surface xm (only genuine dispatcher files do)', () => {
     const d = makeReleaseFixture();
     try {
+      // A mirror has a source: sync-bundle copies x-panel/lib/x-panel-cli.mjs to
+      // xm/lib/x-panel-cli.mjs. Without the source, detect treats the file as xm's own.
+      mkdirSync(join(d, 'x-panel', 'lib'), { recursive: true });
+      writeFileSync(join(d, 'x-panel', 'lib', 'x-panel-cli.mjs'), '// source\n');
+      spawnSync('bash', ['-c', 'git add -A && git commit -qm "release: panel@0.1.0"'], { cwd: d });
       mkdirSync(join(d, 'xm', 'lib'), { recursive: true });
       writeFileSync(join(d, 'xm', 'lib', 'x-panel-cli.mjs'), '// mirror churn\n');
       spawnSync('bash', ['-c', 'git add -A && git commit -qm "chore: sync mirror"'], { cwd: d });
