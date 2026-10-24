@@ -150,6 +150,31 @@ export function filterGeneratedCopies(body, generatedCopyRoots = []) {
   return { body: kept.map((section) => section.body).join('\n'), excluded };
 }
 
+function parseHunkHeader(line) {
+  const match = String(line).match(/^@@ -(\d+)(?:,(\d+))? \+(\d+)(?:,(\d+))? @@(.*)$/);
+  if (!match) return null;
+  const oldCount = match[2] === undefined ? 1 : Number(match[2]);
+  const newCount = match[4] === undefined ? 1 : Number(match[4]);
+  // A zero-count side names the line before the hunk, so its first real line is one later.
+  return {
+    oldFirst: Number(match[1]) + (oldCount === 0 ? 1 : 0),
+    newFirst: Number(match[3]) + (newCount === 0 ? 1 : 0),
+    suffix: match[5],
+  };
+}
+
+function lineSides(line) {
+  if (line.startsWith(' ')) return { old: 1, new: 1 };
+  if (line.startsWith('-')) return { old: 1, new: 0 };
+  if (line.startsWith('+')) return { old: 0, new: 1 };
+  return { old: 0, new: 0 };
+}
+
+function fragmentHeader(parsed, offset, count) {
+  const side = (first, consumed, lines) => `${lines === 0 ? first + consumed - 1 : first + consumed},${lines}`;
+  return `@@ -${side(parsed.oldFirst, offset.old, count.old)} +${side(parsed.newFirst, offset.new, count.new)} @@${parsed.suffix}`;
+}
+
 function splitOversizedSection(section, tokenBudget) {
   const lines = section.body.split('\n');
   const firstHunk = lines.findIndex((line) => line.startsWith('@@'));
@@ -165,17 +190,35 @@ function splitOversizedSection(section, tokenBudget) {
     const end = hunkStarts[index + 1] ?? lines.length;
     const hunkHeader = lines[start];
     const hunkLines = lines.slice(start + 1, end);
-    let part = [hunkHeader];
+    // Combined-diff (`@@@`) headers carry no single old/new range to recount; they keep the
+    // original header as before.
+    const parsed = parseHunkHeader(hunkHeader);
+    const headerFor = (offset, count) => (parsed ? fragmentHeader(parsed, offset, count) : hunkHeader);
+    const parts = [];
+    let offset = { old: 0, new: 0 };
+    let count = { old: 0, new: 0 };
+    let part = [];
     for (const line of hunkLines) {
-      const candidate = [...header, ...part, line].join('\n');
-      if (part.length > 1 && estimateTargetTokens(candidate) > tokenBudget) {
-        units.push({ body: [...header, ...part].join('\n'), files: section.files, split: 'hunk-fragment' });
-        part = [hunkHeader, line];
+      const sides = lineSides(line);
+      const nextCount = { old: count.old + sides.old, new: count.new + sides.new };
+      const candidate = [...header, headerFor(offset, nextCount), ...part, line].join('\n');
+      if (part.length > 0 && estimateTargetTokens(candidate) > tokenBudget) {
+        parts.push({ lines: part, offset, count });
+        offset = { old: offset.old + count.old, new: offset.new + count.new };
+        count = sides;
+        part = [line];
       } else {
+        count = nextCount;
         part.push(line);
       }
     }
-    if (part.length > 1) units.push({ body: [...header, ...part].join('\n'), files: section.files, split: 'hunk' });
+    if (part.length > 0) parts.push({ lines: part, offset, count });
+    parts.forEach((entry, partIndex) => {
+      const fragmented = parts.length > 1;
+      const partHeader = fragmented ? headerFor(entry.offset, entry.count) : hunkHeader;
+      const split = fragmented && partIndex < parts.length - 1 ? 'hunk-fragment' : 'hunk';
+      units.push({ body: [...header, partHeader, ...entry.lines].join('\n'), files: section.files, split });
+    });
   }
   return units.every((unit) => estimateTargetTokens(unit.body) <= tokenBudget) ? units : [];
 }
@@ -305,6 +348,18 @@ function relationshipGroups(units, tokenBudget, fileBudget) {
   return groups;
 }
 
+function packFragments(units, tokenBudget) {
+  const bodies = [];
+  for (const unit of units) {
+    const lines = unit.body.split('\n');
+    const hunk = lines.slice(lines.findIndex((line) => line.startsWith('@@'))).join('\n');
+    const candidate = bodies.length ? `${bodies.at(-1)}\n${hunk}` : null;
+    if (candidate !== null && estimateTargetTokens(candidate) <= tokenBudget) bodies[bodies.length - 1] = candidate;
+    else bodies.push(unit.body);
+  }
+  return bodies;
+}
+
 export function chunksFromReviewPlan(body, plan, tokenBudget = DEFAULT_CHUNK_TOKEN_BUDGET) {
   if (!Number.isInteger(tokenBudget) || tokenBudget < 1_000) throw new Error('chunk token budget must be an integer of at least 1000');
   if (plan?.schema_version !== 1 || plan.target_hash !== targetHash(body)
@@ -314,7 +369,7 @@ export function chunksFromReviewPlan(body, plan, tokenBudget = DEFAULT_CHUNK_TOK
   const files = changedFilesFromPatch(body);
   if (!files.length || sections.some(section => section.files.length !== 1)) throw new Error('functional review plan requires a Git patch');
   const seen = new Set(), ids = new Set();
-  const chunks = plan.groups.map((group, index) => {
+  const groupChunks = plan.groups.flatMap((group) => {
     if (typeof group.id !== 'string' || !/^[a-z][a-z0-9-]{0,63}$/.test(group.id) || ids.has(group.id)
       || typeof group.summary !== 'string' || !group.summary.trim() || group.summary.length > 2000
       || !Array.isArray(group.files) || !group.files.length) throw new Error('invalid functional review group');
@@ -325,12 +380,16 @@ export function chunksFromReviewPlan(body, plan, tokenBudget = DEFAULT_CHUNK_TOK
     }
     const selected = sections.filter(section => group.files.includes(section.files[0]));
     const chunkBody = selected.map(section => section.body).join('\n');
-    if (estimateTargetTokens(chunkBody) > tokenBudget) throw new Error(`functional review group ${group.id} exceeds the input budget; revise the explicit plan`);
-    return { id: `chunk-${String(index + 1).padStart(3, '0')}`, body: chunkBody, files: group.files,
-      split: 'functional-group', feature_id: group.id, feature_summary: group.summary };
+    const feature = { files: group.files, feature_id: group.id, feature_summary: group.summary };
+    if (estimateTargetTokens(chunkBody) <= tokenBudget) return [{ body: chunkBody, split: 'functional-group', ...feature }];
+    // Only a single-file group may be split: several files were grouped so one reviewer sees
+    // them together, and splitting them would silently undo the approved plan.
+    const fragments = group.files.length === 1 ? packFragments(splitOversizedSection(selected[0], tokenBudget), tokenBudget) : [];
+    if (!fragments.length) throw new Error(`functional review group ${group.id} exceeds the input budget; revise the explicit plan`);
+    return fragments.map(fragmentBody => ({ body: fragmentBody, split: 'hunk-fragment', ...feature }));
   });
   if (seen.size !== files.length) throw new Error('functional review plan omits changed files');
-  return chunks;
+  return groupChunks.map((chunk, index) => ({ id: `chunk-${String(index + 1).padStart(3, '0')}`, ...chunk }));
 }
 
 export function chunkFrozenTarget(body, tokenBudget = DEFAULT_CHUNK_TOKEN_BUDGET, options = {}) {

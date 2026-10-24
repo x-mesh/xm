@@ -1616,10 +1616,94 @@ describe('external functional review plan', () => {
       expect(() => chunksFromReviewPlan(patch, p, 24_000)).toThrow();
     }
   });
-  test('refuses an oversized functional group instead of splitting or truncating it', () => {
+  test('refuses an oversized single-file group whose one line cannot be split, instead of truncating it', () => {
     const large = section('src/api.rs') + '\n+' + 'x'.repeat(4_000);
     const p = plan(); p.target_hash = `sha256:${createHash('sha256').update(large).digest('hex')}`;
     p.groups[0].files = ['src/api.rs'];
     expect(() => chunksFromReviewPlan(large, p, 1_000)).toThrow('request-flow');
+  });
+
+  const bigNewFile = (file, count) => [
+    `diff --git a/${file} b/${file}`, 'new file mode 100644', 'index 0000000..1111111', '--- /dev/null', `+++ b/${file}`,
+    `@@ -0,0 +1,${count} @@`, ...Array.from({ length: count }, (_, i) => `+line ${i + 1} ${'x'.repeat(20)}`),
+  ].join('\n');
+  const planFor = (body, groups) => ({ schema_version: 1, target_hash: `sha256:${createHash('sha256').update(body).digest('hex')}`, summary: 'Large file.', groups });
+
+  test('splits an over-budget single-file group into fragments whose hunk headers match their lines', () => {
+    const body = bigNewFile('docs/big.md', 3_200);
+    const chunks = chunksFromReviewPlan(body, planFor(body, [{ id: 'docs', summary: 'Read the whole document.', files: ['docs/big.md'] }]), 1_000);
+    expect(chunks.length).toBeGreaterThan(1);
+    expect(chunks.map(chunk => chunk.id)).toEqual(chunks.map((_, index) => `chunk-${String(index + 1).padStart(3, '0')}`));
+    let expectedFirst = 1;
+    for (const chunk of chunks) {
+      expect(chunk).toMatchObject({ files: ['docs/big.md'], split: 'hunk-fragment', feature_id: 'docs', feature_summary: 'Read the whole document.' });
+      expect(estimateTargetTokens(chunk.body)).toBeLessThanOrEqual(1_000);
+      const lines = chunk.body.split('\n');
+      expect(lines.slice(0, 5)).toEqual(body.split('\n').slice(0, 5));
+      const added = lines.filter(line => line.startsWith('+line'));
+      expect(lines.find(line => line.startsWith('@@'))).toBe(`@@ -0,0 +${expectedFirst},${added.length} @@`);
+      expect(added[0]).toStartWith(`+line ${expectedFirst} `);
+      expectedFirst += added.length;
+    }
+    expect(expectedFirst).toBe(3_201);
+  });
+
+  test('recounts both sides of a fragmented hunk that mixes context, removals and additions', () => {
+    const file = 'src/mixed.js';
+    const hunk = Array.from({ length: 600 }, (_, i) => [` keep ${i} ${'k'.repeat(12)}`, `-gone ${i} ${'g'.repeat(12)}`, `+came ${i} ${'c'.repeat(12)}`][i % 3]);
+    const body = [`diff --git a/${file} b/${file}`, `--- a/${file}`, `+++ b/${file}`, '@@ -10,400 +20,400 @@ function mixed() {', ...hunk].join('\n');
+    const chunks = chunkFrozenTarget(body, 1_000);
+    expect(chunks.length).toBeGreaterThan(1);
+    let oldLine = 10, newLine = 20;
+    for (const chunk of chunks) {
+      const lines = chunk.body.split('\n');
+      const parts = lines.slice(lines.findIndex(line => line.startsWith('@@')) + 1);
+      const oldCount = parts.filter(line => /^[ -]/.test(line)).length;
+      const newCount = parts.filter(line => /^[ +]/.test(line)).length;
+      expect(lines.find(line => line.startsWith('@@'))).toBe(`@@ -${oldLine},${oldCount} +${newLine},${newCount} @@ function mixed() {`);
+      oldLine += oldCount; newLine += newCount;
+    }
+    expect([oldLine, newLine]).toEqual([410, 420]);
+  });
+
+  test('keeps an unfragmented hunk header byte for byte', () => {
+    const file = 'src/small.js';
+    const hunks = Array.from({ length: 40 }, (_, i) => [`@@ -${i * 10 + 1} +${i * 10 + 1} @@`, `-old ${i} ${'o'.repeat(40)}`, `+new ${i} ${'n'.repeat(40)}`]).flat();
+    const body = [`diff --git a/${file} b/${file}`, `--- a/${file}`, `+++ b/${file}`, ...hunks].join('\n');
+    const chunks = chunksFromReviewPlan(body, planFor(body, [{ id: 'small', summary: 'Many small hunks.', files: [file] }]), 1_000);
+    expect(chunks.length).toBeGreaterThan(1);
+    expect(chunks.length).toBeLessThan(40);
+    const headers = chunks.flatMap(chunk => chunk.body.split('\n').filter(line => line.startsWith('@@')));
+    expect(headers).toEqual(hunks.filter(line => line.startsWith('@@')));
+    for (const chunk of chunks) expect(chunk.body.split('\n').filter(line => line.startsWith('diff --git'))).toHaveLength(1);
+  });
+
+  test('still refuses an over-budget group that holds several files', () => {
+    const body = [bigNewFile('docs/a.md', 200), bigNewFile('docs/b.md', 200)].join('\n');
+    expect(() => chunksFromReviewPlan(body, planFor(body, [{ id: 'pair', summary: 'Two documents.', files: ['docs/a.md', 'docs/b.md'] }]), 1_000)).toThrow('pair');
+  });
+
+  test('a fragmented functional group passes grounding and coverage per fragment', () => {
+    const body = bigNewFile('docs/big.md', 3_200);
+    const reviewPlan = planFor(body, [{ id: 'docs', summary: 'Read the whole document.', files: ['docs/big.md'] }]);
+    const plan = planReview(body, { reviewPlan, chunkTokenBudget: 1_000 });
+    expect(plan).toMatchObject({ chunked: true, reviewable: true });
+    const chunkBodies = Object.fromEntries(chunksFromReviewPlan(body, reviewPlan, 1_000).map(chunk => [`chunks/${chunk.id}.patch`, chunk.body]));
+    const manifest = { ...MANIFEST, target_hash: reviewPlan.target_hash, target_files: plan.files, profiles: plan.profiles, chunks: plan.chunks, expected_reports: plan.expected_reports };
+    const second = plan.expected_reports.find(entry => entry.chunk_id === 'chunk-002');
+    const cited = chunkBodies[second.target_file].split('\n').find(line => line.startsWith('+line')).slice(1);
+    const reports = plan.expected_reports.map(expected => zeroReport(expected.report_id, expected.lens, {
+      target_hash: expected.target_hash,
+      checked_files: expected.target_files,
+      ...(expected === second ? {
+        findings: [{ severity: 'Low', file: 'docs/big.md', line: Number(cited.split(' ')[1]), description: 'Placeholder text.', code: cited, why: 'Readers see filler.', fix: 'Replace the filler line.' }],
+        no_findings_reason: undefined,
+      } : {}),
+    }));
+    const result = validateReviewReports(manifest, raws(...reports), { targetBody: body, chunkBodies });
+    expect(result.issues).toEqual([]);
+    expect(result.ok).toBe(true);
+    expect(result.coverage).toEqual({ expected: plan.expected_reports.length, valid: plan.expected_reports.length });
+    expect(result.target_coverage).toMatchObject({ expected: 1, checked: 1, complete: true });
   });
 });
