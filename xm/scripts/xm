@@ -893,6 +893,16 @@ case "$CMD" in
         | sed 's/.*"version"[[:space:]]*:[[:space:]]*"\([^"]*\)".*/\1/'
     }
 
+    # Step 5 re-executes the dispatcher it installs, so steps 6-7 run that code
+    # instead of the copy bash already loaded. The resumed run skips steps 1-5.
+    RESUMED=0
+    if [ "${XM_UPDATE_RESUMED:-}" = "1" ] && [ -n "${XM_UPDATE_REMOTE_VERSION:-}" ]; then
+      RESUMED=1
+      REMOTE_VERSION="$XM_UPDATE_REMOTE_VERSION"
+      unset XM_UPDATE_RESUMED XM_UPDATE_REMOTE_VERSION
+    fi
+    if [ "$RESUMED" = "0" ]; then
+
     # 1. Current installed version
     # Primary: installed_plugins.json is authoritative (version-exact, not mtime-sorted)
     # Fallback: scan cache directory
@@ -1097,13 +1107,20 @@ case "$CMD" in
         # garbage from the new bytes at its current offset and emit errors like
         # `line 551: Structured: command not found`. `mv` swaps inodes so the
         # running process keeps reading the original file until exit.
+        DISPATCHER_CHANGED=0
+        cmp -s "$NEW_CACHE" "${BASH_SOURCE[0]}" || DISPATCHER_CHANGED=1
         cp "$NEW_CACHE" "$BIN_DIR/xm.new"
         chmod +x "$BIN_DIR/xm.new"
         mv "$BIN_DIR/xm.new" "$BIN_DIR/xm"
         echo "→ refreshed $BIN_DIR/xm"
+        if [ "$DISPATCHER_CHANGED" = "1" ]; then
+          exec env XM_UPDATE_RESUMED=1 XM_UPDATE_REMOTE_VERSION="$REMOTE_VERSION" XM_MARKET="$FORCE_MARKET" \
+            bash "$BIN_DIR/xm" update "$@"
+        fi
       else
         echo "⚠️  CLI binary source not found in cache (skipped)"
       fi
+    fi
     fi
 
     # 6. Refresh ~/.claude/commands/xm.md dispatcher + hook file + settings.json

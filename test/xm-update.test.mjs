@@ -174,6 +174,38 @@ describe('xm update cross-target convergence', () => {
     expect(plugin.version).toMatch(new RegExp(`^${VERSION.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}\\+codex\\.local-`));
   });
 
+  // bash keeps executing the dispatcher file it started from, so before the
+  // re-exec every step after the CLI refresh ran the code being replaced.
+  test('runs the steps after the CLI refresh with the dispatcher it installed', () => {
+    const home = mkdtempSync(join(tmpdir(), 'xm-update-resume-'));
+    const bin = join(home, 'bin');
+    const binDir = join(home, 'local-bin');
+    mkdirSync(bin, { recursive: true });
+    const cacheScripts = join(home, '.claude', 'plugins', 'cache', 'xm', 'xm', VERSION, 'scripts');
+    mkdirSync(cacheScripts, { recursive: true });
+    const newDispatcher = readFileSync(SCRIPT, 'utf8')
+      .replace('echo "→ refreshing global hooks/dispatcher"', 'echo "→ refreshing global hooks/dispatcher (resumed)"');
+    writeFileSync(join(cacheScripts, 'xm'), newDispatcher);
+    writeFileSync(join(cacheScripts, 'setup-global.mjs'), 'console.log("setup ran")\n');
+    mkdirSync(join(home, '.claude', 'plugins'), { recursive: true });
+    writeFileSync(join(home, '.claude', 'plugins', 'installed_plugins.json'), JSON.stringify({ plugins: { 'xm@xm': [{ version: VERSION }] } }));
+    executable(join(bin, 'curl'), `printf '%s' '{"plugins":[{"name":"xm","version":"${VERSION}"}]}'`);
+    executable(join(bin, 'claude'), 'exit 0');
+
+    const result = spawnSync('bash', [SCRIPT, 'update', '--force', '--no-propagate'], {
+      cwd: home,
+      env: { ...BASE_ENV, HOME: home, XM_LIB: REPO, XM_BIN_DIR: binDir, PATH: `${bin}:${dirname(process.execPath)}:${process.env.PATH}` },
+      encoding: 'utf8',
+      timeout: 60_000,
+    });
+    if (result.status !== 0) throw new Error(`stdout:\n${result.stdout}\nstderr:\n${result.stderr}`);
+    const lines = result.stdout.split('\n');
+    expect(lines).toContain(`→ refreshed ${binDir}/xm`);
+    expect(lines).toContain('→ refreshing global hooks/dispatcher (resumed)');
+    expect(lines).not.toContain('→ refreshing global hooks/dispatcher');
+    expect(lines.filter((line) => line.startsWith('✅ Updated to'))).toHaveLength(1);
+  });
+
   // The renderers skip a hook they cannot install and say so, but `xm update`
   // prints only the propagate JSON, so the note has to travel through it.
   test('prints the hooks a target skipped while propagating', () => {
