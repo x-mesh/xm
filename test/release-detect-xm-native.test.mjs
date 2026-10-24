@@ -129,6 +129,36 @@ test('a standalone node repo without marketplace.json reaches the standalone ver
   expect(out.current_version).toBe('1.2.3');
 });
 
+// xm/hooks/relay-chat and xm/lib/install have no x-* source, so a change there
+// is xm's own; before this rule, 2.43.1 shipped them only because xm/scripts
+// changed in the same release.
+test('an xm-native hook or lib change is a genuine xm release', () => {
+  write('xm/hooks/relay-chat/parse.ts', 'export const rows = 1\n');
+  git('add', '-A');
+  git('commit', '-qm', 'fix: relay-chat rows');
+  expect(changedNames()).toContain('xm');
+
+  write('xm/lib/install/install-cli.mjs', 'export const hookRoot = 1\n');
+  git('add', '-A');
+  git('commit', '-qm', 'fix: install hook root');
+  expect(detect().changed_plugins.find(p => p.name === 'xm').files)
+    .toEqual(['xm/hooks/relay-chat/parse.ts', 'xm/lib/install/install-cli.mjs']);
+});
+
+test('mirrored lib and hook files alone do NOT trigger an xm release', () => {
+  write('x-build/lib/x-build/foo.mjs', 'export const a = 1\n');
+  write('.claude/hooks/trace-session.mjs', '// source\n');
+  git('add', '-A');
+  git('commit', '-qm', 'release: sources');
+
+  write('xm/lib/x-build/foo.mjs', 'export const a = 2\n');
+  write('xm/hooks/trace-session.mjs', '// mirror\n');
+  git('add', '-A');
+  git('commit', '-qm', 'chore: sync bundle');
+
+  expect(changedNames()).not.toContain('xm');
+});
+
 // Filesystem-derived membership (Lesson L8): a brand-new xm-native skill must be
 // picked up with no code change here.
 test('a newly added xm-native skill is detected without a hardcoded list', () => {
