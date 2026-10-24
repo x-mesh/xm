@@ -10,7 +10,7 @@ the repository or the session. The output should read like a maintainer wrote it
 the work, not like a generated report.
 
 Publishing is split by owner. `pr` and `issue` have no other owner in xm, so this skill
-publishes them with `gh` after one confirmation. `commit`, `changelog`, and `release` belong to
+publishes them with `gh` after one confirmation (skipped for a new PR the user explicitly asked to create). `commit`, `changelog`, and `release` belong to
 the release transaction owned by `xm:ship`, so this skill returns text only for them.
 </Purpose>
 
@@ -39,7 +39,7 @@ after: x-review
 
 | Mode | Output | Publishes? |
 |------|--------|------------|
-| `pr [<number>]` | PR title + body. With a number: revise that PR's body | Yes — `gh pr create` / `gh pr edit` after one confirmation |
+| `pr [<number>]` | PR title + body. With a number: revise that PR's body | Yes — `gh pr create` / `gh pr edit` after one confirmation, or without it when the user explicitly asked to create the PR |
 | `issue [<number>] [<text>]` | Issue title + body. With a number: revise that issue's body | Yes — `gh issue create` / `gh issue edit` after one confirmation |
 | `release [<tag>]` | GitHub release title + notes | No — text only |
 | `changelog [<range>]` | Entries for the project's changelog | No — text only |
@@ -357,8 +357,13 @@ Skip this step for `release`, `changelog`, `commit`, and whenever `--for ship` i
 
 1. Show the final title and body, plus the target: repository, base and head for a PR, the
    number when editing. Then ask once with AskUserQuestion: publish / edit first / cancel.
+   Exception: for a new PR, skip the question when the user's own message in this turn asks
+   to create or publish it ("PR 올려", "PR 보내", "open a PR"). Show the same text and target,
+   then publish. Revising an existing PR, issues, and runs started by another skill
+   (`xm:batch`, `xm:build`) still ask.
 2. PR only: if the branch has no upstream or is ahead of it, include the push in the same
-   question. On approval run `GK_AGENT=1 git-kit push`. Branch on `state`. If it is not `ok`,
+   question, or in the explicit request when step 1 skipped the question. On approval run
+   `GK_AGENT=1 git-kit push`. Branch on `state`. If it is not `ok`,
    report the error and stop — do not fall back to raw `git push`.
 3. Pass the title and body through quoted heredocs, never inline, so backticks and `$` in
    either survive the shell:
@@ -410,7 +415,8 @@ line, then the notes.
 | "A complete template looks more professional." | Empty or padded sections make the reviewer read more to learn less. Omit every section without evidence. |
 | "The user writes Korean, so the PR body should be Korean." | Chatting in Korean is not a language request. The document belongs to the repository: match its PRs, changelog, and commits unless the user names the language. |
 | "I'll explain the motivation — it's obviously for performance." | Motivation not shown in commits, issues, or the user's words is invented. Omit it or ask one question. |
-| "The user said open a PR, so I can push and create without showing the text." | A PR is public and hard to retract. Show the final text and ask once, then publish. |
+| "The user said open a PR, so I can push and create without showing the text." | Show the final text and target either way. An explicit request in the user's own message replaces the question, not the preview. |
+| "The user asked for a PR earlier in the session, so this one is explicit too." | Only the current turn's message counts. A PR created through `xm:batch` or `xm:build`, or a request only to draft the body, still asks. |
 | "`gh pr comment` is close enough to editing the body." | The user asked for the body. A comment leaves the old body in place and adds noise. |
 | "I'll add a commit list so the reviewer has everything." | GitHub already shows commits. Describe the change and the review boundary instead. |
 | "Ship asked for release notes; I'll publish them to save a step." | Ship owns the tag and the release. Return text; publishing twice or before the tag breaks the release. |
@@ -420,7 +426,7 @@ line, then the notes.
 
 - A `Verification` line with no matching command in this session or check in `gh pr checks` → invented verification
 - A body that opens with "This PR" or ends with a summary paragraph → report shape, rewrite
-- `gh pr create` without a prior confirmation in this run → skipped the publish gate
+- `gh pr create` without a prior confirmation or an explicit request in the current turn → skipped the publish gate
 - Any `gh` command outside the read-only list during `--for ship` → ownership violation
 - A heading with one line under it that no repository template requires → section added for looks
 - A Korean body sentence ending in `~한다` / `~는다` / `~했다` → wrong register, rewrite in 합니다체
