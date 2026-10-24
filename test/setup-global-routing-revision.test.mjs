@@ -17,8 +17,8 @@ const END = '<!-- xm:routing:end -->';
 // Bump the revision in setup-global.mjs (ROUTING_TARGETS) and update this pin
 // whenever a template changes; the test below fails until both move together.
 const TARGETS = [
-  { label: 'CLAUDE.md', flag: '--claude-md', dir: '.claude', file: 'CLAUDE.md', template: 'claude-routing.md', revision: 1, sha256: '2a2b3419f010efa774b3f618cf330dfc89175e2893c26f18fb69f04178ef1e04' },
-  { label: 'AGENTS.md', flag: '--codex-md', dir: '.codex', file: 'AGENTS.md', template: 'codex-routing.md', revision: 1, sha256: '6f911a4e88f276876b5eda66772259d8840f315df0c514bf6858e149728f1ed4' },
+  { label: 'CLAUDE.md', flag: '--claude-md', dir: '.claude', file: 'CLAUDE.md', template: 'claude-routing.md', revision: 2, sha256: 'e2fb39c5f8966ce1baee92c5a35df08b0772eaa692248e2525754485cc6f2d7b' },
+  { label: 'AGENTS.md', flag: '--codex-md', dir: '.codex', file: 'AGENTS.md', template: 'codex-routing.md', revision: 2, sha256: '202fbcc2b5041033443ec7640b43dd0f11efd4a58ba72d9670a5fac9be9197f5' },
 ];
 
 const { XM_LIB: _xmLib, X_KIT_LIB: _xKitLib, ...BASE_ENV } = process.env;

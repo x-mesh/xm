@@ -59,8 +59,8 @@ const routingTarget = (label, flag, file, template, revision) => ({
   markers: routingMarkers(flag, revision),
 });
 const ROUTING_TARGETS = [
-  routingTarget('CLAUDE.md', '--claude-md', CLAUDE_MD, 'claude-routing.md', 1),
-  routingTarget('AGENTS.md', '--codex-md', CODEX_MD, 'codex-routing.md', 1),
+  routingTarget('CLAUDE.md', '--claude-md', CLAUDE_MD, 'claude-routing.md', 2),
+  routingTarget('AGENTS.md', '--codex-md', CODEX_MD, 'codex-routing.md', 2),
 ];
 
 // Previous format (bare `node`) — cleaned up during install so users upgrading
