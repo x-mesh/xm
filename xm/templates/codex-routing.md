@@ -9,7 +9,7 @@ Run immediately when the intent is clear:
 - Asking about the quality of a just-produced answer or artifact → **xm:eval** (limited to that artifact)
 
 ### Writing — invoke on explicit request
-The user already asked for the document, so run the skill without a separate proposal. It asks once before it publishes a PR or an issue.
+The user already asked for the document, so run the skill without a separate proposal. It asks once before it publishes, except for a new PR that the user's own message asks for from a branch not yet on the remote.
 - Opening or revising a PR ("PR 올려줘", "PR 본문 정리", "open a PR") → **xm:write** in `pr` mode before drafting the title or body. Do not run `gh pr create` or `gh pr edit` outside that skill.
 - Writing an issue, release notes, a changelog entry, or a README ("이슈 만들어줘", "릴리스 노트", "README 정리") → **xm:write**
 
