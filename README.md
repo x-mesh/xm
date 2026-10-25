@@ -137,6 +137,7 @@ xm setup uninstall      # remove hook + settings entries + routing block
 xm setup --no-hooks     # install CLI dispatchers without copying hooks
 xm setup --claude-md    # also add the xm routing block to ~/.claude/CLAUDE.md
 xm setup --codex-md     # also add the xm routing block to ~/.codex/AGENTS.md
+xm setup --notify       # also notify when a long Claude or Codex turn ends
 ```
 
 Writes `~/.claude/hooks/xm-trace-session.mjs` and merges `PreToolUse`/`PostToolUse` Skill matchers into `~/.claude/settings.json` (existing hooks such as mem-mesh are preserved; a timestamped backup is created on every write). Use the bash route when you are outside Claude Code; otherwise `/xm init` is the preferred entry point.
@@ -144,6 +145,8 @@ Writes `~/.claude/hooks/xm-trace-session.mjs` and merges `PreToolUse`/`PostToolU
 `--claude-md` adds a marked routing block to `~/.claude/CLAUDE.md`. The block tells Claude when to invoke xm skills, for example **xm:write** for a PR. A plain install does not add the block. After you opt in, `xm setup` and `xm update` refresh the block. Put your own rules outside the block, because each refresh replaces its contents. To remove only the block, delete it. The next install does not add it again. Each change to `CLAUDE.md` creates a timestamped backup.
 
 `--codex-md` adds the same kind of block to `~/.codex/AGENTS.md`. The rules in this block name skills as `$xm:<skill>`, the Codex form. The opt-in, refresh, and backup rules are the same as for `--claude-md`. The two flags can run together.
+
+`--notify` installs `xm-notify-done.mjs` as a Claude hook and, when `~/.codex` exists, as a Codex hook. If a turn runs 120 seconds or longer, the hook sends a notification with the project name, the duration, and the first line of the last answer. Set `XM_NOTIFY_MIN_SECONDS` to change the threshold. When Claude waits for a permission or for input, the hook sends a notification at once. Codex has no such event. Inside term-mesh, the hook skips this case, because term-mesh already shows the notification from Claude. Inside term-mesh, the hook uses `term-mesh notify`. Elsewhere it uses `osascript` on macOS and `notify-send` on Linux. After you opt in, `xm setup` and `xm update` refresh the hook. `xm setup uninstall` removes it.
 
 The begin marker of each block carries the template revision, for example `v1`. `xm setup status` shows the revision. If a block has a newer revision than your xm, `xm setup` leaves it unchanged and prints a warning. A block without a revision is replaced once with the current one.
 
