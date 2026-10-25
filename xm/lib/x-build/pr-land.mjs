@@ -50,8 +50,8 @@ function argvEnv(name, fallback) {
   return value;
 }
 
-function run(command, args, cwd) {
-  const result = spawnSync(command[0], [...command.slice(1), ...args], { cwd, env: { ...process.env, GK_AGENT: '1' }, encoding: 'utf8', maxBuffer: 20 * 1024 * 1024 });
+function run(command, args, cwd, env = process.env) {
+  const result = spawnSync(command[0], [...command.slice(1), ...args], { cwd, env: { ...env, GK_AGENT: '1' }, encoding: 'utf8', maxBuffer: 20 * 1024 * 1024 });
   return { ok: !result.error && result.status === 0, exit_code: result.status, stdout: String(result.stdout || ''), stderr: String(result.stderr || result.error?.message || '') };
 }
 
@@ -130,7 +130,9 @@ function repoFromUrl(url) {
 
 // The follow-up acts on local worktrees, so it must run only in a checkout of the PR's repository.
 function localRepoMismatch(gh, pr, cwd) {
-  const viewed = run(gh, ['repo', 'view', '--json', 'nameWithOwner'], cwd);
+  // GH_REPO overrides gh's repository, which would make gh name a repository other than this checkout.
+  const { GH_REPO: _override, ...env } = process.env;
+  const viewed = run(gh, ['repo', 'view', '--json', 'nameWithOwner'], cwd, env);
   const local = viewed.ok ? parseJSON(viewed.stdout)?.nameWithOwner?.toLowerCase() : null;
   const remote = repoFromUrl(pr.url);
   if (!local || !remote) return 'cannot confirm that this checkout is the PR repository';

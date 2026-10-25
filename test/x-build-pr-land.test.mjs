@@ -59,8 +59,9 @@ if (argv[0] === 'pr' && argv[1] === 'merge') {
   process.exit(0);
 }
 if (argv[0] === 'repo' && argv[1] === 'view') {
-  if (!state.repo) process.exit(1);
-  process.stdout.write(JSON.stringify({ nameWithOwner: state.repo }) + '\\n');
+  const repo = process.env.GH_REPO || state.repo;
+  if (!repo) process.exit(1);
+  process.stdout.write(JSON.stringify({ nameWithOwner: repo }) + '\\n');
   process.exit(0);
 }
 process.exit(2);
@@ -323,6 +324,10 @@ describe('xm pr land', () => {
     const reason = 'this checkout is example/other, not the PR repository example/repo';
     expect(result.output.after).toEqual({ sync: { status: 'skipped', reason }, cleanup: { status: 'skipped', reason } });
     expect(calls(fixture).some((call) => call.tool === 'gk')).toBe(false);
+
+    const overridden = setup({ repo: 'example/other' });
+    overridden.env.GH_REPO = 'example/repo';
+    expect(land(overridden, ['7', '--yes', '--cleanup']).output.after.sync).toEqual({ status: 'skipped', reason });
 
     const unknown = setup({ repo: null });
     expect(land(unknown, ['7', '--yes']).output.after.sync).toEqual({ status: 'skipped', reason: 'cannot confirm that this checkout is the PR repository' });
