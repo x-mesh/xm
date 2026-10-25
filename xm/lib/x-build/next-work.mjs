@@ -39,7 +39,8 @@ function prCandidate(pr) {
   if (checks === 'pending') return { ...base, score: SCORE.pr_pending, reason: 'checks running', command: `xm pr land ${pr.number} --wait --dry-run` };
   // gh reports UNKNOWN until GitHub computes mergeability; xm pr land re-checks it, so only a known conflict demotes the PR.
   if (pr.mergeable === 'CONFLICTING') return { ...base, score: SCORE.pr_failing, reason: 'merge conflict', command: `gh pr view ${pr.number}` };
-  return { ...base, score: SCORE.pr_ready, reason: 'checks passed and mergeable', command: `xm pr land ${pr.number} --dry-run` };
+  const reason = pr.mergeable === 'MERGEABLE' ? 'checks passed and mergeable' : 'checks passed, mergeability not computed yet';
+  return { ...base, score: SCORE.pr_ready, reason, command: `xm pr land ${pr.number} --dry-run` };
 }
 
 function collectPrs(gh, cwd) {

@@ -66,7 +66,7 @@ describe('xm next', () => {
     expect(byId['#1']).toMatchObject({ reason: 'checks running', command: 'xm pr land 1 --wait --dry-run' });
     expect(byId['#2']).toMatchObject({ reason: 'draft PR', command: 'gh pr ready 2' });
     expect(byId['#3']).toMatchObject({ reason: 'merge conflict', command: 'gh pr view 3' });
-    expect(byId['#6']).toMatchObject({ reason: 'checks passed and mergeable', command: 'xm pr land 6 --dry-run' });
+    expect(byId['#6']).toMatchObject({ reason: 'checks passed, mergeability not computed yet', command: 'xm pr land 6 --dry-run' });
   });
 
   test('later impact raises an item above impact none', () => {
