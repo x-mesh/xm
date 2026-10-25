@@ -31,6 +31,7 @@ import { cmdAttention } from './x-build/attention.mjs';
 import { cmdMutate, cmdMutateDiff } from './x-build/mutate.mjs';
 import { cmdVerifyTests } from './x-build/escape-verify.mjs';
 import { cmdBatch } from './x-build/batch.mjs';
+import { cmdPr } from './x-build/pr-land.mjs';
 
 // Skip top-level execution when imported by xm-server
 if (process.env.XKIT_SERVER !== '1') {
@@ -164,6 +165,7 @@ switch (cmd) {
   case 'gate-panel':    cmdGatePanel(args); break;
   case 'worktrees':     cmdWorktrees(args); break;
   case 'batch':         await cmdBatch(args); break;
+  case 'pr':            await cmdPr(args); break;
   case 'review-integration': cmdReviewIntegration(args); break;
   case 'circuit-breaker': {
     const project = resolveProject(args[1]);
