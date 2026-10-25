@@ -8,11 +8,14 @@ const MERGEABLE_STATES = ['CLEAN', 'HAS_HOOKS', 'UNSTABLE'];
 const DEFAULT_TIMEOUT_SEC = 1800;
 const DEFAULT_POLL_MS = 15000;
 
+// A value flag always takes the next argument, so `--timeout -1` reaches validation
+// instead of being dropped for looking like another flag.
 function option(args, name) {
   const inline = args.find((arg) => arg.startsWith(name + '='));
   if (inline) return inline.slice(name.length + 1);
   const index = args.indexOf(name);
-  return index >= 0 && index + 1 < args.length && !args[index + 1].startsWith('-') ? args[index + 1] : null;
+  if (index < 0) return null;
+  return index + 1 < args.length ? args[index + 1] : '';
 }
 
 function positionalArgs(args, valueOptions = []) {
@@ -121,11 +124,26 @@ function listWorktrees(cwd) {
   });
 }
 
+function repoFromUrl(url) {
+  return /\/([^/]+\/[^/]+)\/pull\/\d+\/?$/.exec(String(url || ''))?.[1]?.toLowerCase() || null;
+}
+
+// The follow-up acts on local worktrees, so it must run only in a checkout of the PR's repository.
+function localRepoMismatch(gh, pr, cwd) {
+  const viewed = run(gh, ['repo', 'view', '--json', 'nameWithOwner'], cwd);
+  const local = viewed.ok ? parseJSON(viewed.stdout)?.nameWithOwner?.toLowerCase() : null;
+  const remote = repoFromUrl(pr.url);
+  if (!local || !remote) return 'cannot confirm that this checkout is the PR repository';
+  return local === remote ? null : `this checkout is ${local}, not the PR repository ${remote}`;
+}
+
 function gkEnvelope(result) {
   return parseJSON(result.stdout) || parseJSON(result.stderr);
 }
 
-function afterMerge(gk, pr, { cleanup, cwd }) {
+function afterMerge(gh, gk, pr, { cleanup, cwd }) {
+  const mismatch = localRepoMismatch(gh, pr, cwd);
+  if (mismatch) return { sync: { status: 'skipped', reason: mismatch }, cleanup: { status: 'skipped', reason: mismatch } };
   const worktrees = listWorktrees(cwd);
   const baseTree = worktrees.find((tree) => tree.branch === pr.baseRefName);
   let sync;
@@ -185,7 +203,8 @@ function cmdLand(args) {
   if (dryRun && yes) return fail(action, '--dry-run and --yes cannot be combined', { json });
   const positional = positionalArgs(args, ['--timeout']);
   if (positional.length > 1) return fail(action, USAGE, { json });
-  const timeoutSec = Number(option(args, '--timeout') ?? DEFAULT_TIMEOUT_SEC);
+  const timeoutRaw = option(args, '--timeout');
+  const timeoutSec = timeoutRaw === null ? DEFAULT_TIMEOUT_SEC : timeoutRaw.trim() === '' ? NaN : Number(timeoutRaw);
   if (!Number.isFinite(timeoutSec) || timeoutSec < 0) return fail(action, '--timeout must be a non-negative number of seconds', { json });
   // Tests shorten the poll; a real run keeps the default so it does not hammer the GitHub API.
   const pollMs = Number(process.env.X_BUILD_PR_LAND_POLL_MS) || DEFAULT_POLL_MS;
@@ -210,7 +229,7 @@ function cmdLand(args) {
   };
   const landed = () => {
     const output = { action, status: 'merged', reused: true, pr: prSummary(), merge_commit: pr.mergeCommit?.oid || null };
-    if (yes) output.after = afterMerge(gk, pr, { cleanup, cwd });
+    if (yes) output.after = afterMerge(gh, gk, pr, { cleanup, cwd });
     return finish(output);
   };
 
@@ -269,7 +288,7 @@ function cmdLand(args) {
     process.exitCode = 2;
     return emit(output, json, describe(output));
   }
-  return finish({ action, status: 'merged', reused: false, pr: prSummary(), checks, review, merge_commit: pr.mergeCommit?.oid || null, after: afterMerge(gk, pr, { cleanup, cwd }) });
+  return finish({ action, status: 'merged', reused: false, pr: prSummary(), checks, review, merge_commit: pr.mergeCommit?.oid || null, after: afterMerge(gh, gk, pr, { cleanup, cwd }) });
 }
 
 export async function cmdPr(args = []) {

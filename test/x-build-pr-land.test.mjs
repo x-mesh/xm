@@ -27,8 +27,9 @@ function setup(state = {}) {
   git(cwd, ['commit', '-m', 'init']);
   const files = { log: join(cwd, 'calls.jsonl'), state: join(cwd, 'gh-state.json'), gh: join(cwd, 'fake-gh.mjs'), gk: join(cwd, 'fake-gk.mjs') };
   writeFileSync(files.state, JSON.stringify({
-    pr: { number: 7, url: 'https://example.test/pr/7', state: 'OPEN', isDraft: false, baseRefName: 'develop', headRefName: 'feat/x', headRefOid: HEAD, isCrossRepository: false, mergeable: 'MERGEABLE', mergeStateStatus: 'CLEAN', mergeCommit: null, mergedAt: null },
+    pr: { number: 7, url: 'https://github.com/example/repo/pull/7', state: 'OPEN', isDraft: false, baseRefName: 'develop', headRefName: 'feat/x', headRefOid: HEAD, isCrossRepository: false, mergeable: 'MERGEABLE', mergeStateStatus: 'CLEAN', mergeCommit: null, mergedAt: null },
     checks: [[{ name: 'test', state: 'SUCCESS', bucket: 'pass' }]],
+    repo: 'Example/Repo',
     ...state,
   }));
   writeFileSync(files.gh, `
@@ -55,6 +56,11 @@ if (argv[0] === 'pr' && argv[1] === 'merge') {
   if (state.mergeFails || head !== state.pr.headRefOid) { process.stderr.write('merge refused\\n'); process.exit(1); }
   if (!state.mergeQueued) Object.assign(state.pr, { state: 'MERGED', mergedAt: '2026-10-25T00:00:00Z', mergeCommit: { oid: 'b'.repeat(40) } });
   save();
+  process.exit(0);
+}
+if (argv[0] === 'repo' && argv[1] === 'view') {
+  if (!state.repo) process.exit(1);
+  process.stdout.write(JSON.stringify({ nameWithOwner: state.repo }) + '\\n');
   process.exit(0);
 }
 process.exit(2);
@@ -106,7 +112,7 @@ describe('xm pr land', () => {
     const result = land(fixture, ['7']);
     expect(result.code).toBe(2);
     expect(result.output.status).toBe('awaiting_confirmation');
-    expect(result.output.merge_argv).toEqual(['gh', 'pr', 'merge', 'https://example.test/pr/7', '--merge', '--match-head-commit', HEAD]);
+    expect(result.output.merge_argv).toEqual(['gh', 'pr', 'merge', 'https://github.com/example/repo/pull/7', '--merge', '--match-head-commit', HEAD]);
     expect(merges(fixture)).toEqual([]);
   });
 
@@ -130,7 +136,7 @@ describe('xm pr land', () => {
     expect(result.code).toBe(0);
     expect(result.output.status).toBe('merged');
     expect(result.output.merge_commit).toBe('b'.repeat(40));
-    expect(merges(fixture)[0].argv).toEqual(['pr', 'merge', 'https://example.test/pr/7', '--merge', '--match-head-commit', HEAD]);
+    expect(merges(fixture)[0].argv).toEqual(['pr', 'merge', 'https://github.com/example/repo/pull/7', '--merge', '--match-head-commit', HEAD]);
     const pull = calls(fixture).find((call) => call.tool === 'gk' && call.argv[0] === 'pull');
     expect(pull.argv).toEqual(['pull', '--strategy', 'ff-only', '--no-autostash']);
     expect(pull.cwd).toBe(fixture.cwd);
@@ -195,10 +201,10 @@ describe('xm pr land', () => {
 
   test('every gh call after the first names the PR by its URL', () => {
     const fixture = setup({ checks: [[{ name: 'test', state: 'IN_PROGRESS', bucket: 'pending' }], [{ name: 'test', state: 'SUCCESS', bucket: 'pass' }]] });
-    land(fixture, ['https://example.test/pr/7', '--yes', '--wait']);
-    const ghCalls = calls(fixture).filter((call) => call.tool === 'gh');
+    land(fixture, ['https://github.com/example/repo/pull/7', '--yes', '--wait']);
+    const ghCalls = calls(fixture).filter((call) => call.tool === 'gh' && call.argv[0] === 'pr');
     expect(ghCalls.length).toBeGreaterThan(3);
-    for (const call of ghCalls) expect(call.argv[2]).toBe('https://example.test/pr/7');
+    for (const call of ghCalls) expect(call.argv[2]).toBe('https://github.com/example/repo/pull/7');
   });
 
   test('--wait stops when the PR becomes a draft or closes', () => {
@@ -308,6 +314,28 @@ describe('xm pr land', () => {
     const forked = land(fork, ['7', '--yes', '--cleanup']);
     expect(forked.output.after.cleanup).toEqual({ status: 'skipped', reason: 'the PR comes from another repository' });
     expect(calls(fixture).concat(calls(fork)).some((call) => call.tool === 'gk' && call.argv[0] === 'worktree')).toBe(false);
+  });
+
+  test('the follow-up is skipped when this checkout is not the PR repository', () => {
+    const fixture = setup({ repo: 'example/other' });
+    const result = land(fixture, ['7', '--yes', '--cleanup']);
+    expect(result.output.status).toBe('merged');
+    const reason = 'this checkout is example/other, not the PR repository example/repo';
+    expect(result.output.after).toEqual({ sync: { status: 'skipped', reason }, cleanup: { status: 'skipped', reason } });
+    expect(calls(fixture).some((call) => call.tool === 'gk')).toBe(false);
+
+    const unknown = setup({ repo: null });
+    expect(land(unknown, ['7', '--yes']).output.after.sync).toEqual({ status: 'skipped', reason: 'cannot confirm that this checkout is the PR repository' });
+  });
+
+  test('--timeout rejects a negative or missing value in both forms', () => {
+    for (const args of [['--timeout', '-1'], ['--timeout=-1'], ['--timeout']]) {
+      const fixture = setup();
+      const result = land(fixture, ['7', '--wait', ...args]);
+      expect(result.code).toBe(2);
+      expect(result.output.errors[0]).toBe('--timeout must be a non-negative number of seconds');
+      expect(calls(fixture)).toEqual([]);
+    }
   });
 
   test('the base sync is skipped when no worktree has the base checked out', () => {
