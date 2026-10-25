@@ -60,12 +60,13 @@ describe('xm next', () => {
     expect(result.output.sources).toEqual({ prs: { status: 'ok', count: 2 }, inbox: { status: 'ok', count: 1 }, later: { status: 'ok', count: 2 } });
   });
 
-  test('a running check, a draft, and a conflicting PR each get their own reason', () => {
-    const fixture = setup({ prs: [pr(1, { statusCheckRollup: [{ status: 'IN_PROGRESS' }] }), pr(2, { isDraft: true }), pr(3, { mergeable: 'CONFLICTING' })] });
+  test('a running check, a draft, a conflict, and a not-yet-computed mergeable state each get their own reason', () => {
+    const fixture = setup({ prs: [pr(1, { statusCheckRollup: [{ status: 'IN_PROGRESS' }] }), pr(2, { isDraft: true }), pr(3, { mergeable: 'CONFLICTING' }), pr(6, { mergeable: 'UNKNOWN' })] });
     const byId = Object.fromEntries(next(fixture, ['--limit', '5', '--json']).output.candidates.map((c) => [c.id, c]));
     expect(byId['#1']).toMatchObject({ reason: 'checks running', command: 'xm pr land 1 --wait --dry-run' });
     expect(byId['#2']).toMatchObject({ reason: 'draft PR', command: 'gh pr ready 2' });
-    expect(byId['#3']).toMatchObject({ reason: 'mergeable state is CONFLICTING' });
+    expect(byId['#3']).toMatchObject({ reason: 'merge conflict', command: 'gh pr view 3' });
+    expect(byId['#6']).toMatchObject({ reason: 'checks passed and mergeable', command: 'xm pr land 6 --dry-run' });
   });
 
   test('later impact raises an item above impact none', () => {

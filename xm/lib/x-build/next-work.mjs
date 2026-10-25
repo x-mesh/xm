@@ -37,7 +37,8 @@ function prCandidate(pr) {
   const checks = checkState(pr.statusCheckRollup);
   if (checks === 'failing') return { ...base, score: SCORE.pr_failing, reason: 'checks failed', command: `gh pr checks ${pr.number}` };
   if (checks === 'pending') return { ...base, score: SCORE.pr_pending, reason: 'checks running', command: `xm pr land ${pr.number} --wait --dry-run` };
-  if (pr.mergeable !== 'MERGEABLE') return { ...base, score: SCORE.pr_failing, reason: `mergeable state is ${pr.mergeable}`, command: `gh pr view ${pr.number}` };
+  // gh reports UNKNOWN until GitHub computes mergeability; xm pr land re-checks it, so only a known conflict demotes the PR.
+  if (pr.mergeable === 'CONFLICTING') return { ...base, score: SCORE.pr_failing, reason: 'merge conflict', command: `gh pr view ${pr.number}` };
   return { ...base, score: SCORE.pr_ready, reason: 'checks passed and mergeable', command: `xm pr land ${pr.number} --dry-run` };
 }
 

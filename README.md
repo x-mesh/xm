@@ -796,7 +796,7 @@ xm next --limit 10      # more items
 xm next --json          # candidates, sources, and a batch command as JSON
 ```
 
-The order is your open PRs in the current repository, then active inbox items, then open later items of every x-build project. A PR with passed checks comes first. A later item with impact `unknown` or `low` comes before impact `none`. Within one level, the oldest item comes first. If two or more picks are not PRs, the command also prints a `/xm:batch` line for them. `xm:batch` decides whether they are independent. If `gh` fails, the command reports it and lists the other sources.
+The order is your open PRs in the current repository, then active inbox items, then open later items of every x-build project. A PR with passed checks comes first. A PR whose mergeable state GitHub has not computed yet still counts as ready, because `xm pr land` checks it again. A later item with impact `unknown` or `low` comes before impact `none`. Within one level, the oldest item comes first. If two or more picks are not PRs, the command also prints a `/xm:batch` line for them. `xm:batch` decides whether they are independent. If `gh` fails, the command reports it and lists the other sources.
 
 ---
 
