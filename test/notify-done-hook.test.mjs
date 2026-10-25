@@ -70,12 +70,30 @@ describe('notify-done hook', () => {
     expect(sent()).toEqual([['codex done in 8m 20s: repo', 'done']]);
   });
 
-  test('a turn that another Stop hook continued notifies again at its real end', () => {
-    const file = startTurn('claude', { session_id: 's-5' }, 500);
+  test('each prompt notifies at most once, even when a Stop hook continues the turn', () => {
+    startTurn('claude', { session_id: 's-5' }, 500);
     hook('claude', { hook_event_name: 'Stop', session_id: 's-5', stop_hook_active: false, cwd: '/w/p', last_assistant_message: 'first stop' });
-    writeFileSync(file, JSON.stringify({ started_at: Date.now() - 620 * 1000 }));
-    hook('claude', { hook_event_name: 'Stop', session_id: 's-5', stop_hook_active: true, cwd: '/w/p', last_assistant_message: 'real end' });
-    expect(sent()).toEqual([['claude done in 8m 20s: p', 'first stop'], ['claude done in 10m 20s: p', 'real end']]);
+    hook('claude', { hook_event_name: 'Stop', session_id: 's-5', stop_hook_active: true, cwd: '/w/p', last_assistant_message: 'continued' });
+    hook('claude', { hook_event_name: 'Stop', session_id: 's-5', stop_hook_active: true, cwd: '/w/p', last_assistant_message: 'continued again' });
+    expect(sent()).toEqual([['claude done in 8m 20s: p', 'first stop']]);
+  });
+
+  test('a short first Stop lets a continuation that runs past the threshold notify', () => {
+    const file = startTurn('claude', { session_id: 's-11' }, 30);
+    hook('claude', { hook_event_name: 'Stop', session_id: 's-11', stop_hook_active: false, cwd: '/w/p', last_assistant_message: 'short' });
+    const state = JSON.parse(readFileSync(file, 'utf8'));
+    writeFileSync(file, JSON.stringify({ ...state, started_at: Date.now() - 200 * 1000 }));
+    hook('claude', { hook_event_name: 'Stop', session_id: 's-11', stop_hook_active: true, cwd: '/w/p', last_assistant_message: 'continued' });
+    expect(sent()).toEqual([['claude done in 3m 20s: p', 'continued']]);
+  });
+
+  test('a Stop after an ended turn with no new prompt does not reuse the old start', () => {
+    const file = startTurn('claude', { session_id: 's-12' }, 30);
+    hook('claude', { hook_event_name: 'Stop', session_id: 's-12', cwd: '/w/p', last_assistant_message: 'quick' });
+    const state = JSON.parse(readFileSync(file, 'utf8'));
+    writeFileSync(file, JSON.stringify({ ...state, started_at: Date.now() - 2700 * 1000 }));
+    hook('claude', { hook_event_name: 'Stop', session_id: 's-12', cwd: '/w/p', last_assistant_message: 'resumed without a prompt' });
+    expect(sent()).toEqual([]);
   });
 
   test('a Stop with no recorded start sends nothing', () => {

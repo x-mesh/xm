@@ -5,10 +5,11 @@
 //
 // UserPromptSubmit records when the turn started. Stop sends a desktop
 // notification only when the turn ran at least XM_NOTIFY_MIN_SECONDS (default
-// 120), so short answers stay quiet. Stop hooks run in parallel, so this hook
-// cannot know whether another Stop hook will make the agent continue. The start
-// therefore stays until the next prompt: a continued turn notifies again at its
-// real end, with the full duration. Claude's Notification event (a permission
+// 120), so short answers stay quiet. Each prompt notifies at most once. Stop
+// hooks run in parallel, so this hook cannot know whether another Stop hook will
+// make the agent continue; if one does, the notification can come before the
+// continued turn ends. A Stop that follows an ended turn without a new prompt is
+// ignored, so it never reports a duration measured from an older prompt. Claude's Notification event (a permission
 // prompt or an idle wait) is forwarded at once, because the turn is blocked on
 // the user. term-mesh already shows Claude's own notification, so inside
 // term-mesh that event is skipped instead of shown twice.
@@ -120,11 +121,15 @@ function main() {
     return 0;
   }
   if (event !== 'Stop' || !existsSync(file)) return 0;
-  let startedAt = null;
-  try { startedAt = JSON.parse(readFileSync(file, 'utf8')).started_at; } catch {}
-  if (!Number.isFinite(startedAt)) return 0;
-  const seconds = (Date.now() - startedAt) / 1000;
-  if (seconds < minSeconds()) return 0;
+  let state = null;
+  try { state = JSON.parse(readFileSync(file, 'utf8')); } catch {}
+  if (!Number.isFinite(state?.started_at) || state.notified) return 0;
+  // Only a continuation (stop_hook_active) may reuse the start after this prompt's first Stop.
+  if (state.stopped && input.stop_hook_active !== true) return 0;
+  const seconds = (Date.now() - state.started_at) / 1000;
+  const notify = seconds >= minSeconds();
+  writeFileSync(file, JSON.stringify({ ...state, stopped: true, notified: notify }), { mode: 0o600 });
+  if (!notify) return 0;
   return send(`${agent} done in ${formatDuration(seconds)}: ${project(input)}`, firstLine(input.last_assistant_message) || 'turn finished');
 }
 
