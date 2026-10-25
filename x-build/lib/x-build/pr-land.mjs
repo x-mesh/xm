@@ -2,8 +2,8 @@ import { existsSync, readdirSync, readFileSync } from 'node:fs';
 import { spawnSync } from 'node:child_process';
 import { join } from 'node:path';
 
-const USAGE = 'Usage: xm pr land [<number|url|branch>] [--wait] [--timeout <sec>] [--require-review] [--cleanup] [--dry-run|--yes] [--json]';
-const VIEW_FIELDS = 'number,url,state,isDraft,baseRefName,headRefName,headRefOid,mergeable,mergeStateStatus,mergeCommit,mergedAt';
+const USAGE = 'Usage: xm pr land [<number|url|branch>] [--wait] [--timeout <sec>] [--allow-no-checks] [--require-review] [--cleanup] [--dry-run|--yes] [--json]';
+const VIEW_FIELDS = 'number,url,state,isDraft,baseRefName,headRefName,headRefOid,isCrossRepository,mergeable,mergeStateStatus,mergeCommit,mergedAt';
 const MERGEABLE_STATES = ['CLEAN', 'HAS_HOOKS', 'UNSTABLE'];
 const DEFAULT_TIMEOUT_SEC = 1800;
 const DEFAULT_POLL_MS = 15000;
@@ -67,8 +67,8 @@ function viewPr(gh, target, cwd) {
 
 // gh exits non-zero while checks are pending or failing, and errors with
 // "no checks reported" when a branch has none, so the exit code alone says nothing.
-function readChecks(gh, number, cwd) {
-  const result = run(gh, ['pr', 'checks', String(number), '--json', 'name,state,bucket'], cwd);
+function readChecks(gh, target, cwd) {
+  const result = run(gh, ['pr', 'checks', target, '--json', 'name,state,bucket'], cwd);
   const rows = parseJSON(result.stdout);
   if (Array.isArray(rows)) return { ok: true, rows };
   if (/no checks reported/i.test(result.stderr)) return { ok: true, rows: [] };
@@ -78,13 +78,12 @@ function readChecks(gh, number, cwd) {
 function summarizeChecks(rows) {
   const failed = rows.filter((row) => row.bucket === 'fail' || row.bucket === 'cancel').map((row) => row.name);
   const pending = rows.filter((row) => row.bucket === 'pending').map((row) => row.name);
-  const status = failed.length ? 'failed' : pending.length ? 'pending' : 'passed';
+  // No rows is its own state: right after a push, CI may not have registered its checks yet.
+  const status = !rows.length ? 'none' : failed.length ? 'failed' : pending.length ? 'pending' : 'passed';
   return { status, total: rows.length, failed, pending };
 }
 
 function mergeBlocker(pr) {
-  if (pr.state !== 'OPEN') return `PR is ${pr.state}`;
-  if (pr.isDraft) return 'PR is a draft';
   if (pr.mergeable !== 'MERGEABLE') return `PR mergeable state is ${pr.mergeable}`;
   if (!MERGEABLE_STATES.includes(pr.mergeStateStatus)) return `PR merge state is ${pr.mergeStateStatus}`;
   return null;
@@ -117,7 +116,8 @@ function listWorktrees(cwd) {
   return result.stdout.split('\n\n').filter(Boolean).map((block) => {
     const path = /^worktree (.+)$/m.exec(block)?.[1];
     const branch = /^branch refs\/heads\/(.+)$/m.exec(block)?.[1] || null;
-    return { path, branch };
+    const head = /^HEAD ([0-9a-f]+)$/m.exec(block)?.[1] || null;
+    return { path, branch, head };
   });
 }
 
@@ -143,7 +143,10 @@ function afterMerge(gk, pr, { cleanup, cwd }) {
   let removal = { status: 'skipped', reason: 'pass --cleanup to remove the head worktree' };
   if (cleanup) {
     const headTree = worktrees.find((tree) => tree.branch === pr.headRefName);
-    if (!headTree) removal = { status: 'skipped', reason: `${pr.headRefName} has no worktree` };
+    // A branch name alone does not identify the PR: a fork PR or a later branch can reuse it.
+    if (pr.isCrossRepository) removal = { status: 'skipped', reason: 'the PR comes from another repository' };
+    else if (!headTree) removal = { status: 'skipped', reason: `${pr.headRefName} has no worktree` };
+    else if (headTree.head !== pr.headRefOid) removal = { status: 'skipped', reason: `${headTree.path} is not at the merged head ${pr.headRefOid}` };
     else if (headTree.path === worktrees[0]?.path) removal = { status: 'skipped', reason: 'the head branch is checked out in the main worktree' };
     else {
       const removeFrom = baseTree?.path || worktrees[0].path;
@@ -178,6 +181,7 @@ function cmdLand(args) {
   const wait = args.includes('--wait');
   const requireReview = args.includes('--require-review');
   const cleanup = args.includes('--cleanup');
+  const allowNoChecks = args.includes('--allow-no-checks');
   if (dryRun && yes) return fail(action, '--dry-run and --yes cannot be combined', { json });
   const positional = positionalArgs(args, ['--timeout']);
   if (positional.length > 1) return fail(action, USAGE, { json });
@@ -196,35 +200,48 @@ function cmdLand(args) {
   let viewed = viewPr(gh, positional[0], cwd);
   if (!viewed.value) return fail(action, `cannot read the PR: ${viewed.stderr.trim() || 'gh pr view failed'}`, { json, code: 1 });
   let pr = viewed.value;
+  // Every later gh call names the PR by URL: a bare number resolves against the
+  // repository in cwd, which is not the PR's repository when a URL was given.
+  const target = pr.url;
   const prSummary = () => ({ number: pr.number, url: pr.url, state: pr.state, baseRefName: pr.baseRefName, headRefName: pr.headRefName, headRefOid: pr.headRefOid });
-
-  if (pr.state === 'MERGED') {
+  const finish = (output) => {
+    if (['sync', 'cleanup'].some((step) => output.after?.[step]?.status === 'failed')) process.exitCode = 1;
+    return emit(output, json, describe(output));
+  };
+  const landed = () => {
     const output = { action, status: 'merged', reused: true, pr: prSummary(), merge_commit: pr.mergeCommit?.oid || null };
     if (yes) output.after = afterMerge(gk, pr, { cleanup, cwd });
-    return emit(output, json, describe(output));
-  }
+    return finish(output);
+  };
+
+  if (pr.state === 'MERGED') return landed();
 
   const deadline = Date.now() + timeoutSec * 1000;
   let checks;
   for (;;) {
-    const read = readChecks(gh, pr.number, cwd);
+    const read = readChecks(gh, target, cwd);
     if (!read.ok) return fail(action, `cannot read PR checks: ${read.error}`, { json, code: 1 });
     checks = summarizeChecks(read.rows);
-    const mergeUnknown = pr.state === 'OPEN' && pr.mergeable === 'UNKNOWN';
-    if (!wait || checks.status === 'failed' || (checks.status === 'passed' && !mergeUnknown) || Date.now() >= deadline) break;
+    const mergeUnknown = pr.mergeable === 'UNKNOWN';
+    const settled = checks.status === 'failed' || ((checks.status === 'passed' || (checks.status === 'none' && allowNoChecks)) && !mergeUnknown);
+    if (!wait || settled || pr.state !== 'OPEN' || pr.isDraft || Date.now() >= deadline) break;
     sleep(pollMs);
-    viewed = viewPr(gh, String(pr.number), cwd);
+    viewed = viewPr(gh, target, cwd);
     if (!viewed.value) return fail(action, `cannot read the PR: ${viewed.stderr.trim() || 'gh pr view failed'}`, { json, code: 1 });
     pr = viewed.value;
   }
+  if (pr.state === 'MERGED') return landed();
 
   const found = findReview(repoRoot(cwd), pr.headRefOid);
   const review = found ? { status: 'approved', ...found } : { status: requireReview ? 'missing' : 'not_required' };
-  const blocker = checks.status === 'failed' ? `checks failed: ${checks.failed.join(', ')}`
+  const blocker = pr.state !== 'OPEN' ? `PR is ${pr.state}`
+    : pr.isDraft ? 'PR is a draft'
+    : checks.status === 'failed' ? `checks failed: ${checks.failed.join(', ')}`
     : checks.status === 'pending' ? `checks still pending: ${checks.pending.join(', ')}`
+    : checks.status === 'none' && !allowNoChecks ? 'no checks reported; pass --allow-no-checks to merge a PR without checks'
     : review.status === 'missing' ? `no finished LGTM review for head ${pr.headRefOid}`
     : mergeBlocker(pr);
-  const mergeArgv = ['gh', 'pr', 'merge', String(pr.number), '--merge', '--match-head-commit', pr.headRefOid];
+  const mergeArgv = ['gh', 'pr', 'merge', target, '--merge', '--match-head-commit', pr.headRefOid];
 
   if (blocker) {
     const output = { action, status: 'blocked', pr: prSummary(), checks, review, blocker };
@@ -238,7 +255,7 @@ function cmdLand(args) {
   }
 
   const merged = run(gh, mergeArgv.slice(1), cwd);
-  viewed = viewPr(gh, String(pr.number), cwd);
+  viewed = viewPr(gh, target, cwd);
   if (!viewed.value) {
     const output = { action, status: 'merge_unknown', pr: prSummary(), checks, review, blocker: `merge result cannot be confirmed: ${viewed.stderr.trim()}` };
     process.exitCode = 1;
@@ -252,8 +269,7 @@ function cmdLand(args) {
     process.exitCode = 2;
     return emit(output, json, describe(output));
   }
-  const output = { action, status: 'merged', reused: false, pr: prSummary(), checks, review, merge_commit: pr.mergeCommit?.oid || null, after: afterMerge(gk, pr, { cleanup, cwd }) };
-  return emit(output, json, describe(output));
+  return finish({ action, status: 'merged', reused: false, pr: prSummary(), checks, review, merge_commit: pr.mergeCommit?.oid || null, after: afterMerge(gk, pr, { cleanup, cwd }) });
 }
 
 export async function cmdPr(args = []) {

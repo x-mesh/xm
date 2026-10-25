@@ -27,7 +27,7 @@ function setup(state = {}) {
   git(cwd, ['commit', '-m', 'init']);
   const files = { log: join(cwd, 'calls.jsonl'), state: join(cwd, 'gh-state.json'), gh: join(cwd, 'fake-gh.mjs'), gk: join(cwd, 'fake-gk.mjs') };
   writeFileSync(files.state, JSON.stringify({
-    pr: { number: 7, url: 'https://example.test/pr/7', state: 'OPEN', isDraft: false, baseRefName: 'develop', headRefName: 'feat/x', headRefOid: HEAD, mergeable: 'MERGEABLE', mergeStateStatus: 'CLEAN', mergeCommit: null, mergedAt: null },
+    pr: { number: 7, url: 'https://example.test/pr/7', state: 'OPEN', isDraft: false, baseRefName: 'develop', headRefName: 'feat/x', headRefOid: HEAD, isCrossRepository: false, mergeable: 'MERGEABLE', mergeStateStatus: 'CLEAN', mergeCommit: null, mergedAt: null },
     checks: [[{ name: 'test', state: 'SUCCESS', bucket: 'pass' }]],
     ...state,
   }));
@@ -38,6 +38,7 @@ appendFileSync(process.env.LAND_LOG, JSON.stringify({ tool: 'gh', argv, cwd: pro
 const state = JSON.parse(readFileSync(process.env.LAND_STATE, 'utf8'));
 const save = () => writeFileSync(process.env.LAND_STATE, JSON.stringify(state));
 if (argv[0] === 'pr' && argv[1] === 'view') {
+  if (state.views?.length) { Object.assign(state.pr, state.views.shift()); save(); }
   const fields = argv[argv.indexOf('--json') + 1].split(',');
   process.stdout.write(JSON.stringify(Object.fromEntries(fields.map((f) => [f, state.pr[f]]))) + '\\n');
   process.exit(0);
@@ -61,7 +62,8 @@ process.exit(2);
   writeFileSync(files.gk, `
 import { appendFileSync } from 'node:fs';
 appendFileSync(process.env.LAND_LOG, JSON.stringify({ tool: 'gk', argv: process.argv.slice(2), cwd: process.cwd(), agent: process.env.GK_AGENT }) + '\\n');
-process.stdout.write(JSON.stringify({ schema: 1, state: 'ok', ok: true, result: {}, error: null }) + '\\n');
+const failing = (process.env.LAND_GK_FAIL || '').split(',').includes(process.argv[2]);
+process.stdout.write(JSON.stringify(failing ? { schema: 1, state: 'blocked', ok: false, result: null, error: { message: process.argv[2] + ' refused' } } : { schema: 1, state: 'ok', ok: true, result: {}, error: null }) + '\\n');
 `);
   const env = { LAND_LOG: files.log, LAND_STATE: files.state, X_BUILD_GH_ARGV: JSON.stringify(['node', files.gh]), X_BUILD_GK_ARGV: JSON.stringify(['node', files.gk]), X_BUILD_PR_LAND_POLL_MS: '5' };
   return { cwd, env, files };
@@ -84,6 +86,12 @@ function calls(fixture) {
 
 const merges = (fixture) => calls(fixture).filter((call) => call.tool === 'gh' && call.argv[1] === 'merge');
 
+function setHead(fixture, oid) {
+  const state = JSON.parse(readFileSync(fixture.files.state, 'utf8'));
+  state.pr.headRefOid = oid;
+  writeFileSync(fixture.files.state, JSON.stringify(state));
+}
+
 function writeReview(fixture, id, { commit = HEAD, outcome = 'success', verdict = 'LGTM' } = {}) {
   const dir = join(fixture.cwd, '.xm', 'review', 'runs', id);
   mkdirSync(dir, { recursive: true });
@@ -98,7 +106,7 @@ describe('xm pr land', () => {
     const result = land(fixture, ['7']);
     expect(result.code).toBe(2);
     expect(result.output.status).toBe('awaiting_confirmation');
-    expect(result.output.merge_argv).toEqual(['gh', 'pr', 'merge', '7', '--merge', '--match-head-commit', HEAD]);
+    expect(result.output.merge_argv).toEqual(['gh', 'pr', 'merge', 'https://example.test/pr/7', '--merge', '--match-head-commit', HEAD]);
     expect(merges(fixture)).toEqual([]);
   });
 
@@ -122,7 +130,7 @@ describe('xm pr land', () => {
     expect(result.code).toBe(0);
     expect(result.output.status).toBe('merged');
     expect(result.output.merge_commit).toBe('b'.repeat(40));
-    expect(merges(fixture)[0].argv).toEqual(['pr', 'merge', '7', '--merge', '--match-head-commit', HEAD]);
+    expect(merges(fixture)[0].argv).toEqual(['pr', 'merge', 'https://example.test/pr/7', '--merge', '--match-head-commit', HEAD]);
     const pull = calls(fixture).find((call) => call.tool === 'gk' && call.argv[0] === 'pull');
     expect(pull.argv).toEqual(['pull', '--strategy', 'ff-only', '--no-autostash']);
     expect(pull.cwd).toBe(fixture.cwd);
@@ -166,11 +174,57 @@ describe('xm pr land', () => {
     expect(merges(fixture)).toEqual([]);
   });
 
-  test('a branch with no checks counts as passed', () => {
+  test('a PR with no checks is blocked unless --allow-no-checks is given', () => {
     const fixture = setup({ checks: [null] });
-    const result = land(fixture, ['7', '--dry-run']);
-    expect(result.output.status).toBe('dry-run');
-    expect(result.output.checks).toEqual({ status: 'passed', total: 0, failed: [], pending: [] });
+    const blocked = land(fixture, ['7', '--yes']);
+    expect(blocked.output.status).toBe('blocked');
+    expect(blocked.output.blocker).toBe('no checks reported; pass --allow-no-checks to merge a PR without checks');
+    expect(merges(fixture)).toEqual([]);
+
+    const allowed = land(fixture, ['7', '--dry-run', '--allow-no-checks']);
+    expect(allowed.output.status).toBe('dry-run');
+    expect(allowed.output.checks).toEqual({ status: 'none', total: 0, failed: [], pending: [] });
+  });
+
+  test('--wait keeps polling while CI has not registered any check', () => {
+    const fixture = setup({ checks: [null, null, [{ name: 'test', state: 'SUCCESS', bucket: 'pass' }]] });
+    const result = land(fixture, ['7', '--yes', '--wait']);
+    expect(result.output.status).toBe('merged');
+    expect(calls(fixture).filter((call) => call.tool === 'gh' && call.argv[1] === 'checks').length).toBe(3);
+  });
+
+  test('every gh call after the first names the PR by its URL', () => {
+    const fixture = setup({ checks: [[{ name: 'test', state: 'IN_PROGRESS', bucket: 'pending' }], [{ name: 'test', state: 'SUCCESS', bucket: 'pass' }]] });
+    land(fixture, ['https://example.test/pr/7', '--yes', '--wait']);
+    const ghCalls = calls(fixture).filter((call) => call.tool === 'gh');
+    expect(ghCalls.length).toBeGreaterThan(3);
+    for (const call of ghCalls) expect(call.argv[2]).toBe('https://example.test/pr/7');
+  });
+
+  test('--wait stops when the PR becomes a draft or closes', () => {
+    const fixture = setup({ checks: [[{ name: 'test', state: 'IN_PROGRESS', bucket: 'pending' }]], views: [{}, { isDraft: true }] });
+    const result = land(fixture, ['7', '--yes', '--wait']);
+    expect(result.output.status).toBe('blocked');
+    expect(result.output.blocker).toBe('PR is a draft');
+    expect(calls(fixture).filter((call) => call.tool === 'gh' && call.argv[1] === 'checks').length).toBe(2);
+  });
+
+  test('a PR merged by someone else during --wait takes the already-merged path', () => {
+    const fixture = setup({ checks: [[{ name: 'test', state: 'IN_PROGRESS', bucket: 'pending' }]], views: [{}, { state: 'MERGED', mergeCommit: { oid: 'e'.repeat(40) } }] });
+    const result = land(fixture, ['7', '--yes', '--wait']);
+    expect(result.code).toBe(0);
+    expect(result.output).toMatchObject({ status: 'merged', reused: true, merge_commit: 'e'.repeat(40) });
+    expect(result.output.after.sync.status).toBe('pulled');
+    expect(merges(fixture)).toEqual([]);
+  });
+
+  test('a failed base sync after the merge exits non-zero', () => {
+    const fixture = setup();
+    fixture.env.LAND_GK_FAIL = 'pull';
+    const result = land(fixture, ['7', '--yes']);
+    expect(result.code).toBe(1);
+    expect(result.output.status).toBe('merged');
+    expect(result.output.after.sync).toMatchObject({ status: 'failed', error: 'pull refused' });
   });
 
   test('a draft or conflicting PR is blocked', () => {
@@ -235,11 +289,25 @@ describe('xm pr land', () => {
     const fixture = setup();
     const headTree = join(fixture.cwd, '..', `${fixture.cwd.split('/').pop()}-feat-x`);
     git(fixture.cwd, ['worktree', 'add', '-b', 'feat/x', headTree]);
+    setHead(fixture, git(headTree, ['rev-parse', 'HEAD']));
     const result = land(fixture, ['7', '--yes', '--cleanup']);
     expect(result.output.after.cleanup).toEqual({ status: 'removed', worktree: realpathSync(headTree) });
     const remove = calls(fixture).find((call) => call.tool === 'gk' && call.argv[0] === 'worktree');
     expect(remove.argv).toEqual(['worktree', 'remove', realpathSync(headTree)]);
     expect(remove.cwd).toBe(fixture.cwd);
+  });
+
+  test('--cleanup skips a same-named worktree that is not at the merged head, and fork PRs', () => {
+    const fixture = setup();
+    const headTree = join(fixture.cwd, '..', `${fixture.cwd.split('/').pop()}-feat-x`);
+    git(fixture.cwd, ['worktree', 'add', '-b', 'feat/x', headTree]);
+    const moved = land(fixture, ['7', '--yes', '--cleanup']);
+    expect(moved.output.after.cleanup).toEqual({ status: 'skipped', reason: `${realpathSync(headTree)} is not at the merged head ${HEAD}` });
+
+    const fork = setup({ pr: { ...JSON.parse(readFileSync(fixture.files.state, 'utf8')).pr, state: 'OPEN', mergeCommit: null, isCrossRepository: true, headRefOid: git(headTree, ['rev-parse', 'HEAD']) } });
+    const forked = land(fork, ['7', '--yes', '--cleanup']);
+    expect(forked.output.after.cleanup).toEqual({ status: 'skipped', reason: 'the PR comes from another repository' });
+    expect(calls(fixture).concat(calls(fork)).some((call) => call.tool === 'gk' && call.argv[0] === 'worktree')).toBe(false);
   });
 
   test('the base sync is skipped when no worktree has the base checked out', () => {

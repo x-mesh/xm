@@ -774,10 +774,10 @@ xm pr land --wait --require-review --yes    # PR of the current branch: wait for
 xm pr land 42 --yes --cleanup               # also remove the worktree of the head branch
 ```
 
-1. It reads the PR and its checks with `gh`. A failed or pending check blocks the merge. With `--wait`, it polls until the checks finish or `--timeout` (default 1800 seconds) ends.
+1. It reads the PR and its checks with `gh`. A failed or pending check blocks the merge. A PR with no checks is blocked unless you pass `--allow-no-checks`. With `--wait`, it polls until the checks finish, the PR closes or becomes a draft, or `--timeout` (default 1800 seconds) ends.
 2. With `--require-review`, it needs a finished `xm review` run with an `LGTM` verdict for the exact head commit. The command does not run the review.
 3. It runs `gh pr merge <n> --merge --match-head-commit <head>`. If the head moved after the checks, GitHub refuses the merge.
-4. It fast-forwards the worktree that has the base branch checked out with `git-kit pull --strategy ff-only --no-autostash`. With `--cleanup`, it removes the head branch worktree with `git-kit worktree remove`, which refuses a dirty worktree.
+4. It fast-forwards the worktree that has the base branch checked out with `git-kit pull --strategy ff-only --no-autostash`. With `--cleanup`, it removes the head branch worktree with `git-kit worktree remove`, which refuses a dirty worktree. It removes the worktree only if the PR comes from the same repository and the worktree is at the merged head. If the sync or the removal fails, the command exits with code 1.
 
 If the PR is already merged, the command skips the merge. With `--yes`, it then runs step 4. It does not delete the remote branch, fast-forward `main`, or cut a release.
 
