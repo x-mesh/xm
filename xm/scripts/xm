@@ -488,6 +488,11 @@ case "$CMD" in
     node "$LIB_PATH/x-build-cli.mjs" batch "$@"
     ;;
 
+  next)
+    LIB_PATH="$(plugin_lib build)"
+    node "$LIB_PATH/x-build-cli.mjs" next-work "$@"
+    ;;
+
   pr)
     LIB_PATH="$(plugin_lib build)"
     node "$LIB_PATH/x-build-cli.mjs" pr "$@"
@@ -1310,6 +1315,7 @@ Commands:
   review run [target]                Durable review lifecycle (freeze, chunk, dispatch, synthesize)
   review resume <run-id>             Resume failed review without repeating completed children
   build <subcmd>                      Phase-based project harness
+  next [--limit N]                    Pick the next work: your open PRs, inbox items, later items
   pr land [<pr>] [--wait] [--yes]     Check CI and review, merge the PR, then sync base
   mutate --diff <base>                Mutation testing on changed lines (cargo-mutants, StrykerJS, gomutants, Muter)
   cost predict <task-description>     Estimate cost from measured task history
