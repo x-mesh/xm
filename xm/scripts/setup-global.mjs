@@ -34,6 +34,12 @@ const CODEX_RELAY_HOOK_DEST = path.join(CODEX_DIR, 'xm', 'hooks', RELAY_HOOK_FIL
 // The Stop half runs `xm relay send`, which can take several seconds.
 const RELAY_HOOK_TIMEOUT = 30;
 const RELAY_HOOK_EVENTS = ['UserPromptSubmit', 'Stop'];
+const NOTIFY_HOOK_FILENAME = 'xm-notify-done.mjs';
+const NOTIFY_HOOK_DEST = path.join(HOOKS_DIR, NOTIFY_HOOK_FILENAME);
+const CODEX_NOTIFY_HOOK_DEST = path.join(CODEX_DIR, 'xm', 'hooks', NOTIFY_HOOK_FILENAME);
+const NOTIFY_HOOK_TIMEOUT = 15;
+// Codex has no Notification event, so it only gets the turn-done half.
+const NOTIFY_HOOK_EVENTS = { claude: ['UserPromptSubmit', 'Stop', 'Notification'], codex: ['UserPromptSubmit', 'Stop'] };
 const XM_CMD_DEST = path.join(COMMANDS_DIR, 'xm.md');
 const XM_PLAN_CMD_DEST = path.join(COMMANDS_DIR, 'xm-plan.md');
 const XM_PLAN_CMD_BACKUP = path.join(COMMANDS_DIR, 'xm-plan.md.pre-xm');
@@ -346,20 +352,28 @@ function withoutHookFile(entries, file) {
     .filter(Boolean);
 }
 
-/** Wire `node <dest> <agent>` into UserPromptSubmit and Stop of a hooks document, replacing earlier copies. */
-function withRelayHook(document, dest, agent) {
+/** Wire `node <dest> <agent>` into each of `events` in a hooks document, replacing earlier copies. */
+function withAgentHook(document, dest, agent, events, timeout) {
   const hooks = { ...(document.hooks || {}) };
-  for (const event of RELAY_HOOK_EVENTS) {
+  for (const event of events) {
     hooks[event] = [...withoutHookFile(hooks[event], dest),
-      { hooks: [{ type: 'command', command: `"${NODE_BIN}" "${dest}" ${agent}`, timeout: RELAY_HOOK_TIMEOUT }] }];
+      { hooks: [{ type: 'command', command: `"${NODE_BIN}" "${dest}" ${agent}`, timeout }] }];
   }
   return { ...document, hooks };
 }
 
+function withRelayHook(document, dest, agent) {
+  return withAgentHook(document, dest, agent, RELAY_HOOK_EVENTS, RELAY_HOOK_TIMEOUT);
+}
+
 function withoutRelayHook(document, dest) {
+  return withoutAgentHook(document, dest, RELAY_HOOK_EVENTS);
+}
+
+function withoutAgentHook(document, dest, events) {
   if (!document.hooks) return document;
   const hooks = { ...document.hooks };
-  for (const event of RELAY_HOOK_EVENTS) {
+  for (const event of events) {
     if (!(event in hooks)) continue;
     hooks[event] = withoutHookFile(hooks[event], dest);
     if (hooks[event].length === 0) delete hooks[event];
@@ -431,6 +445,65 @@ function uninstallRelayHook() {
   return removed;
 }
 
+function notifyHookEnabled() {
+  if (fs.existsSync(NOTIFY_HOOK_DEST)) return true;
+  const settings = fs.existsSync(SETTINGS) ? readSettings() : {};
+  return JSON.stringify(settings.hooks || {}).includes(NOTIFY_HOOK_FILENAME);
+}
+
+// Opt-in like the routing blocks: `--notify` enables it, and later installs refresh it while it exists.
+function installNotifyHook(optIn) {
+  if (!optIn && !notifyHookEnabled()) {
+    log(`notify hook: not enabled (opt in: xm ${VERB} --notify)`);
+    return;
+  }
+  const src = resolveHookSource('notify-done.mjs');
+  if (!src) {
+    warn('notify hook skipped: notify-done.mjs not found. Update the xm plugin, then re-run xm init --notify.');
+    return;
+  }
+  fs.copyFileSync(src, NOTIFY_HOOK_DEST);
+  fs.chmodSync(NOTIFY_HOOK_DEST, 0o755);
+  const backup = writeSettings(withAgentHook(readSettings(), NOTIFY_HOOK_DEST, 'claude', NOTIFY_HOOK_EVENTS.claude, NOTIFY_HOOK_TIMEOUT));
+  log(`notify hook: ${NOTIFY_HOOK_DEST} (settings backup: ${path.basename(backup)})`);
+  if (!fs.existsSync(CODEX_DIR)) {
+    log('notify hook: ~/.codex not found, Codex skipped');
+    return;
+  }
+  fs.mkdirSync(path.dirname(CODEX_NOTIFY_HOOK_DEST), { recursive: true });
+  fs.copyFileSync(src, CODEX_NOTIFY_HOOK_DEST);
+  fs.chmodSync(CODEX_NOTIFY_HOOK_DEST, 0o755);
+  const codexBackup = writeCodexHooks(withAgentHook(readCodexHooks(), CODEX_NOTIFY_HOOK_DEST, 'codex', NOTIFY_HOOK_EVENTS.codex, NOTIFY_HOOK_TIMEOUT));
+  log(`notify hook: ${CODEX_NOTIFY_HOOK_DEST} (hooks.json backup: ${path.basename(codexBackup)})`);
+}
+
+function uninstallNotifyHook() {
+  let removed = false;
+  for (const dest of [NOTIFY_HOOK_DEST, CODEX_NOTIFY_HOOK_DEST]) {
+    if (!fs.existsSync(dest)) continue;
+    fs.unlinkSync(dest);
+    log(`removed ${dest}`);
+    removed = true;
+  }
+  if (fs.existsSync(SETTINGS)) {
+    const settings = readSettings();
+    const cleaned = withoutAgentHook(settings, NOTIFY_HOOK_DEST, NOTIFY_HOOK_EVENTS.claude);
+    if (JSON.stringify(cleaned) !== JSON.stringify(settings)) {
+      log(`cleaned notify hook from ${SETTINGS} (backup: ${path.basename(writeSettings(cleaned))})`);
+      removed = true;
+    }
+  }
+  if (fs.existsSync(CODEX_HOOKS)) {
+    const document = readCodexHooks();
+    const cleaned = withoutAgentHook(document, CODEX_NOTIFY_HOOK_DEST, NOTIFY_HOOK_EVENTS.codex);
+    if (JSON.stringify(cleaned) !== JSON.stringify(document)) {
+      log(`cleaned notify hook from ${CODEX_HOOKS} (backup: ${path.basename(writeCodexHooks(cleaned))})`);
+      removed = true;
+    }
+  }
+  return removed;
+}
+
 function install(opts) {
   fs.mkdirSync(HOOKS_DIR, { recursive: true });
   fs.mkdirSync(COMMANDS_DIR, { recursive: true });
@@ -479,6 +552,7 @@ function install(opts) {
     log(`updated ${SETTINGS} (backup: ${path.basename(backup)})`);
     log('hook installed. Skill sessions (closed at Stop) + Agent spans → <project>/.xm/traces/');
     installRelayHook();
+    installNotifyHook(opts.routingFlags.has('--notify'));
   } else {
     log('hooks skipped (--no-hooks). CLI dispatcher install is handled by install.sh.');
   }
@@ -568,6 +642,7 @@ function resolveBashDispatcher() {
 
 function uninstall() {
   let removed = uninstallRelayHook();
+  if (uninstallNotifyHook()) removed = true;
   if (fs.existsSync(HOOK_DEST)) {
     fs.unlinkSync(HOOK_DEST);
     log(`removed ${HOOK_DEST}`);
@@ -635,6 +710,7 @@ function status() {
   log(`xm-plan alias    : ${xmPlanCmdExists ? XM_PLAN_CMD_DEST : '(missing)'}`);
   // Opt-in, so it is reported but never counted toward `overall`.
   for (const target of ROUTING_TARGETS) log(`${target.label} routing: ${routingStatus(target)}`);
+  log(`notify hook      : ${notifyHookEnabled() ? NOTIFY_HOOK_DEST : `(not enabled — opt in: xm ${VERB} --notify)`}`);
   // Exactly one executable registration per event is "registered"; more than one
   // runs the hook twice per call, none is missing.
   let hooksOk = true;
@@ -659,7 +735,7 @@ function status() {
 
 // `xm setup --claude-md` reaches here without a subcommand. Only known install
 // flags imply install: `xm init --dry-run` must still fail, not install.
-const INSTALL_FLAGS = new Set(['--no-hooks', ...ROUTING_TARGETS.map((t) => t.flag)]);
+const INSTALL_FLAGS = new Set(['--no-hooks', '--notify', ...ROUTING_TARGETS.map((t) => t.flag)]);
 const args = process.argv.slice(2);
 const flagOnly = INSTALL_FLAGS.has(args[0]);
 const cmd = flagOnly ? 'install' : (args[0] || 'install');
@@ -685,6 +761,8 @@ switch (cmd) {
       + `  xm ${VERB} --claude-md     # also add the xm routing block to ~/.claude/CLAUDE.md\n`
       + `                           #   (later installs and xm update refresh it while it exists)\n`
       + `  xm ${VERB} --codex-md      # also add the xm routing block to ~/.codex/AGENTS.md\n`
+      + `  xm ${VERB} --notify        # also notify when a Claude or Codex turn runs 120s or longer,\n`
+      + `                           #   and when Claude waits for you (XM_NOTIFY_MIN_SECONDS changes 120)\n`
       + `  xm ${VERB} status          # check install state\n`
       + `  xm ${VERB} uninstall       # remove hook + settings entries + routing block\n\n`
       + `To start a PROJECT (not a machine install):\n`
