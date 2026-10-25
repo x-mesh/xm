@@ -1,11 +1,12 @@
 import { afterEach, beforeEach, describe, expect, test } from 'bun:test';
 import { spawnSync } from 'node:child_process';
-import { existsSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
+import { existsSync, mkdtempSync, readFileSync, rmSync, utimesSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 
 const HOOK = join(dirname(fileURLToPath(import.meta.url)), '..', 'xm', 'hooks', 'notify-done.mjs');
+const { notifier } = await import(HOOK);
 const { TERMMESH_WORKSPACE_ID: _workspace, XM_NOTIFY_MIN_SECONDS: _min, XM_NOTIFY_ARGV: _argv, ...BASE_ENV } = process.env;
 
 let dir;
@@ -32,7 +33,7 @@ const sent = () => (existsSync(log) ? readFileSync(log, 'utf8').trim().split('\n
 
 function startTurn(agent, key, secondsAgo) {
   expect(hook(agent, { hook_event_name: 'UserPromptSubmit', ...key, prompt: 'go' }).status).toBe(0);
-  const file = join(dir, 'state', `${key.turn_id || key.session_id}.json`);
+  const file = join(dir, 'state', `${key.session_id}.json`);
   writeFileSync(file, JSON.stringify({ started_at: Date.now() - secondsAgo * 1000 }));
   return file;
 }
@@ -43,14 +44,13 @@ describe('notify-done hook', () => {
     const result = hook('claude', { hook_event_name: 'Stop', session_id: 's-1', cwd: '/work/x-kit', last_assistant_message: '\n  Released 2.44.0.\nMore detail' });
     expect(result.status).toBe(0);
     expect(sent()).toEqual([['claude done in 3m 20s: x-kit', 'Released 2.44.0.']]);
-    expect(existsSync(file)).toBe(false);
+    expect(existsSync(file)).toBe(true);
   });
 
-  test('a short turn stays quiet and still clears its state', () => {
-    const file = startTurn('claude', { session_id: 's-2' }, 30);
+  test('a short turn stays quiet', () => {
+    startTurn('claude', { session_id: 's-2' }, 30);
     expect(hook('claude', { hook_event_name: 'Stop', session_id: 's-2', cwd: '/w/p', last_assistant_message: 'ok' }).status).toBe(0);
     expect(sent()).toEqual([]);
-    expect(existsSync(file)).toBe(false);
   });
 
   test('XM_NOTIFY_MIN_SECONDS changes the threshold and rejects a bad value visibly', () => {
@@ -64,17 +64,37 @@ describe('notify-done hook', () => {
     expect(bad.stderr).toContain('XM_NOTIFY_MIN_SECONDS must be a non-negative number of seconds');
   });
 
-  test('Codex pairs the events by turn_id', () => {
+  test('Codex pairs the events by its session id', () => {
     startTurn('codex', { session_id: 'thread', turn_id: 'turn-9' }, 500);
     hook('codex', { hook_event_name: 'Stop', session_id: 'thread', turn_id: 'turn-9', cwd: '/w/repo', last_assistant_message: 'done' });
     expect(sent()).toEqual([['codex done in 8m 20s: repo', 'done']]);
   });
 
-  test('a Stop that another hook continued, or with no recorded start, sends nothing', () => {
-    startTurn('claude', { session_id: 's-5' }, 500);
-    hook('claude', { hook_event_name: 'Stop', session_id: 's-5', stop_hook_active: true, cwd: '/w/p' });
+  test('a turn that another Stop hook continued notifies again at its real end', () => {
+    const file = startTurn('claude', { session_id: 's-5' }, 500);
+    hook('claude', { hook_event_name: 'Stop', session_id: 's-5', stop_hook_active: false, cwd: '/w/p', last_assistant_message: 'first stop' });
+    writeFileSync(file, JSON.stringify({ started_at: Date.now() - 620 * 1000 }));
+    hook('claude', { hook_event_name: 'Stop', session_id: 's-5', stop_hook_active: true, cwd: '/w/p', last_assistant_message: 'real end' });
+    expect(sent()).toEqual([['claude done in 8m 20s: p', 'first stop'], ['claude done in 10m 20s: p', 'real end']]);
+  });
+
+  test('a Stop with no recorded start sends nothing', () => {
     hook('claude', { hook_event_name: 'Stop', session_id: 'never-started', cwd: '/w/p' });
     expect(sent()).toEqual([]);
+  });
+
+  test('a new prompt removes starts older than seven days', () => {
+    const old = startTurn('claude', { session_id: 'old' }, 0);
+    const past = (Date.now() - 8 * 24 * 60 * 60 * 1000) / 1000;
+    utimesSync(old, past, past);
+    startTurn('claude', { session_id: 'new' }, 0);
+    expect(existsSync(old)).toBe(false);
+    expect(existsSync(join(dir, 'state', 'new.json'))).toBe(true);
+  });
+
+  test('notify-send gets "--" before the title and a body that starts with "-"', () => {
+    expect(notifier('claude needs you: p', '- Fixed the parser', 'linux', {})).toEqual(['notify-send', '--', 'claude needs you: p', '- Fixed the parser']);
+    expect(notifier('t', 'b', 'darwin', {})[0]).toBe('osascript');
   });
 
   test('a Claude Notification is forwarded at once', () => {

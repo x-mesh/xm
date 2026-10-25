@@ -146,7 +146,7 @@ xm setup --notify       # 오래 걸린 Claude·Codex 작업이 끝나면 알림
 
 `--codex-md`는 같은 방식의 블록을 `~/.codex/AGENTS.md`에 추가합니다. 이 블록은 스킬을 Codex 표기인 `$xm:<스킬>`로 부릅니다. 추가, 갱신, 백업 규칙은 `--claude-md`와 같고, 두 플래그를 함께 줄 수 있습니다.
 
-`--notify`는 `xm-notify-done.mjs`를 Claude 훅으로 설치하고, `~/.codex`가 있으면 Codex 훅으로도 설치합니다. 작업이 120초 이상 걸리면 프로젝트 이름, 걸린 시간, 마지막 응답의 첫 줄로 알림을 보냅니다. 기준 시간은 `XM_NOTIFY_MIN_SECONDS`로 바꿀 수 있습니다. Claude가 권한이나 입력을 기다릴 때는 바로 알립니다. Codex에는 이 이벤트가 없습니다. term-mesh 안에서는 term-mesh가 Claude의 알림을 이미 보여 주므로 이 경우를 건너뜁니다. term-mesh 안에서는 `term-mesh notify`를 쓰고, 그 밖에서는 macOS의 `osascript`나 Linux의 `notify-send`를 씁니다. 한 번 설치하면 `xm setup`과 `xm update`가 훅을 갱신하고, `xm setup uninstall`이 제거합니다.
+`--notify`는 `xm-notify-done.mjs`를 Claude 훅으로 설치하고, `~/.codex`가 있으면 Codex 훅으로도 설치합니다. 작업이 120초 이상 걸리면 프로젝트 이름, 걸린 시간, 마지막 응답의 첫 줄로 알림을 보냅니다. 기준 시간은 `XM_NOTIFY_MIN_SECONDS`로 바꿀 수 있습니다. 다른 Stop 훅 때문에 작업이 이어지면, 작업이 실제로 끝날 때 알림을 한 번 더 보냅니다. Claude가 권한이나 입력을 기다릴 때는 바로 알립니다. Codex에는 이 이벤트가 없습니다. term-mesh 안에서는 term-mesh가 Claude의 알림을 이미 보여 주므로 이 경우를 건너뜁니다. term-mesh 안에서는 `term-mesh notify`를 쓰고, 그 밖에서는 macOS의 `osascript`나 Linux의 `notify-send`를 씁니다. 한 번 설치하면 `xm setup`과 `xm update`가 훅을 갱신하고, `xm setup uninstall`이 제거합니다.
 
 각 블록의 시작 마커에는 템플릿 개정 번호(예: `v1`)가 들어 있고, `xm setup status`가 이 번호를 보여 줍니다. 설치된 xm보다 새로운 개정의 블록은 `xm setup`이 바꾸지 않고 경고만 출력합니다. 개정 번호가 없는 이전 블록은 한 번 현재 개정으로 교체됩니다.
 
