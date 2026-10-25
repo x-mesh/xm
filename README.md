@@ -763,6 +763,26 @@ xm review close <run-id> --reason "old run is no longer needed"
 
 ---
 
+### Landing a PR — `xm pr land`
+
+`xm pr land` takes one open PR from green checks to a merged base. Without `--yes`, it prints the plan and stops with exit code 2. It merges only with `--yes`.
+
+```bash
+xm pr land 42 --dry-run                     # show the checks, the review state, and the merge command
+xm pr land 42 --yes                         # merge if every check passed
+xm pr land --wait --require-review --yes    # PR of the current branch: wait for checks, require an LGTM review
+xm pr land 42 --yes --cleanup               # also remove the worktree of the head branch
+```
+
+1. It reads the PR and its checks with `gh`. A failed or pending check blocks the merge. A PR with no checks is blocked unless you pass `--allow-no-checks`. With `--wait`, it polls until the checks finish, the PR closes or becomes a draft, or `--timeout` (default 1800 seconds) ends.
+2. With `--require-review`, it needs a finished `xm review` run with an `LGTM` verdict for the exact head commit. The command does not run the review.
+3. It runs `gh pr merge <n> --merge --match-head-commit <head>`. If the head moved after the checks, GitHub refuses the merge.
+4. It fast-forwards the worktree that has the base branch checked out with `git-kit pull --strategy ff-only --no-autostash`. With `--cleanup`, it removes the head branch worktree with `git-kit worktree remove`, which refuses a dirty worktree. It removes the worktree only if the PR comes from the same repository and the worktree is at the merged head. If the current checkout is not the PR repository, it skips this step. If the sync or the removal fails, the command exits with code 1.
+
+If the PR is already merged, the command skips the merge. With `--yes`, it then runs step 4. It does not delete the remote branch, fast-forward `main`, or cut a release.
+
+---
+
 ### Mutation testing — `/xm:mutate`
 
 A green suite shows that the tests ran. It does not show that the tests detect wrong code. `/xm:mutate` makes small changes to the lines that a branch changed and runs the existing tests again. A **killed** mutant is a change that a test detected. A **survived** mutant is a change that no test detected. That line is a candidate for a new test.
