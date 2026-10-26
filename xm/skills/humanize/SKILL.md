@@ -1,6 +1,6 @@
 ---
 name: humanize
-description: Remove AI writing patterns — detect and rewrite AI-generated text into natural, human-sounding prose. English + Korean pattern detection. Based on Wikipedia's "Signs of AI writing" guide and Korean AI-slop conventions. Also fixes translationese in Korean UI and CLI strings (labels, descriptions, buttons, menus, CLI help and status lines) via `ui` mode.
+description: Remove AI writing patterns — detect and rewrite AI-generated text into natural, human-sounding prose. English + Korean pattern detection. Based on Wikipedia's "Signs of AI writing" guide and Korean AI-slop conventions. Also edits Korean or English UI and CLI strings (labels, descriptions, buttons, menus, CLI help and status lines) via `ui` mode — first for meaning and behavior match, then for form.
 model: sonnet
 allowed-tools:
   - Read
@@ -26,12 +26,13 @@ Credit: English pattern set adapted from `blader/humanizer` (MIT) — itself bas
 - Reviewing or editing prose where naturalness matters more than information density
 - Korean UI strings read like literal English ("번역체", "UI 문구 다듬어줘", "어색한 한글 UI", "설정 화면 문구 정리") → `ui` mode
 - Korean CLI help or status text reads like translated English or ends every line in a verb ("CLI 한글화", "도움말 문구 다듬어줘", "상태 메시지 정리") → `ui` mode
+- UI copy in either language is vague or promises behavior the control lacks ("UI 문구가 어색해", "clarify UI copy", "fix button labels", "error messages") → `ui` mode
 </Use_When>
 
 <Do_Not_Use_When>
 - Code review — use x-review
 - Strict technical reference where neutral tone is correct (API docs, RFC, ADR Decision/Consequences sections)
-- Translation tasks — the goal is voice, not localization (use translation tools first, then humanize the output). Exception: `ui` mode edits phrasing of already-translated Korean UI strings; it does not translate.
+- Translation tasks — the goal is voice, not localization (use translation tools first, then humanize the output). Exception: `ui` mode edits existing Korean or English UI strings in their own language; it does not translate.
 - When the source text is already natural and the user only wants proofreading (use built-in editing instead)
 </Do_Not_Use_When>
 
@@ -95,7 +96,7 @@ the mode: global options may appear before or after it.
 | `rewrite` (default) | Detect + rewrite + final anti-AI audit pass |
 | `light` | Minimal edit — remove obvious AI tells while preserving most wording |
 | `strong` | Heavier edit — rebuild sentence flow while preserving every factual claim |
-| `ui` | Korean UI-string mode — fix translationese in labels, descriptions, options, buttons, menus, and CLI help and status lines. Separate pipeline with a JSON contract. See `## UI String Mode`. |
+| `ui` | UI-string mode (Korean or English) — check meaning against behavior, then fix form in labels, descriptions, options, buttons, menus, and CLI help and status lines. Separate pipeline with a JSON contract. See `## UI String Mode`. |
 | `voice <file>` | Voice calibration — use `<file>` as style sample, then process the rest |
 | `--lang en` / `--lang ko` | Force language (auto-detected otherwise); accepted anywhere before the target |
 
@@ -248,31 +249,24 @@ budget and that meaning was checked. Never insert that note into the edited body
 
 App, web, and CLI UI strings are not prose. Run this pipeline **instead of** `## Core Process` — the prose guardrails do not merely fail to help here, they block correct edits.
 
-**Load `references/ui-strings-ko.md` first.** It holds the S1/S2 forbidden patterns, the per-`type` form/length/period table, the glossary, and the JSON contract. Do not work from memory.
+**Load `references/ui-meaning.md` first, then the language file: `references/ui-strings-ko.md` for Korean, `references/ui-strings-en.md` for English.** `ui-meaning.md` picks the target language and holds the M (meaning) rules and the `context` evidence field; each language file holds its form rules, per-`type` table, and glossary; `ui-strings-ko.md` defines the shared JSON contract. Do not work from memory.
 
 Enter this mode when the user names `ui`, or when the input is an array of short UI strings keyed by dotted identifiers (`settings.*.label`) even without the token. If the input is ambiguous prose-vs-UI, ask once rather than guessing the pipeline.
 
-### What is suspended here
-
-| Prose rule | Why it does not apply |
-|-----------|----------------------|
-| `## Change Rate Guardrails` | A correct UI fix is often a near-total rewrite: `복사한 텍스트를 붙여넣기 선반에 저장` → `클립보드 기록` is ~89%. Both the percentage ceiling and the short-input token ceiling would reject every valid edit. |
-| Step 4 voice injection | Opinions, rhythm variation, and acknowledged complexity are wrong in a toggle label. Never give a UI string personality. |
-| Genre allowance matrix (`references/genre-rules.md`) | UI strings match none of the six prose genres. The per-`type` table in `references/ui-strings-ko.md` replaces it. |
-| Auto-downshift triggers (KO-26 / KO-31) | Both count sentences across a document. A string array has no document. |
-| KO-5 / KO-31 / KO-32 | Uniform length and uniform endings are *required* on a settings screen, not a defect to fix. |
+This mode suspends the change-rate guardrails, Step 4 voice injection, the genre matrix, auto-downshift, and KO-5/KO-31/KO-32; `ui-meaning.md` explains why for each.
 
 Meaning preservation is **not** suspended. It is the only guardrail left, so hold it harder: `after` must not add a behavior, condition, or warning the source did not state. Naming a consequence that follows from a fact the source already states is allowed; advice with no basis in the source is not. `references/ui-strings-ko.md` works that line through an example.
 
 ### Steps
 
-1. **Normalize input** — build the JSON array defined in `references/ui-strings-ko.md`. If the input is a source file (`Localizable.strings`, `ko.json`, `messages.ts`, or CLI help and message definitions), extract strings into that array. Never write to the file unless the user explicitly asks.
+1. **Normalize input** — build the JSON array defined in `references/ui-strings-ko.md`. If the input is a source file (`Localizable.strings`, `ko.json`, `en.json`, `messages.ts`, or CLI help and message definitions), extract strings into that array and record what each control does in `context`. Never write to the file unless the user explicitly asks.
 2. **Load the glossary** — read `.xm/ui-glossary.json` if present; it overrides the default glossary. If absent, apply the default glossary only, and set `flag: true` on project-specific implementation terms you cannot confidently replace.
-3. **Group by screen** — items sharing a `key` prefix minus the last segment form one group. Judge S1-2 (label/description overlap) and S1-4 (mixed endings) inside a group, never globally.
-4. **Apply rules** — S1 on every hit, S2 only when the pattern repeats within a group.
+3. **Group by screen** — items sharing a `key` prefix minus the last segment form one group. Judge label/description overlap and mixed endings inside a group, never globally.
+4. **Check meaning** — run the `ui-meaning.md` procedure before any form rule. Without behavior evidence, a suspected mismatch is `flag: true`, never a rewrite.
+5. **Apply rules** — S1/E1 on every hit, S2/E2 only when the pattern repeats within a group.
    Under `ui audit`, stop at detection: record each hit in `rules` and explain it in
    `note`, but leave `after` byte-identical to `before` on every item.
-5. **Self-verify** against the checklist at the end of `references/ui-strings-ko.md`, then emit the JSON array alone — no preamble, no code fence, no trailing commentary.
+6. **Self-verify** against the checklists in `ui-meaning.md` and the language file, then emit the JSON array alone — no preamble, no code fence, no trailing commentary.
 
 ## Core Process
 
@@ -371,7 +365,7 @@ lower intensity or tell the user.
 | `audit` | Findings table only — pattern #, severity, span, suggested fix direction |
 | `rewrite` | Rewritten text + (developer mode only) collapsible findings summary at bottom |
 | `voice` | Rewritten text in user's voice + 2-line note explaining what voice features were matched |
-| `ui` | JSON array only, per the contract in `references/ui-strings-ko.md`. No findings table, no surrounding prose. |
+| `ui` | JSON array only, per the contract in `references/ui-strings-ko.md` (both languages). No findings table, no surrounding prose. |
 
 For Korean output, follow the user's existing register (반말/존댓말). Default to existing register; if mixed, keep the dominant register.
 
@@ -409,6 +403,7 @@ Skipping any of these excuses is a sign you are partially applying the skill. Re
 | "This UI edit crosses 50%, so it's a hard stop." | `ui` mode suspends change-rate guardrails deliberately. A label going from sentence to noun phrase *is* the fix. Meaning preservation is the check that survives — verify that instead. |
 | "The label is short, so folding a bit of the description in is friendlier." | That is S1-1 inverted. The label names the state; the description explains it. Merging them breaks both and duplicates text on screen. |
 | "I don't know this term, but context suggests X." | Set `flag: true` and leave `after` equal to `before`. A confidently wrong string ships to every user; an unedited one only stays awkward. |
+| "The ending is fixed, so the label is done." | A well-formed label can still name the wrong thing: `단일 에이전트로 비교` promised a comparison the run-mode option never ran. Run the meaning pass before form rules. |
 
 ## Red Flags (Stop and Re-check)
 
@@ -428,7 +423,8 @@ Stop and re-read the source if you notice:
   or tell the user the source may already be natural. For an explicit Korean
   expansion request, apply its separate meaning check and disclosure instead.
 - (`ui`) You are about to wrap the JSON array in prose or a code fence — the output must be the bare array.
-- (`ui`) A `toggle_label` you wrote ends in a verb or `~기` — that is S1-1, undo.
+- (`ui`, Korean) A `toggle_label` you wrote ends in a verb or `~기` — that is S1-1, undo.
+- (`ui`) You removed or restored a promised action without behavior evidence — STOP, flag it instead.
 - (`ui`) You changed a placeholder, shortcut, number, or env var inside a string — STOP, restore it byte-for-byte.
 
 ## Verification
@@ -448,7 +444,7 @@ Before returning output, internally confirm:
   or above that length's warn threshold but below its hard stop with the fact
   inventory re-verified, OR explicit Korean sentence expansion checked and
   disclosed, OR aborted per Change Rate Guardrails.
-- [ ] (`ui` mode) `references/ui-strings-ko.md` was loaded, its closing checklist run per item, and the output is a bare JSON array. Change-rate items above do not apply.
+- [ ] (`ui` mode) `references/ui-meaning.md` and the language file were loaded, both closing checklists run per item, and the output is a bare JSON array. Change-rate items above do not apply.
 
 ## Output Templates
 
@@ -494,4 +490,6 @@ Before returning output, internally confirm:
 - `references/patterns-ko.md` — Korean AI-slop pattern catalog (KO-1 ~ KO-40)
 - `references/genre-rules.md` — Per-genre allowance matrix (column/report/blog/formal/marketing/README) and threshold adjustments
 - `references/voice-calibration.md` — How to analyze a writing sample and match it
+- `references/ui-meaning.md` — `ui` meaning pass for both languages (target language, `context` evidence, M rules, suspended prose rules)
 - `references/ui-strings-ko.md` — Korean UI-string rules for `ui` mode (S1/S2 patterns, per-`type` form table, glossary, JSON contract)
+- `references/ui-strings-en.md` — English UI-string rules for `ui` mode (E1/E2 patterns, per-`type` form table, glossary)

@@ -1,0 +1,166 @@
+{
+  "version": 1,
+  "purpose": "Manual-execution cases for humanize ui mode. Judge each output against must and must_not, not against one reference string. candidates lists outputs already judged, including rejected ones that look plausible. Behavior context for the astar cases comes from astar web/src/App.tsx (first writing pass in .astar-data/toss-copy-changes.json versus the current source). These cases are not an automated quality gate.",
+  "cases": [
+    {
+      "id": "astar-request-label",
+      "skill": "humanize",
+      "mode": "ui",
+      "lang": "ko",
+      "source": "toss-20261026-6e36ef1f",
+      "input": [
+        { "key": "intake.request.label", "ko": "서비스에 필요한 다음 일", "context": "Label of the textarea where the user types the request that starts a run." }
+      ],
+      "must": ["The label names what the field takes: the user's request.", "Records M-1."],
+      "must_not": ["Keeps the abstract phrase about the service's next thing.", "Becomes a sentence or instruction."],
+      "candidates": {
+        "accepted": ["요청 내용"],
+        "rejected": [
+          { "text": "서비스에 필요한 다음 일을 입력하세요", "reason": "Keeps the abstract name and turns the label into an instruction." }
+        ]
+      }
+    },
+    {
+      "id": "astar-run-mode-option",
+      "skill": "humanize",
+      "mode": "ui",
+      "lang": "ko",
+      "source": "toss-20261026-6e36ef1f",
+      "input": [
+        { "key": "intake.mode.label", "ko": "작업 방식", "type": "select_label", "context": "Select that chooses the run mode (team or single)." },
+        { "key": "intake.mode.team", "ko": "역할을 나눠 수행", "type": "select_option", "context": "Several agents split roles in one run." },
+        { "key": "intake.mode.single", "ko": "단일 에이전트로 비교", "type": "select_option", "context": "One agent does the whole run. No comparison is executed." }
+      ],
+      "must": ["The single option names the run mode only.", "The single option records M-2 and its note cites that no comparison runs.", "Options do not repeat the label word 작업."],
+      "must_not": ["Mentions 비교 or any comparison.", "Uses a clause with a subject and predicate in an option slot."],
+      "candidates": {
+        "accepted": ["단일 에이전트"],
+        "rejected": [
+          { "text": "한 에이전트가 작업", "reason": "Clause fragment in an option slot; repeats the label word 작업 (S1-2)." },
+          { "text": "단일 에이전트 수행 결과 비교", "reason": "Promises a comparison the option does not run (M-2)." },
+          { "text": "단일 에이전트 환경과의 비교", "reason": "Same false promise, plus a noun chain." }
+        ]
+      }
+    },
+    {
+      "id": "astar-workflow-step",
+      "skill": "humanize",
+      "mode": "ui",
+      "lang": "ko",
+      "source": "toss-20261026-6e36ef1f",
+      "input": [
+        { "key": "inspector.workflow.step3.title", "ko": "근거로 진행을 봐요", "type": "section_header", "context": "Third workflow step title. Body: the user checks the real run log, verification results, and outputs. The neighboring step titles end in 해요." }
+      ],
+      "must": ["The verb fits its object: the user checks progress.", "Keeps the 해요 ending shared by the neighboring step titles.", "Records M-3."],
+      "must_not": ["Keeps 근거로 ... 봐요 as the predicate.", "Adds a step the body does not describe."],
+      "candidates": {
+        "accepted": ["진행 상황을 확인해요"],
+        "rejected": [
+          { "text": "근거 기반 진행 확인", "reason": "Noun chain that breaks the 해요 endings of the neighboring steps." }
+        ]
+      }
+    },
+    {
+      "id": "astar-boundary-heading",
+      "skill": "humanize",
+      "mode": "ui",
+      "lang": "ko",
+      "source": "toss-20261026-6e36ef1f",
+      "input": [
+        { "key": "inspector.boundary.title", "ko": "자율 수행의 경계", "type": "section_header", "context": "Heading of a notice box." },
+        { "key": "inspector.boundary.desc", "ko": "새 목표·기능 확장과 실제 배포는 사용자가 결정해요. 확인하지 않은 내용은 제안 상태로 남아요.", "type": "desc" }
+      ],
+      "must": ["The heading names what the box body describes: what the user decides.", "Covers both sentences of the body.", "Records M-4.", "Leaves the description unchanged."],
+      "must_not": ["Keeps the abstract word 경계.", "Joins two concepts with 및.", "Adds a criterion or rule the body does not state."],
+      "candidates": {
+        "accepted": ["사용자가 결정하는 일"],
+        "rejected": [
+          { "text": "승인이 필요한 작업", "reason": "Covers only the first sentence of the body (M-5)." },
+          { "text": "자율 수행 범위 및 승인 기준", "reason": "Joins two concepts with 및 and adds 기준, which the body never states (M-5)." },
+          { "text": "자율 수행과 개입의 경계", "reason": "Keeps the abstract 경계 that the reader flagged (M-4)." }
+        ]
+      }
+    },
+    {
+      "id": "ko-no-context-flag",
+      "skill": "humanize",
+      "mode": "ui",
+      "lang": "ko",
+      "input": [
+        { "key": "run.compare.label", "ko": "단일 에이전트로 비교", "type": "toggle_label" }
+      ],
+      "must": ["flag is true because no evidence shows whether a comparison runs.", "after equals before.", "note asks whether the control runs a comparison."],
+      "must_not": ["Removes or keeps 비교 as if the behavior were known."],
+      "candidates": { "accepted": [], "rejected": [] }
+    },
+    {
+      "id": "ko-negative-clear-labels",
+      "skill": "humanize",
+      "mode": "ui",
+      "lang": "ko",
+      "input": [
+        { "key": "intake.limits.timeout", "ko": "실행 제한 시간(초)", "type": "select_label" },
+        { "key": "intake.limits.attempts", "ko": "최대 시도 수", "type": "select_label" },
+        { "key": "intake.privacy.desc", "ko": "입력한 요청은 이 컴퓨터에만 저장됩니다.", "type": "desc" }
+      ],
+      "must": ["Every after equals before.", "Every rules array is empty."],
+      "must_not": ["Expands a short label into a sentence.", "Rewrites the privacy notice."],
+      "candidates": { "accepted": [], "rejected": [] }
+    },
+    {
+      "id": "en-run-mode-option",
+      "skill": "humanize",
+      "mode": "ui",
+      "lang": "en",
+      "input": [
+        { "key": "intake.mode.label", "en": "Run mode", "type": "select_label", "context": "Select that chooses team or single run." },
+        { "key": "intake.mode.team", "en": "Split roles across agents", "type": "select_option" },
+        { "key": "intake.mode.single", "en": "Compare with single agent", "type": "select_option", "context": "One agent does the whole run. No comparison is executed." }
+      ],
+      "must": ["The single option names the mode only and records M-2.", "Options stay noun phrases."],
+      "must_not": ["Mentions compare or comparison.", "Translates any string into Korean."],
+      "candidates": {
+        "accepted": ["Single agent"],
+        "rejected": [
+          { "text": "Single-agent comparison", "reason": "Keeps the false comparison promise (M-2)." }
+        ]
+      }
+    },
+    {
+      "id": "en-boundary-heading",
+      "skill": "humanize",
+      "mode": "ui",
+      "lang": "en",
+      "input": [
+        { "key": "inspector.boundary.title", "en": "Boundaries of autonomous execution", "type": "section_header" },
+        { "key": "inspector.boundary.desc", "en": "You decide new goals, scope expansion, and deployment. Unchecked content stays a proposal.", "type": "desc" }
+      ],
+      "must": ["The heading names what the body describes and records M-4.", "The description stays unchanged."],
+      "must_not": ["Keeps the abstract word boundaries.", "Joins two concepts with and/or or a slash."],
+      "candidates": {
+        "accepted": ["What you decide"],
+        "rejected": [
+          { "text": "Autonomy scope and approval criteria", "reason": "Joins two concepts and adds criteria the body never states (M-5)." }
+        ]
+      }
+    },
+    {
+      "id": "en-form-and-negative",
+      "skill": "humanize",
+      "mode": "ui",
+      "lang": "en",
+      "input": [
+        { "key": "dialog.retry.button", "en": "Please click here to try again.", "type": "button" },
+        { "key": "cli.save.done", "en": "Settings have been saved successfully.", "type": "cli_done" },
+        { "key": "dialog.retry.cancel", "en": "Cancel", "type": "button" },
+        { "key": "intake.limits.attempts", "en": "Max attempts", "type": "select_label" }
+      ],
+      "must": ["The first button drops the filler and names the action (E1-5).", "The status line drops successfully (E1-6).", "Cancel and Max attempts stay unchanged with empty rules."],
+      "must_not": ["Adds a period to a button or status line.", "Changes an already-clear string."],
+      "candidates": {
+        "accepted": ["Try again", "Saved settings"],
+        "rejected": []
+      }
+    }
+  ]
+}
