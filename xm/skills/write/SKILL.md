@@ -68,7 +68,8 @@ ask no questions, and skip the publish step. Only read-only `gh` is allowed for 
 
 Apply these rules to Korean prose in every mode. Keep the document's register and
 repository conventions; the non-README defaults in Step 2 still apply. Here the
-source is the evidence gathered in Step 1. The block below is shared verbatim with
+source is the evidence gathered in Step 1, or the evidence pass in
+`references/readme.md` for README modes. The block below is shared verbatim with
 `xm:humanize`.
 
 <!-- korean-sentence-review:begin -->

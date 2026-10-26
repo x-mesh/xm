@@ -38,7 +38,7 @@ handler or the value the control sets before judging its label.
 |------|---------|------------------------------------------|
 | M-1 | Abstract name: the label does not say what the field takes or what the control does | `서비스에 필요한 다음 일` → `요청 내용` (textarea for the user's request) |
 | M-2 | Behavior mismatch: the string promises an action or result the control does not perform, or hides one it does | `단일 에이전트로 비교` → `단일 에이전트` (run-mode option; nothing is compared) |
-| M-3 | Predicate does not fit its object or means | `근거로 진행을 봐요` → `진행 상황을 확인해요`; `View progress by evidence` → `Check progress` |
+| M-3 | Predicate does not fit its object or means | `근거로 진행을 봐요` → `진행 상황을 확인해요` (step title; neighbors are 해요 sentences); `View progress by evidence` → `Check progress` |
 | M-4 | Concept name instead of what the reader meets: a heading names an abstract idea, not the content below it | `자율 수행의 경계` → `사용자가 결정하는 일` (box body: new goals, scope expansion, and deployment are decided by the user) |
 | M-5 | Lost or inflated meaning: the rewrite drops an action, object, condition, or relation the source states, or spells a word out into a longer phrase without adding clarity | `승인이 필요한 작업` for the box above covers only its first sentence; `자율 수행 범위 및 승인 기준` adds `기준`, which the box never states |
 

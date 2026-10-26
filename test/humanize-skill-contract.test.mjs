@@ -45,6 +45,7 @@ describe('humanize skill execution contract', () => {
 
   test('ui mode loads the meaning pass and a file per language', () => {
     expect(source).toContain('**Load `references/ui-meaning.md` first, then the language file: `references/ui-strings-ko.md` for Korean, `references/ui-strings-en.md` for English.**');
+    for (const step of ['3. **Group by screen**', '4. **Check meaning**', '5. **Apply rules**']) expect(source).toContain(step);
     expect(source.indexOf('4. **Check meaning**')).toBeGreaterThan(source.indexOf('3. **Group by screen**'));
     expect(source.indexOf('4. **Check meaning**')).toBeLessThan(source.indexOf('5. **Apply rules**'));
   });

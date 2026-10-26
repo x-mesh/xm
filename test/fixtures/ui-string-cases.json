@@ -49,7 +49,7 @@
       "lang": "ko",
       "source": "toss-20261026-6e36ef1f",
       "input": [
-        { "key": "inspector.workflow.step3.title", "ko": "근거로 진행을 봐요", "type": "section_header", "context": "Third workflow step title. Body: the user checks the real run log, verification results, and outputs. The neighboring step titles end in 해요." }
+        { "key": "inspector.workflow.step3.title", "ko": "근거로 진행을 봐요", "context": "Third workflow step title, written as a sentence like its neighbors 요청을 이해해요 and 계획을 확인해요. Body: the user checks the real run log, verification results, and outputs." }
       ],
       "must": ["The verb fits its object: the user checks progress.", "Keeps the 해요 ending shared by the neighboring step titles.", "Records M-3."],
       "must_not": ["Keeps 근거로 ... 봐요 as the predicate.", "Adds a step the body does not describe."],
@@ -87,7 +87,7 @@
       "mode": "ui",
       "lang": "ko",
       "input": [
-        { "key": "run.compare.label", "ko": "단일 에이전트로 비교", "type": "toggle_label" }
+        { "key": "run.agent.label", "ko": "단일 에이전트로 비교", "type": "toggle_label" }
       ],
       "must": ["flag is true because no evidence shows whether a comparison runs.", "after equals before.", "note asks whether the control runs a comparison."],
       "must_not": ["Removes or keeps 비교 as if the behavior were known."],
@@ -117,7 +117,7 @@
         { "key": "intake.mode.team", "en": "Split roles across agents", "type": "select_option" },
         { "key": "intake.mode.single", "en": "Compare with single agent", "type": "select_option", "context": "One agent does the whole run. No comparison is executed." }
       ],
-      "must": ["The single option names the mode only and records M-2.", "Options stay noun phrases."],
+      "must": ["The single option names the mode only and records M-2.", "Every option is a noun phrase of at most 3 words."],
       "must_not": ["Mentions compare or comparison.", "Translates any string into Korean."],
       "candidates": {
         "accepted": ["Single agent"],
