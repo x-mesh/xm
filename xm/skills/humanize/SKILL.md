@@ -63,27 +63,21 @@ Easy/normal mode: accessible Korean is the goal — polite guidance ("~해 보�
 
 Apply this review during detection, rewriting, and the final audit. `ui` keeps its
 separate pipeline. A watched word or repeated ending is a signal to read the
-sentence, not an automatic instruction to replace it.
+sentence, not an automatic instruction to replace it. Here the source is the text
+under edit. The block below is shared verbatim with `xm:write`.
 
-- Read who does what, to which object, and under which condition. Repair particle
-  and predicate agreement before shortening. Omit a subject only when its referent
-  remains clear; do not invent an actor to make a passive sentence active.
-- Replace noun chains with verbs and particles that express the source relation:
-  `설정 변경 후 오류 발생 가능.` → `설정을 바꾸면 오류가 발생할 수 있습니다.`
-  Keep noun phrases for headings and labels. Explanations need complete sentences.
-- Preserve tense, negation, obligation, possibility, attribution, and uncertainty.
-  `아직 확인하지 못했습니다` must not become `문제가 없습니다`. Keep meaningful
-  `~할 수 있습니다` and `~로 보입니다` rather than making every claim definite.
-- Join sentences only when the source supports that relation. Do not insert
-  `따라서`, `때문에`, `먼저`, or `그다음` to invent causality or sequence.
-- Use familiar, precise vocabulary. Keep established technical terms and the
-  writer's register. Do not replace `도메인 모델이 성숙했다` with `모델이 익었다`.
-- Make a vague statement concrete only from the supplied evidence. Never add a
-  metric, threshold, example, result, or motive just to sound specific.
+<!-- korean-sentence-review:begin -->
+- Establish who does what, to which object, and under which condition. Keep the particles and predicates that express those relations, and repair their agreement before shortening. Omit a subject only when its referent remains clear; do not invent an actor to make a passive sentence active.
+- Replace noun chains with verbs and particles that express the source relation: `설정에 대한 검증을 수행했습니다` → `설정 값을 검증했습니다`, `설정 변경 후 오류 발생 가능.` → `설정을 바꾸면 오류가 발생할 수 있습니다.` Keep noun phrases for headings and labels. Explanations need complete sentences.
+- Preserve tense, negation, obligation, possibility, attribution, and uncertainty. `아직 확인하지 못했습니다` must not become `문제가 없습니다`. Keep meaningful `~할 수 있습니다` and `~로 보입니다`. State an observed failure separately from an unverified cause.
+- Use a connective only for a relation the source supports. Do not insert `따라서`, `때문에`, `먼저`, or `그다음` to turn adjacent facts into a cause, contrast, or sequence.
+- Use familiar, precise vocabulary without slang or invented metaphors. Keep established technical terms, identifiers, commands, paths, quoted output, measurements, and the writer's register. Do not replace `도메인 모델이 성숙했다` with `모델이 익었다`. Explain an unfamiliar term only when the reader needs it.
+- Make a vague statement concrete only from the source. Never add a metric, threshold, example, result, or motive just to sound specific.
+- Read each paragraph again as connected Korean. Check that each predicate fits its subject and object, that references stay clear, and that shortening did not hide a condition.
+<!-- korean-sentence-review:end -->
+
 - Vary sentence structure when it improves reading, not to meet a rhythm quota.
   Do not change tense or mix sentence fragments into prose to vary endings.
-- Read the paragraph again as connected Korean. Check that each predicate fits its
-  subject and object, and that shortening did not hide a condition or referent.
 
 ## Routing
 

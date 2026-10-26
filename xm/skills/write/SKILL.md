@@ -67,32 +67,25 @@ ask no questions, and skip the publish step. Only read-only `gh` is allowed for 
 ## Korean sentence review
 
 Apply these rules to Korean prose in every mode. Keep the document's register and
-repository conventions; the non-README defaults in Step 2 still apply. A short
-label or heading can be a noun phrase. An explanation needs a complete sentence.
+repository conventions; the non-README defaults in Step 2 still apply. Here the
+source is the evidence gathered in Step 1. The block below is shared verbatim with
+`xm:humanize`.
 
-- Establish who does what, to which object, and under which condition. Keep the
-  particles and predicates that express those relations. Omit a repeated subject
-  only when its referent remains clear.
-- Replace noun chains with verbs: `설정에 대한 검증을 수행했습니다` →
-  `설정 값을 검증했습니다`. Do not shorten an explanation into
-  `설정 변경 후 오류 발생 가능`. Write `설정을 바꾸면 오류가 발생할 수 있습니다`.
-- Preserve tense, negation, obligation, possibility, attribution, and uncertainty.
-  `원인은 아직 확인하지 못했습니다` does not mean `문제가 없습니다`.
-  State an observed failure separately from an unverified cause.
-- Use a connective only for a relation the evidence supports. Do not turn adjacent
-  facts into a cause, contrast, or ordered procedure just to make a paragraph flow.
-- Keep established technical terms, identifiers, commands, paths, quoted output,
-  and measurements. Prefer familiar words without slang or invented metaphors.
-  Explain unfamiliar terms only when the reader needs them, not every English term.
-- Replace a vague benefit with a supported behavior or measurement. If evidence
-  contains no number, do not add one. Do not invent a motive, actor, or outcome.
+<!-- korean-sentence-review:begin -->
+- Establish who does what, to which object, and under which condition. Keep the particles and predicates that express those relations, and repair their agreement before shortening. Omit a subject only when its referent remains clear; do not invent an actor to make a passive sentence active.
+- Replace noun chains with verbs and particles that express the source relation: `설정에 대한 검증을 수행했습니다` → `설정 값을 검증했습니다`, `설정 변경 후 오류 발생 가능.` → `설정을 바꾸면 오류가 발생할 수 있습니다.` Keep noun phrases for headings and labels. Explanations need complete sentences.
+- Preserve tense, negation, obligation, possibility, attribution, and uncertainty. `아직 확인하지 못했습니다` must not become `문제가 없습니다`. Keep meaningful `~할 수 있습니다` and `~로 보입니다`. State an observed failure separately from an unverified cause.
+- Use a connective only for a relation the source supports. Do not insert `따라서`, `때문에`, `먼저`, or `그다음` to turn adjacent facts into a cause, contrast, or sequence.
+- Use familiar, precise vocabulary without slang or invented metaphors. Keep established technical terms, identifiers, commands, paths, quoted output, measurements, and the writer's register. Do not replace `도메인 모델이 성숙했다` with `모델이 익었다`. Explain an unfamiliar term only when the reader needs it.
+- Make a vague statement concrete only from the source. Never add a metric, threshold, example, result, or motive just to sound specific.
+- Read each paragraph again as connected Korean. Check that each predicate fits its subject and object, that references stay clear, and that shortening did not hide a condition.
+<!-- korean-sentence-review:end -->
+
 - Use a list for parallel items or an actual procedure. If an item needs a condition
   or explanation, write a sentence rather than removing particles to fit a noun
   phrase. Do not split a connected explanation into one-line status labels.
-- Before delivery, read each paragraph as Korean prose. Check particle and
-  predicate agreement, references, register, and all conditions against the
-  evidence. Vary structure only where reading improves; keep tense and natural
-  repeated endings. Return the document, not an account of this review.
+- Vary structure only where reading improves; keep tense and natural repeated
+  endings. Return the document, not an account of this review.
 
 ## Step 1: Gather Evidence
 
