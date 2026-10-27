@@ -246,12 +246,18 @@ ${message}`;
   return outgoing;
 }
 
-function claudeEnvelope(message) {
-  const safeBody = message.replace(ENVELOPE_TAG, tag => tag.replace(/</g, '&lt;').replace(/>/g, '&gt;'));
-  return `<cross-session-message from-name="codex-via-xm">\n${safeBody}\n</cross-session-message>`;
+// The name the receiving session reads first; replyAddress built it from a fixed
+// provider set and a full UUID, so it is safe inside the attribute.
+function senderName(replyTo) {
+  return replyTo ? `${replyTo.provider}:${replyTo.session_id.slice(0, 8)}` : 'xm-relay';
 }
 
-function sendToClaudeSocket(session, message) {
+function claudeEnvelope(message, fromName) {
+  const safeBody = message.replace(ENVELOPE_TAG, tag => tag.replace(/</g, '&lt;').replace(/>/g, '&gt;'));
+  return `<cross-session-message from-name="${fromName}">\n${safeBody}\n</cross-session-message>`;
+}
+
+function sendToClaudeSocket(session, message, fromName) {
   return new Promise((resolve, reject) => {
     const socket = net.createConnection({ path: session.socketPath });
     let settled = false;
@@ -264,7 +270,7 @@ function sendToClaudeSocket(session, message) {
       else resolve();
     };
     socket.once('connect', () => {
-      const frame = { msgV: 1, msg_id: randomUUID(), type: 'user', message: { role: 'user', content: claudeEnvelope(message) }, priority: 'next', session_id: session.sessionId };
+      const frame = { msgV: 1, msg_id: randomUUID(), type: 'user', message: { role: 'user', content: claudeEnvelope(message, fromName) }, priority: 'next', session_id: session.sessionId };
       socket.end(`${JSON.stringify(frame)}\n`);
     });
     socket.once('error', finish);
@@ -287,7 +293,7 @@ async function sendClaudeMessage(options) {
   const replyTo = await replyAddress(options);
   const current = claudeSessionRecord(candidates[0]);
   if (!current) throw new Error(`Claude session has no reachable inbox: ${sessionId}`);
-  await sendToClaudeSocket(current, addressedMessage(message, replyTo, 'claude', sessionId, options));
+  await sendToClaudeSocket(current, addressedMessage(message, replyTo, 'claude', sessionId, options), senderName(replyTo));
   return { ok: true, provider: 'claude', state: 'submitted', reply_to: replyTo, session_id: sessionId, project: project?.id || null, note: 'Message bytes were submitted to the local socket; receiver handling and delivery are unknown, and no receipt is requested.' };
 }
 

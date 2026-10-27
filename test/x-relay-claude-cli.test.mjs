@@ -114,6 +114,17 @@ describe.if(supported)('Claude relay CLI', () => {
     });
   });
 
+  test('the envelope names the sender from its return address, or the relay when there is none', async () => {
+    await withFixture({}, async f => {
+      await run(f, ['send', '--provider', 'claude', '--session', SESSION, '--message', 'hello'], { CLAUDE_CODE_SESSION_ID: SESSION });
+      expect(sentFrame(f).message.content).toStartWith(`<cross-session-message from-name="claude:${SESSION.slice(0, 8)}">\n`);
+    });
+    await withFixture({}, async f => {
+      await run(f, ['send', '--provider', 'claude', '--session', SESSION, '--message', 'hello']);
+      expect(sentFrame(f).message.content).toStartWith('<cross-session-message from-name="xm-relay">\n');
+    });
+  });
+
   test('--expect-reply asks the receiver for one relay answer tied to the request id', async () => {
     await withFixture({}, async f => {
       const result = await run(f, ['send', '--provider', 'claude', '--session', SESSION, '--message', '뭐하고 있니?', '--expect-reply'],
