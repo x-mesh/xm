@@ -880,6 +880,9 @@ describe('arrival band', () => {
     expect(toasts).toEqual(['💬 019a1b2c: 리뷰 끝났어. 두 건 고쳐 줘.'])
     expect(await band.find({ type: 'Text', text: /리뷰 끝났어\. 두 건 고쳐 줘\./ })).toBeDefined()
     expect(await band.find({ type: 'Text', text: '/relay-chat' })).toBeDefined()
+    // Only the preview may give up cells; a shrunk name wraps its last letter onto a second line.
+    const fixed = (await band.findAll({ type: 'Box' })).filter(b => b.props?.flexShrink === 0).map(b => JSON.stringify(b.children))
+    expect(fixed).toEqual([expect.stringContaining('019a1b2c'), expect.stringContaining('/relay-chat')])
 
     // 열기 opens the pane on that conversation, which marks it read: the band goes.
     await band.press({ key: 'band-open' })
