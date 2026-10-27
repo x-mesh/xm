@@ -3,14 +3,15 @@ import type { EngineInterface, Register, RenderChildren, SessionReceiveInput } f
 
 import type { AutoReview, Candidate, ChatLine, Conversation, Pair, PendingCommit, Peer, Picker } from '../../types'
 import {
-  ago, buildContextDigest, contextSummaryLine, diffLines, lightReviewText, ownSessionName, parseCommitCommand, parseDelivery, parseRelaySend, peerKey,
-  recentExchanges, secretExcludes, selectDiff, sendArgv, sentRequestId, sessionRows, shortName, summarizeTranscript, transcriptPath,
+  ago, briefingPrompt, diffLines, lightReviewText, ownSessionName, parseCommitCommand, parseDelivery, parseRelaySend, peerKey,
+  sendArgv, sentRequestId, sessionRows, shortName, summarizeTranscript, transcriptPath,
 } from './parse'
 import { ICON_SVG, LABEL, badgeCells, badgeColumns, cells, displayName, fit, labels, layoutFor, pad, providerOf } from './view'
 import type { Who } from './view'
 
 const PANE = 'relay-chat'
 const COMMAND = 'relay-chat'
+const CONTEXT_COMMAND = 'relay-ctx'
 const KEEP_LINES = 200
 const SHOWN_LINES = 30
 const PROVIDERS = ['codex', 'claude', 'agy', 'cursor'] as const
@@ -504,85 +505,37 @@ async function broadcast($: EngineInterface, text: string) {
 }
 
 // The text in each message field as the person types it, by conversation key
-// ('all' for the broadcast field): a share takes it as its point. Module state:
-// a reload drops it, as it drops the field itself.
+// ('all' for the broadcast field): a share takes it as its request. Module
+// state: a reload drops it, as it drops the field itself.
 const drafts = new Map<string, string>()
 
-// What this session is doing right now, from its own transcript and worktree:
-// the recent turns and the diff themselves, cut by size, with nothing summarized.
-async function gatherContext($: EngineInterface, note: string | null) {
-  const cwd = await $.session.cwd()
-  const own = await $.session.id()
-  const home = await $.env.get('HOME')
-  let title: string | null = null
-  let exchanges: ReturnType<typeof recentExchanges> = []
-  const errors: string[] = []
-  if (home) {
-    const path = transcriptPath(home, cwd, own)
-    if (await $.fs.exists(path)) {
-      const ran = await $.process.run(['tail', '-c', '2000000', path])
-      if (ran.exitCode === 0) {
-        title = summarizeTranscript(ran.stdout).title
-        exchanges = recentExchanges(ran.stdout)
-      } else {
-        errors.push('transcript: 읽기 실패')
-      }
-    }
-  }
-  const take = (run: GitRun) => {
-    if (run.error) errors.push(run.error)
-    return run.stdout
-  }
-  const branch = take(await gitRun($, cwd, ['rev-parse', '--abbrev-ref', 'HEAD']))?.trim() || null
-  const status = take(await gitRun($, cwd, ['status', '--short'])) ?? ''
-  // Credential-looking paths leave the diff before it is read; the names that
-  // dropped out are listed so that the peer knows the diff is not whole.
-  const scope = ['--', '.', ...secretExcludes()]
-  const names = (s: string | null) => (s ?? '').split('\n').filter(Boolean)
-  const all = names(take(await gitRun($, cwd, ['diff', 'HEAD', '--name-only', '--', '.'])))
-  const kept = new Set(names(take(await gitRun($, cwd, ['diff', 'HEAD', '--name-only', ...scope]))))
-  const excludedFiles = all.filter(n => !kept.has(n))
-  const diffStat = take(await gitRun($, cwd, ['diff', 'HEAD', '--stat', ...scope])) ?? ''
-  const body = take(await gitRun($, cwd, ['diff', 'HEAD', ...scope]))
-  const diff = body === null ? null : selectDiff(body)
-  const input = { cwd, branch, title, note, exchanges, status, diffStat, diff, excludedFiles, errors }
-  return { digest: buildContextDigest(input), line: contextSummaryLine(input), errors }
-}
-
-// Sent without a reply request: the peer keeps it and answers later questions
-// against it. Cursor runs one turn per send and keeps nothing, so it gets none.
-async function shareContext($: EngineInterface, conversation: Conversation, note: string | null = null): Promise<string | null> {
-  const peer = conversation.peer
-  if (!peer) return '답장 경로가 없는 대화입니다.'
-  if (peer.kind === 'xm' && peer.provider === 'cursor') return 'Cursor는 받은 맥락을 세션에 쌓지 않습니다.'
-  const { digest, line, errors } = await gatherContext($, note?.trim() || null)
-  if (errors.length) $.ui.toast(`맥락 일부를 읽지 못했습니다: ${errors.join(' · ')}`)
-  if (peer.kind === 'native') {
-    const sent = await $.session.send({ to: peer.to, text: digest })
-    if (!sent.isDelivered) return sent.reason
-  } else {
-    const ran = await $.process.run(sendArgv(peer, digest, await $.session.id(), { expectReply: false }))
-    if (ran.exitCode !== 0) return ran.stderr.trim().split('\n')[0] || ran.stdout.trim().split('\n')[0] || `exit ${ran.exitCode}`
-  }
-  await record($, conversation, { at: await $.clock.now(), by: 'me', text: line })
+// The share is written by this session's model, which sends it itself; the
+// pane records that send from the model's command like any other.
+async function shareContext($: EngineInterface, targets: readonly Conversation[], request: string | null): Promise<string | null> {
+  const reachable = targets.flatMap(c => (c.peer && !(c.peer.kind === 'xm' && c.peer.provider === 'cursor') ? [{ name: c.name, peer: c.peer }] : []))
+  if (!reachable.length) return targets.some(c => c.peer) ? 'Cursor는 받은 맥락을 세션에 쌓지 않습니다.' : '답장 경로가 없는 대화입니다.'
+  const text = briefingPrompt(reachable, request, await $.session.id())
+  // A submit from a command.run hook is refused: it would wait on the turn that hook holds.
+  $.clock.after(0, () => {
+    void $.prompt.submit({ text }).then(
+      result => { if (result.drop !== undefined) $.ui.toast(`맥락 공유 요청이 들어가지 못했습니다: ${result.drop}`) },
+      (error: unknown) => $.ui.toast(`맥락 공유 요청 실패: ${error instanceof Error ? error.message : String(error)}`),
+    )
+  })
   return null
 }
 
 async function shareContextWith($: EngineInterface, key: string) {
   const conversation = (await read($, conversations)).find(c => c.key === key)
   if (!conversation) return
-  const failure = await shareContext($, conversation, drafts.get(key) ?? null)
-  $.ui.toast(failure ? `맥락 공유 실패 (${conversation.name}): ${failure}` : `${conversation.name}에게 맥락을 보냈습니다.`)
+  const failure = await shareContext($, [conversation], drafts.get(key)?.trim() || null)
+  $.ui.toast(failure ? `맥락 공유 실패 (${conversation.name}): ${failure}` : `${conversation.name}에게 보낼 맥락을 모델이 정리합니다.`)
 }
 
 async function broadcastContext($: EngineInterface) {
-  const targets = (await read($, conversations)).filter(c => c.peer && !(c.peer.kind === 'xm' && c.peer.provider === 'cursor'))
-  const failed: string[] = []
-  for (const conversation of targets) {
-    const failure = await shareContext($, conversation, drafts.get('all') ?? null)
-    if (failure) failed.push(`${conversation.name}: ${failure}`)
-  }
-  $.ui.toast(failed.length ? `${targets.length - failed.length}/${targets.length}곳에 맥락 전송. 실패 ${failed.join(', ')}` : `${targets.length}곳에 맥락을 보냈습니다.`)
+  const targets = await read($, conversations)
+  const failure = await shareContext($, targets, drafts.get('all')?.trim() || null)
+  $.ui.toast(failure ? `맥락 공유 실패: ${failure}` : '대화 상대 모두에게 보낼 맥락을 모델이 정리합니다.')
 }
 
 function clock(ts: number): string {
@@ -598,6 +551,34 @@ function lookup(list: readonly Conversation[], target: string): Conversation[] {
   const exact = list.filter(c => c.name === target)
   if (exact.length) return exact
   return list.filter(c => (c.peer?.kind === 'xm' && c.peer.sessionId.startsWith(target)) || c.name.startsWith(target))
+}
+
+// Korean puts the recipient particle after the name, attached or apart
+// (`reviewer-33에게 …`, `reviewer-33 에게 …`); it names the target, so it is
+// neither part of the name nor the first word of the message.
+function splitAddressee(args: string): { target: string; text: string } {
+  const [, word = '', after = ''] = /^\s*(\S*)\s*([\s\S]*)$/.exec(args) ?? []
+  const [, name] = /^(.+?)(?:에게|한테|께)$/.exec(word) ?? []
+  if (name) return { target: name, text: after.trim() }
+  const [, rest] = /^(?:에게|한테|께)(?:\s+|$)([\s\S]*)$/.exec(after) ?? []
+  return { target: word, text: (rest ?? after).trim() }
+}
+
+// An open conversation first, else a live session, opened as a conversation;
+// a string is the reason none was found.
+async function resolveConversation($: EngineInterface, target: string): Promise<Conversation | string> {
+  const open = lookup(await read($, conversations), target)
+  if (open.length > 1) return ambiguous(open.map(c => c.name))
+  if (open[0]) return open[0]
+  await loadCandidates($)
+  const sendable = (await read($, picker)).candidates.filter(c => c.unavailable === null)
+  const exact = sendable.filter(c => c.name === target)
+  const found = exact.length ? exact : sendable.filter(c => c.id.startsWith(target))
+  if (found.length > 1) return ambiguous(found.map(c => `${c.name} ${c.id.slice(0, 8)}`))
+  const candidate = found[0]
+  if (!candidate) return `대화 상대를 찾지 못했습니다: ${target}`
+  await openCandidate($, candidate)
+  return lookup(await read($, conversations), candidate.id)[0] ?? `대화 상대를 찾지 못했습니다: ${target}`
 }
 
 function ambiguous(names: readonly string[]): string {
@@ -628,6 +609,11 @@ export const register: Register = (on, options) => {
       description: '(xm) Relay 대화창 열기, 또는 /relay-chat <상대> <내용>으로 바로 보내기',
       argumentHint: '[상대] [내용]',
     })
+    await $.command.register({
+      name: CONTEXT_COMMAND,
+      description: '(xm) 이 세션의 맥락을 모델이 정리해 상대에게 보내기: /relay-ctx <상대> [요청]',
+      argumentHint: '<상대> [요청]',
+    })
     await refreshStatus($)
     await loadPair($)
 
@@ -657,36 +643,21 @@ export const register: Register = (on, options) => {
       }
       return { text: 'Relay 대화창을 열었습니다.' }
     }
-    const [target = '', ...rest] = args.split(/\s+/)
-    // `/relay-chat ctx <peer>` shares this session's context instead of a message.
-    if (target === 'ctx') {
-      const [who = '', ...noteWords] = rest
-      const found = who ? lookup(await read($, conversations), who) : []
-      if (found.length > 1) return { text: ambiguous(found.map(c => c.name)) }
-      const conversation = found[0]
-      if (!conversation) return { text: who ? `대화 상대를 찾지 못했습니다: ${who}` : '사용법: /relay-chat ctx <열린 대화 상대> [요점]' }
-      const failure = await shareContext($, conversation, noteWords.join(' ') || null)
-      return { text: failure ? `맥락 공유 실패 (${conversation.name}): ${failure}` : `${conversation.name}에게 맥락을 보냈습니다.` }
-    }
-    const text = args.slice(target.length).trim()
-    if (!rest.length || !text) return { text: '사용법: /relay-chat <상대 이름 또는 ID 앞부분> <내용>' }
-    const open = lookup(await read($, conversations), target)
-    if (open.length > 1) return { text: ambiguous(open.map(c => c.name)) }
-    let conversation = open[0]
-    if (!conversation) {
-      await loadCandidates($)
-      const sendable = (await read($, picker)).candidates.filter(c => c.unavailable === null)
-      const exact = sendable.filter(c => c.name === target)
-      const found = exact.length ? exact : sendable.filter(c => c.id.startsWith(target))
-      if (found.length > 1) return { text: ambiguous(found.map(c => `${c.name} ${c.id.slice(0, 8)}`)) }
-      const candidate = found[0]
-      if (!candidate) return { text: `대화 상대를 찾지 못했습니다: ${target}` }
-      await openCandidate($, candidate)
-      conversation = lookup(await read($, conversations), candidate.id)[0]
-    }
-    if (!conversation) return { text: `대화 상대를 찾지 못했습니다: ${target}` }
+    const { target, text } = splitAddressee(args)
+    if (!target || !text) return { text: '사용법: /relay-chat <상대 이름 또는 ID 앞부분> <내용>' }
+    const conversation = await resolveConversation($, target)
+    if (typeof conversation === 'string') return { text: conversation }
     const failure = await sendTo($, conversation, text)
     return { text: failure ? `전송 실패 (${conversation.name}): ${failure}` : `${conversation.name}에게 보냈습니다.` }
+  })
+
+  on('command.run', { command: CONTEXT_COMMAND }, async ($, e) => {
+    const { target, text } = splitAddressee(e.args.trim())
+    if (!target) return { text: '사용법: /relay-ctx <상대 이름 또는 ID 앞부분> [요청]' }
+    const conversation = await resolveConversation($, target)
+    if (typeof conversation === 'string') return { text: conversation }
+    const failure = await shareContext($, [conversation], text || null)
+    return { text: failure ? `맥락 공유 실패 (${conversation.name}): ${failure}` : `${conversation.name}에게 보낼 맥락을 모델이 정리합니다.` }
   })
 
   on('session.receive', async ($, e, next) => {
