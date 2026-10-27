@@ -741,13 +741,15 @@ export const register: Register = (on, options) => {
     return (
       <Box gap={1}>
         <Text color="warning">{newest.line.quiet ? '🔕' : '💬'}</Text>
-        <Text bold>{who}</Text>
+        <Box flexShrink={0}><Text bold>{who}</Text></Box>
         <Box flexShrink={1} minWidth={0}>
           <Text wrap="truncate-end">{newest.line.quiet ? '자동 검토 답장' : preview(newest.line.text, width)}</Text>
         </Box>
-        <Text dimColor>{total > 1 ? `외 ${total - 1}건 · /relay-chat` : '/relay-chat'}</Text>
-        <Button key="band-open" label="열기" onPress={open} />
-        <Button key="band-dismiss" label="닫기" plain dimColor onPress={dismiss} />
+        <Box flexShrink={0} gap={1}>
+          <Text dimColor>{total > 1 ? `외 ${total - 1}건 · /relay-chat` : '/relay-chat'}</Text>
+          <Button key="band-open" label="열기" onPress={open} />
+          <Button key="band-dismiss" label="닫기" plain dimColor onPress={dismiss} />
+        </Box>
       </Box>
     )
   })
