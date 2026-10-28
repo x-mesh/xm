@@ -71,6 +71,20 @@ describe('redact() — known secret patterns', () => {
     expect(redact('Merge this branch?')).toEqual({ text: 'Merge this branch?', masked: 0 });
   });
 
+  test('does not mask a word that is itself the key of the next assignment', () => {
+    const line = 'identical Korean description without code tokens: equivalentFinding = false';
+    expect(redact(line)).toEqual({ text: line, masked: 0 });
+    expect(redact('tokens: total = 3')).toEqual({ text: 'tokens: total = 3', masked: 0 });
+  });
+
+  test('still masks values that end the line or sit before ordinary text', () => {
+    expect(redact('token: abc123def456').text).toBe('token: [REDACTED]');
+    expect(redact('password=hunter2 next').text).toBe('password=[REDACTED] next');
+    expect(redact('token=abc=def').text).toBe('token=[REDACTED]');
+    expect(redact('"password=hunter2"').text).toBe('"password=[REDACTED]"');
+    expect(redact('token: a\nnext: 1').text).toBe('token: [REDACTED]\nnext: 1');
+  });
+
   test('a provider-shaped secret inside a key=value context is masked exactly once, not double-counted', () => {
     // Regression: an earlier draft ran the whole-match provider-key pattern
     // before the key=value assignment scan, so the assignment scan would
