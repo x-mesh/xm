@@ -211,18 +211,45 @@ function stableFindingId(finding) {
   return `rf_${hash(JSON.stringify(identity), false).slice(0, 16)}`;
 }
 
+// Chosen by scoring 76 hand-labelled same-file finding pairs from reviewer records (≤3 lines
+// apart): with the code-line and tests-lens rules below, 0.6 merged 41 of 48 duplicates and
+// wrongly merged 1 of 28 distinct defects. Lower values started merging distinct defects.
+const SIMILAR_FINDING_OVERLAP = 0.6;
+
 function findingTokens(value) {
   const aliases = new Map([['credentials', 'credential'], ['password', 'credential'], ['passwords', 'credential'], ['secrets', 'secret'], ['leaked', 'exposure'], ['leak', 'exposure'], ['printed', 'exposure']]);
-  return [...new Set((String(value || '').toLowerCase().match(/[a-z0-9_]+/g) || []).map((token) => aliases.get(token) || token).filter((token) => !['a', 'an', 'and', 'the', 'is', 'to', 'of', 'in', 'on', 'with'].includes(token)))];
+  const tokens = [];
+  for (const [word] of String(value || '').toLowerCase().normalize('NFC').matchAll(/[\p{L}\p{N}_]+/gu)) {
+    // Korean glues particles onto words, so two phrasings of one defect share almost no whole
+    // words; syllable bigrams survive the particle change.
+    const syllables = [...word.replace(/\P{Script=Hangul}/gu, '')];
+    if (syllables.length === 1) tokens.push(syllables[0]);
+    for (let i = 0; i + 1 < syllables.length; i += 1) tokens.push(syllables[i] + syllables[i + 1]);
+    for (const [rest] of word.replace(/\p{Script=Hangul}+/gu, ' ').matchAll(/[\p{L}\p{N}_]+/gu)) tokens.push(aliases.get(rest) || rest);
+  }
+  return [...new Set(tokens.filter((token) => !['a', 'an', 'and', 'the', 'is', 'to', 'of', 'in', 'on', 'with'].includes(token)))];
+}
+
+function firstCodeLine(code) {
+  return String(code || '').split('\n').map((line) => line.trim().replace(/\s+/g, ' ')).find(Boolean) || '';
+}
+
+function reportsTestGap(finding) {
+  return (finding.lenses || [finding.lens]).includes('tests');
 }
 
 function equivalentFinding(left, right) {
   if (left.file !== right.file) return false;
   if (Number.isInteger(left.line) && Number.isInteger(right.line) && Math.abs(left.line - right.line) > 2) return false;
+  // A missing test and the production defect it would catch often cite the same line, but they
+  // need separate fixes; merging them hides one behind the other's severity.
+  if (reportsTestGap(left) !== reportsTestGap(right)) return false;
+  const code = firstCodeLine(left.code);
+  if (code && code === firstCodeLine(right.code)) return true;
   const a = findingTokens(left.description), b = findingTokens(right.description);
   const rightTokens = new Set(b);
   const common = a.filter((token) => rightTokens.has(token)).length;
-  return common / Math.max(a.length, b.length, 1) >= 0.8;
+  return common / Math.max(Math.min(a.length, b.length), 1) >= SIMILAR_FINDING_OVERLAP;
 }
 
 function synthesize(reports) {

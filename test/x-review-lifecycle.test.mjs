@@ -393,6 +393,32 @@ describe('xm review executable lifecycle', () => {
     expect(output.counts.medium).toBe(1);
   });
 
+  test('merges one Korean defect worded differently by two lenses and keeps the higher severity', () => {
+    const dir = workspace();
+    const result = spawnSync('node', [CLI, 'run', 'target.patch', '--lenses', 'correctness,risk', '--run-id', 'korean-paraphrase', '--json'], { cwd: dir, env: env(dir, { XM_FAKE_PANEL_MODE: 'korean-paraphrase' }), encoding: 'utf8' });
+    expect(result.status).toBe(0);
+    const output = JSON.parse(result.stdout);
+    expect(output.findings).toHaveLength(1);
+    expect(output.findings[0]).toMatchObject({ severity: 'Medium', lenses: ['correctness', 'risk'] });
+  });
+
+  test('merges identical Korean descriptions that cite different nearby lines', () => {
+    const dir = workspace();
+    const result = spawnSync('node', [CLI, 'run', 'target.patch', '--lenses', 'correctness,risk', '--run-id', 'korean-identical', '--json'], { cwd: dir, env: env(dir, { XM_FAKE_PANEL_MODE: 'korean-identical' }), encoding: 'utf8' });
+    expect(result.status).toBe(0);
+    const output = JSON.parse(result.stdout);
+    expect(output.findings).toHaveLength(1);
+    expect(output.findings[0].lenses).toEqual(['correctness', 'risk']);
+  });
+
+  test('keeps a missing-test finding separate from the production defect on the same line', () => {
+    const dir = workspace();
+    const result = spawnSync('node', [CLI, 'run', 'target.patch', '--lenses', 'correctness,tests', '--run-id', 'test-gap', '--json'], { cwd: dir, env: env(dir, { XM_FAKE_PANEL_MODE: 'test-gap' }), encoding: 'utf8' });
+    expect(result.status).toBe(0);
+    const output = JSON.parse(result.stdout);
+    expect(output.findings.map((finding) => finding.lenses.join()).sort()).toEqual(['correctness', 'tests']);
+  });
+
   test('deduplicates equivalent findings with mixed dispositions conservatively', () => {
     const dir = workspace();
     const result = spawnSync('node', [CLI, 'run', 'target.patch', '--lenses', 'correctness,risk', '--run-id', 'mixed-dedupe', '--json'], { cwd: dir, env: env(dir, { XM_FAKE_PANEL_MODE: 'mixed-disposition' }), encoding: 'utf8' });
