@@ -69,6 +69,16 @@ describe('captureTossItem — capture gate (validation, redact, truncate)', () =
     expect(() => captureTossItem(baseInput({ repro: undefined }))).toThrow(/repro/);
   });
 
+  test('rejects a repro.command that runs a file from a Claude session temp directory', () => {
+    const scratch = '/private/tmp/claude-501/-Users-jinwoo-work-project-agentic-reviewer/a7d0fae6/scratchpad/repro.mjs';
+    expect(() => captureTossItem(baseInput({ repro: { command: `node ${scratch} lib.mjs`, output: 'x' } })))
+      .toThrow(/session temp path \(\/private\/tmp\/claude-501\/.*repro\.mjs\)/);
+    expect(() => captureTossItem(baseInput({ repro: { command: `node '/tmp/claude-501/s/repro.mjs'`, output: 'x' } })))
+      .toThrow(/session temp path/);
+    expect(() => captureTossItem(baseInput({ repro: { command: 'node .xm/outbox/repro.mjs /tmp/other/input.json', output: 'x' } })))
+      .not.toThrow();
+  });
+
   test('rejects missing/empty repro.output', () => {
     expect(() => captureTossItem(baseInput({ repro: { command: 'cmd', output: '' } })))
       .toThrow(/repro\.output/);

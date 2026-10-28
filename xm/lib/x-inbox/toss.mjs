@@ -95,6 +95,13 @@ export const MAX_CAPTURED_OUTPUT_CHARS = 2000;
  */
 export const REDACT_MARGIN_CHARS = 2000;
 
+/**
+ * Claude Code's per-session temp root (`/private/tmp/claude-<uid>/…`, scratchpad included).
+ * Agents write repro scripts there by default; the directory disappears with the session, so a
+ * report whose command runs a file from it cannot be reproduced by the receiver.
+ */
+const SESSION_TEMP_PATH_RE = /(?:\/private)?\/tmp\/claude-\d+\/[^\s'"]*/;
+
 function nowIso() {
   return new Date().toISOString();
 }
@@ -171,6 +178,10 @@ export function captureTossItem(input) {
   }
   if (!nonEmptyString(repro.command)) {
     throw new Error('captureTossItem: repro.command is required and must be non-empty — a reproducible command is the whole point of a toss (SC2)');
+  }
+  const sessionTemp = repro.command.match(SESSION_TEMP_PATH_RE);
+  if (sessionTemp) {
+    throw new Error(`captureTossItem: repro.command points at a Claude session temp path (${sessionTemp[0]}), which is deleted when that session ends and leaves the receiver nothing to run — copy the script into this project (for example .xm/outbox/) and point the command at the copy`);
   }
   if (!nonEmptyString(repro.output)) {
     throw new Error('captureTossItem: repro.output is required and must be non-empty — capture the actual command output, not a description of it (SC2)');

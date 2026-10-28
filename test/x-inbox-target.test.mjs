@@ -148,6 +148,73 @@ describe('resolveTarget — 3 failure modes, each with a distinct reason (t4 don
     }
   });
 
+  function cloneOf(prefix, originUrl) {
+    const dir = mkdtempSync(join(tmpdir(), prefix));
+    mkdirSync(join(dir, '.xm'), { recursive: true });
+    git('init -q', dir);
+    git(`remote add origin ${originUrl}`, dir);
+    return dir;
+  }
+
+  test('ambiguous: an exact match that is a stale clone of a fresher registered checkout is refused', () => {
+    const home = mkdtempSync(join(tmpdir(), 'x-inbox-home-'));
+    const stale = cloneOf('x-inbox-stale-', 'git@github.com:x-mesh/xm.git');
+    const fresh = cloneOf('x-inbox-fresh-', 'https://github.com/x-mesh/xm');
+    try {
+      writeRegistry(home, [
+        makeEntry('xm', stale, { last_seen: '2026-10-15T07:17:25.918Z' }),
+        makeEntry('x-kit', fresh, { last_seen: '2026-10-28T06:17:31.655Z' }),
+      ]);
+
+      const result = resolveTargetIsolated('xm', home);
+      expect(result.ok).toBe(false);
+      expect(result.reason).toBe('ambiguous');
+      expect(result.candidates).toEqual(['x-kit', 'xm']);
+      expect(result.message).toContain('same repository');
+      expect(result.message).toContain(`xm project archive ${stale}`);
+    } finally {
+      for (const dir of [home, stale, fresh]) rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  test('ambiguous: a stale clone sharing its id with the fresher clone is still refused', () => {
+    const home = mkdtempSync(join(tmpdir(), 'x-inbox-home-'));
+    const stale = cloneOf('x-inbox-stale-', 'git@github.com:x-mesh/xm.git');
+    const fresh = cloneOf('x-inbox-fresh-', 'git@github.com:x-mesh/xm.git');
+    try {
+      writeRegistry(home, [
+        makeEntry('xm', stale, { last_seen: '2026-09-07T00:00:00.000Z' }),
+        makeEntry('xm', fresh, { last_seen: '2026-09-30T00:00:00.000Z' }),
+      ]);
+
+      const result = resolveTargetIsolated('xm', home);
+      expect(result.ok).toBe(false);
+      expect(result.candidates).toEqual(['xm']);
+      expect(result.message).not.toContain('Re-run with');
+      expect(result.message).toContain(`xm project archive ${stale}`);
+    } finally {
+      for (const dir of [home, stale, fresh]) rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  test('ok: two clones of one repository used within the same week both stay addressable', () => {
+    const home = mkdtempSync(join(tmpdir(), 'x-inbox-home-'));
+    const first = cloneOf('x-inbox-first-', 'git@github.com:x-mesh/xm.git');
+    const second = cloneOf('x-inbox-second-', 'git@github.com:x-mesh/xm.git');
+    try {
+      writeRegistry(home, [
+        makeEntry('xm', first, { last_seen: '2026-10-25T00:00:00.000Z' }),
+        makeEntry('x-kit', second, { last_seen: '2026-10-28T00:00:00.000Z' }),
+      ]);
+
+      const result = resolveTargetIsolated('xm', home);
+      expect(result.ok).toBe(true);
+      expect(result.path).toBe(first);
+    } finally {
+      for (const dir of [home, first, second]) rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
   test('ok: exact id match with .xm/ present resolves {path, memMeshProjectId} — the non-failure control case', () => {
     const home = mkdtempSync(join(tmpdir(), 'x-inbox-home-'));
     const projDir = mkdtempSync(join(tmpdir(), 'x-inbox-real-'));
