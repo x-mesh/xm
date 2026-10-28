@@ -1,3 +1,4 @@
 [test]
 # The relay-chat mod's tests import `claude-code/testing` and run under `claude plugin test xm`.
 pathIgnorePatterns = ["xm/hooks/relay-chat/**"]
+preload = ["./test/preload-isolate-home.mjs"]

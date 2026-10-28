@@ -14,7 +14,9 @@ import { fileURLToPath } from 'node:url';
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 const SERVER_PATH = resolve(__dirname, '..', 'lib', 'x-dashboard-server.mjs');
-const PID_FILE = join(homedir(), '.xm', 'run', 'xdashboard-server.pid');
+// The spawned server resolves its home from HOME, which the test preload isolates; Bun's
+// in-process homedir() would still point at the developer's real home.
+const PID_FILE = join(process.env.HOME || homedir(), '.xm', 'run', 'xdashboard-server.pid');
 
 const TEST_PORT_1 = 19898;
 const TEST_PORT_2 = 19897;
