@@ -197,6 +197,29 @@ describe('resolveTarget — 3 failure modes, each with a distinct reason (t4 don
     }
   });
 
+  test('ambiguous: a stale target that is a linked worktree is compared through its shared config', () => {
+    const home = mkdtempSync(join(tmpdir(), 'x-inbox-home-'));
+    const main = cloneOf('x-inbox-main-', 'git@github.com:x-mesh/xm.git');
+    const worktree = join(tmpdir(), `x-inbox-worktree-${process.pid}-${Date.now()}`);
+    const fresh = cloneOf('x-inbox-fresh-', 'https://github.com/x-mesh/xm.git');
+    try {
+      git('-c user.name=t -c user.email=t@example.test commit -q --allow-empty -m base', main);
+      git(`worktree add -q -b stale ${worktree}`, main);
+      mkdirSync(join(worktree, '.xm'), { recursive: true });
+      writeRegistry(home, [
+        makeEntry('xm-wt', worktree, { last_seen: '2026-10-01T00:00:00.000Z' }),
+        makeEntry('x-kit', fresh, { last_seen: '2026-10-28T00:00:00.000Z' }),
+      ]);
+
+      const result = resolveTargetIsolated('xm-wt', home);
+      expect(result.ok).toBe(false);
+      expect(result.reason).toBe('ambiguous');
+      expect(result.candidates).toEqual(['x-kit', 'xm-wt']);
+    } finally {
+      for (const dir of [home, main, worktree, fresh]) rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
   test('ok: two clones of one repository used within the same week both stay addressable', () => {
     const home = mkdtempSync(join(tmpdir(), 'x-inbox-home-'));
     const first = cloneOf('x-inbox-first-', 'git@github.com:x-mesh/xm.git');

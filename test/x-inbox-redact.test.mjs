@@ -71,6 +71,14 @@ describe('redact() — known secret patterns', () => {
     expect(redact('Merge this branch?')).toEqual({ text: 'Merge this branch?', masked: 0 });
   });
 
+  test('masks ambiguous values that are followed by =, :, ==, or =>', () => {
+    expect(redact('token: abc123 = x').text).toBe('token: [REDACTED] = x');
+    expect(redact('password=hunter2: retry').text).toBe('password=[REDACTED] retry');
+    expect(redact('token: abc123 => 401').text).toBe('token: [REDACTED] => 401');
+    expect(redact('tokens: abc123 == expected').text).toBe('tokens: [REDACTED] == expected');
+    expect(redact('tokens: sk_live-9f8e = x').text).toBe('tokens: [REDACTED] = x');
+  });
+
   test('does not mask a word that is itself the key of the next assignment', () => {
     const line = 'identical Korean description without code tokens: equivalentFinding = false';
     expect(redact(line)).toEqual({ text: line, masked: 0 });

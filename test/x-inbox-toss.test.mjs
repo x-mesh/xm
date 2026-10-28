@@ -75,6 +75,10 @@ describe('captureTossItem — capture gate (validation, redact, truncate)', () =
       .toThrow(/session temp path \(\/private\/tmp\/claude-501\/.*repro\.mjs\)/);
     expect(() => captureTossItem(baseInput({ repro: { command: `node '/tmp/claude-501/s/repro.mjs'`, output: 'x' } })))
       .toThrow(/session temp path/);
+    expect(() => captureTossItem(baseInput({ repro: { command: 'cd /private/tmp/claude-501 && node repro.mjs', output: 'x' } })))
+      .toThrow(/session temp path \(\/private\/tmp\/claude-501\)/);
+    expect(() => captureTossItem(baseInput({ repro: { command: 'node /tmp/claude-501x/repro.mjs', output: 'x' } })))
+      .not.toThrow();
     expect(() => captureTossItem(baseInput({ repro: { command: 'node .xm/outbox/repro.mjs /tmp/other/input.json', output: 'x' } })))
       .not.toThrow();
   });

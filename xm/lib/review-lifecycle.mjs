@@ -212,9 +212,11 @@ function stableFindingId(finding) {
 }
 
 // Chosen by scoring 76 hand-labelled same-file finding pairs from reviewer records (≤3 lines
-// apart): with the code-line and tests-lens rules below, 0.6 merged 41 of 48 duplicates and
-// wrongly merged 1 of 28 distinct defects. Lower values started merging distinct defects.
+// apart). With the tests-lens rule below, these two thresholds merged 40 of 48 duplicates and
+// none of 28 distinct defects. Without the shared-code floor, two distinct defects quoting the
+// same line merged (overlap 0.24); a lower text threshold also started merging distinct defects.
 const SIMILAR_FINDING_OVERLAP = 0.6;
+const SHARED_CODE_OVERLAP = 0.25;
 
 function findingTokens(value) {
   const aliases = new Map([['credentials', 'credential'], ['password', 'credential'], ['passwords', 'credential'], ['secrets', 'secret'], ['leaked', 'exposure'], ['leak', 'exposure'], ['printed', 'exposure']]);
@@ -244,12 +246,12 @@ function equivalentFinding(left, right) {
   // A missing test and the production defect it would catch often cite the same line, but they
   // need separate fixes; merging them hides one behind the other's severity.
   if (reportsTestGap(left) !== reportsTestGap(right)) return false;
-  const code = firstCodeLine(left.code);
-  if (code && code === firstCodeLine(right.code)) return true;
   const a = findingTokens(left.description), b = findingTokens(right.description);
   const rightTokens = new Set(b);
-  const common = a.filter((token) => rightTokens.has(token)).length;
-  return common / Math.max(Math.min(a.length, b.length), 1) >= SIMILAR_FINDING_OVERLAP;
+  const overlap = a.filter((token) => rightTokens.has(token)).length / Math.max(Math.min(a.length, b.length), 1);
+  const code = firstCodeLine(left.code);
+  const sharedCode = code !== '' && code === firstCodeLine(right.code);
+  return overlap >= (sharedCode ? SHARED_CODE_OVERLAP : SIMILAR_FINDING_OVERLAP);
 }
 
 function synthesize(reports) {

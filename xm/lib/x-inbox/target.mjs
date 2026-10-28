@@ -116,14 +116,30 @@ export function isSimilarProjectName(input, candidateId) {
 // abandoned: a report sent there lands in a mem-mesh project nobody reads.
 const STALE_DUPLICATE_MS = 7 * 24 * 60 * 60 * 1000;
 
-function originRepository(path) {
-  let config;
+function gitConfigPath(path) {
+  const dotGit = join(path, '.git');
+  let pointer;
   try {
-    config = readFileSync(join(path, '.git', 'config'), 'utf8');
-  } catch {
-    // Deleted checkout, worktree (`.git` is a file), or no git at all: no origin to compare.
+    pointer = readFileSync(dotGit, 'utf8');
+  } catch (err) {
+    if (err.code === 'EISDIR') return join(dotGit, 'config');
+    // Deleted checkout or no git at all: no origin to compare.
     return null;
   }
+  // A linked worktree's `.git` file names its private gitdir; `commondir` there leads to the
+  // repository's shared config, where the origin lives.
+  const gitdir = pointer.match(/^gitdir:\s*(.+)$/m)?.[1]?.trim();
+  if (!gitdir) return null;
+  const privateDir = resolve(path, gitdir);
+  const commonDirFile = join(privateDir, 'commondir');
+  const commonDir = existsSync(commonDirFile) ? resolve(privateDir, readFileSync(commonDirFile, 'utf8').trim()) : privateDir;
+  return join(commonDir, 'config');
+}
+
+function originRepository(path) {
+  const configPath = gitConfigPath(path);
+  if (!configPath || !existsSync(configPath)) return null;
+  const config = readFileSync(configPath, 'utf8');
   const section = config.split(/^\[/m).find((part) => /^remote\s+"origin"\]/.test(part));
   const url = section?.match(/^\s*url\s*=\s*(\S+)/m)?.[1];
   if (!url) return null;

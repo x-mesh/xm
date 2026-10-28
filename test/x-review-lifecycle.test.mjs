@@ -411,6 +411,23 @@ describe('xm review executable lifecycle', () => {
     expect(output.findings[0].lenses).toEqual(['correctness', 'risk']);
   });
 
+  test('merges a Korean description contained in a longer one on a nearby line', () => {
+    const dir = workspace();
+    const result = spawnSync('node', [CLI, 'run', 'target.patch', '--lenses', 'correctness,risk', '--run-id', 'korean-partial', '--json'], { cwd: dir, env: env(dir, { XM_FAKE_PANEL_MODE: 'korean-partial' }), encoding: 'utf8' });
+    expect(result.status).toBe(0);
+    const output = JSON.parse(result.stdout);
+    expect(output.findings).toHaveLength(1);
+    expect(output.findings[0].lenses).toEqual(['correctness', 'risk']);
+  });
+
+  test('keeps two distinct defects separate even when they quote the same line', () => {
+    const dir = workspace();
+    const result = spawnSync('node', [CLI, 'run', 'target.patch', '--lenses', 'correctness,risk', '--run-id', 'shared-code-distinct', '--json'], { cwd: dir, env: env(dir, { XM_FAKE_PANEL_MODE: 'shared-code-distinct' }), encoding: 'utf8' });
+    expect(result.status).toBe(0);
+    const output = JSON.parse(result.stdout);
+    expect(output.findings.map((finding) => finding.lenses.join()).sort()).toEqual(['correctness', 'risk']);
+  });
+
   test('keeps a missing-test finding separate from the production defect on the same line', () => {
     const dir = workspace();
     const result = spawnSync('node', [CLI, 'run', 'target.patch', '--lenses', 'correctness,tests', '--run-id', 'test-gap', '--json'], { cwd: dir, env: env(dir, { XM_FAKE_PANEL_MODE: 'test-gap' }), encoding: 'utf8' });
