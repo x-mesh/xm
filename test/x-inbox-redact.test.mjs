@@ -101,6 +101,13 @@ describe('redact() — known secret patterns', () => {
     expect(redact('password=mytokenvalue=abc').text).toBe('password=[REDACTED]');
   });
 
+  test('a comparison or arrow after a key-shaped value is not read as its assignment', () => {
+    expect(redact('token: password == expected')).toEqual({ text: 'token: [REDACTED] == expected', masked: 1 });
+    expect(redact('token: password => 401')).toEqual({ text: 'token: [REDACTED] => 401', masked: 1 });
+    expect(redact('token: password :: next')).toEqual({ text: 'token: [REDACTED] :: next', masked: 1 });
+    expect(redact('tokens: password\n= hunter2').text).toBe('tokens: [REDACTED]\n= [REDACTED]');
+  });
+
   test('still masks values that end the line or sit before ordinary text', () => {
     expect(redact('token: abc123def456').text).toBe('token: [REDACTED]');
     expect(redact('password=hunter2 next').text).toBe('password=[REDACTED] next');

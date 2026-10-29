@@ -99,8 +99,15 @@ const ASSIGNMENT_RE = new RegExp(
 // still masked (it may be the secret itself), and the scan restarts at its
 // start so the assignment it begins is masked too. The value class admits
 // `:`/`=`, so one trailing separator still counts as key-shaped. The length
-// cap keeps the rescan bounded: a long value is never rescanned.
+// cap keeps the rescan bounded: a long value is never rescanned. Without a
+// separator of its own, the value must be followed by a single `=` or `:`;
+// after `==`, `=>`, `::` the text is a comparison or arrow, not a secret.
 const KEY_SHAPED_VALUE_RE = new RegExp(`^[A-Za-z0-9_.-]{0,40}(?:${SECRET_TERM})[A-Za-z0-9_.-]{0,40}[:=]?$`, 'i');
+const NEXT_SEPARATOR_RE = /^\s{0,10}(?:=(?![=>])|:(?!:))/;
+
+function startsNextAssignment(value, after) {
+  return KEY_SHAPED_VALUE_RE.test(value) && (/[:=]$/.test(value) || NEXT_SEPARATOR_RE.test(after));
+}
 
 // 2. `Authorization: Bearer <token>` / bare `Bearer <token>` headers. Keeps
 //    the "Bearer " marker, masks only the token.
@@ -177,7 +184,7 @@ export function redact(text) {
     const q = dq !== undefined ? '"' : sq !== undefined ? "'" : '';
     assigned += `${result.slice(copied, valueStart)}${q}${REDACTED}${q}`;
     copied = valueEnd;
-    if (uq !== undefined && KEY_SHAPED_VALUE_RE.test(uq)) ASSIGNMENT_RE.lastIndex = valueStart;
+    if (uq !== undefined && startsNextAssignment(uq, result.slice(valueEnd, valueEnd + 16))) ASSIGNMENT_RE.lastIndex = valueStart;
   }
   result = assigned + result.slice(copied);
 
