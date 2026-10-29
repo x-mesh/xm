@@ -39,7 +39,7 @@ after: x-review
 
 | Mode | Output | Publishes? |
 |------|--------|------------|
-| `pr [<number>]` | PR title + body. With a number: revise that PR's body | Yes — `gh pr create` / `gh pr edit` after one confirmation (Step 3 defines the one case that skips it) |
+| `pr [<number>] [--base <branch>]` | PR title + body. With a number: revise that PR's body | Yes — `gh pr create` / `gh pr edit` after one confirmation (Step 3 defines the one case that skips it) |
 | `issue [<number>] [<text>]` | Issue title + body. With a number: revise that issue's body | Yes — `gh issue create` / `gh issue edit` after one confirmation |
 | `release [<tag>]` | GitHub release title + notes | No — text only |
 | `changelog [<range>]` | Entries for the project's changelog | No — text only |
@@ -98,7 +98,10 @@ Collect before writing. Run independent reads in one Bash call.
 | `issue` | The user's report, reproduction steps, exact error text, `git rev-parse --short HEAD`, OS and version when relevant, the issue template (see Templates below). Existing body via `gh issue view <n> --json title,body` when revising |
 | `release`, `changelog`, `commit` | `GK_AGENT=1 git-kit log --body <range>`, `GK_AGENT=1 git-kit diff --digest <range>`, the existing `CHANGELOG.md` sections for format, and the version passed by the caller |
 
-Base branch for `pr`: use the base that `git-kit context` reports. If it reports none, use
+Base branch for `pr`: a `--base <branch>` argument wins. `xm:wt` passes the branch's recorded
+`gk-parent` this way, because `git-kit context` reports the repository's `base_branch` (often
+`main`) even for a branch cut from `develop`. Without `--base`, use the base that
+`git-kit context` reports. If it reports none, use
 `gh repo view --json defaultBranchRef -q .defaultBranchRef.name`. Never assume `main`.
 
 Templates for `pr` and `issue`. Stop at the first source that has one:

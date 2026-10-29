@@ -441,7 +441,7 @@ finding 생명주기·판정·수렴 정책은 계속 x-review가 소유합니�
 | [x-humanize](#x-humanize) | AI 글쓰기 패턴 제거 (v0.7.0, 안정화 전) | `/xm:humanize audit text` |
 | [x-recall](#x-recall) | 세션 간 산출물 인덱스 | `xm recall list` |
 | [x-panel](#x-panel) | 크로스 모델 적대 리뷰 | `xm panel` |
-| [x-wt](#x-wt) | 세션 worktree — 격리 후 부모로 land | `/xm:wt` |
+| [x-wt](#x-wt) | 세션 worktree — 격리, PR, 정리 | `/xm:wt` |
 | [x-remote](#x-remote) | 원격 호스트 세션을 Discord에서 조종 | `xm remote start` |
 | xm | 번들 + 설정 + 파이프라인 | `/xm pipeline release` |
 
@@ -1355,15 +1355,16 @@ xm panel status <run> --logs        # RAW 이벤트 로그(events.jsonl) 스트�
 
 ### x-wt
 
-세션 worktree. **현재 세션 전체**를 격리된 git worktree에서 돌리고, 시작한 브랜치로 다시 land합니다. `/xm:build run --worktrees`(task마다 worktree 하나, gate 포함)와 달리 `/xm:wt`는 게이트 없는 얇은 "옆으로 빼서 작업 후 부모로 머지" 래퍼입니다 — verb 2개, task DAG 없음.
+세션 worktree. **현재 세션 전체**를 `develop`에서 갈라진 git-kit worktree에서 돌리고, 작업을 PR로 올린 뒤 PR이 병합되면 worktree를 지웁니다. `/xm:build run --worktrees`(task마다 worktree 하나, gate 포함)와 달리 `/xm:wt`는 task DAG 없는 얇은 래퍼이고 게이트도 없습니다.
 
 ```
-/xm:wt              # worktree 생성 + 세션을 그 안으로 전환
-/xm:wt land         # verify → git-kit promote(부모로 머지, push 없음) → 복귀
-/xm:wt status       # 세션 위치 + git-kit worktree 목록
+/xm:wt start fix/x  # git-kit refresh → develop에서 worktree 생성 → 세션을 그 안으로 전환
+/xm:wt pr           # 검증 → xm:write pr --base develop (push + PR), 리뷰 반영을 위해 worktree 유지
+/xm:wt land         # PR 병합 확인 → develop 갱신 → worktree와 브랜치 삭제
+/xm:wt status       # 세션 위치, 부모 브랜치, PR 상태
 ```
 
-하네스 `EnterWorktree`/`ExitWorktree`가 세션 cwd를 옮기고, `git-kit promote`가 머지(커밋 + 부모로 머지, 네트워크 없음)를 담당합니다. `start`가 부모를 `branch.<name>.gk-parent`로 기록해 `land`가 실제로 시작한 브랜치로 머지합니다. push는 하지 않습니다 — 준비되면 부모를 직접 push하세요. state는 worktree를 따라가고(각 체크아웃이 자체 `.xm/` 보유), config는 메인 리포와 공유됩니다.
+`git-kit worktree acquire <branch> --from develop`이 `~/.gk/worktree/<project>/<branch>`에 worktree를 만들고, `develop`을 `branch.<name>.gk-parent`로 기록합니다. 하네스의 `EnterWorktree(path)`/`ExitWorktree`는 세션 cwd만 옮깁니다. `git-kit refresh`는 `main`과 `develop`을 각자의 원격으로 fast-forward할 뿐, `main`을 `develop`으로 옮기지 않습니다. PR이 없는 브랜치라면 `land`가 `git-kit worktree finish`로 부모에 로컬 머지하고 push하지 않습니다. 원격 브랜치는 물어본 뒤에만 지웁니다.
 
 ---
 

@@ -1,33 +1,36 @@
 ---
 name: wt
-description: Session worktree — isolate the whole current session in a git worktree, then land it back to the parent branch. Use for "worktree로 작업", "이 세션을 worktree에서", "격리해서 작업하고 부모로 머지", "/xm:wt", or when the user wants the ENTIRE session (not one task) to run in an isolated worktree and later merge back.
+description: Session worktree — move the whole current session into a git-kit worktree cut from develop, open a PR from it, and remove the worktree after the PR merges. Use for "worktree로 작업", "이 세션을 worktree에서", "worktree에서 작업하고 PR", "격리해서 작업 후 부모로 머지", "/xm:wt", or when the user wants the ENTIRE session (not one task) to run in an isolated worktree.
 model: sonnet
 allowed-tools:
   - Bash
   - EnterWorktree
   - ExitWorktree
   - AskUserQuestion
+  - Skill
 ---
 
 # x-wt — Session Worktree
 
 ## Overview
 
-`/xm:wt` runs the WHOLE current session inside an isolated git worktree, then
-lands that work back onto the branch you started from. Two verbs:
+`/xm:wt` runs the WHOLE current session inside an isolated git worktree and
+delivers that work through a PR. Four verbs:
 
-- **`/xm:wt`** (or `/xm:wt start [name]`) — create a worktree, switch the session into it.
-- **`/xm:wt land`** — merge the worktree branch into its parent (no push), return the session.
+- **`/xm:wt start [<branch>]`** — refresh the parent, create a gk worktree from it, switch the session into it.
+- **`/xm:wt pr`** — verify, then open (or update) a PR into the parent. The worktree stays for review fixes.
+- **`/xm:wt land [<branch>]`** — after the PR merges, refresh the parent and remove the worktree and branch. With no PR, merge into the parent locally instead (no push).
+- **`/xm:wt status`** — where the session is, and the PR state.
 
 This is session-scoped isolation. It is NOT x-build's worktree mode
 (`/xm:build run --worktrees`), which fans ONE worktree out PER task from a
-project's task DAG. `/xm:wt` has no tasks and no gate panel — it is the thin
-"work aside, then merge back" wrapper.
+project's task DAG. `/xm:wt` has no tasks and no gate panel.
 
 **Mechanism split** (do not blur):
-- The harness tools `EnterWorktree` / `ExitWorktree` own the SESSION cwd switch.
-- `git-kit worktree finish` owns the merge-back: it wraps `promote` (commit + one-hop merge into `gk-parent`, no push) AND owns worktree/branch cleanup.
-- The skill just sequences them and records the parent so `land` merges correctly.
+- `git-kit worktree acquire` creates the worktree under `~/.gk/worktree/<project>/<branch>` and records `branch.<branch>.gk-parent`.
+- The harness tools `EnterWorktree(path)` / `ExitWorktree(keep)` move the SESSION cwd. They never create or delete the worktree: a worktree entered by `path` is never removed by `ExitWorktree`.
+- `xm:write pr` writes and publishes the PR, including the branch push.
+- `git-kit refresh` and `git-kit worktree remove` / `finish` do the integration and cleanup.
 
 > `EnterWorktree` / `ExitWorktree` are harness (Claude Code) tools, not xm CLIs.
 > If they are not already available, load them first:
@@ -35,104 +38,160 @@ project's task DAG. `/xm:wt` has no tasks and no gate panel — it is the thin
 
 ## When to Use
 
-- "worktree로 (전체) 작업하자", "이 세션을 worktree에서 돌려", "격리해서 작업 후 부모로 머지"
-- The user wants the current session's ongoing work isolated on a throwaway branch, mergeable later.
-- `/xm:wt`, `/xm:wt start`, `/xm:wt land`, `/xm:wt status`.
+- "worktree로 (전체) 작업하자", "이 세션을 worktree에서 돌려", "worktree에서 작업하고 PR 올리자"
+- The user wants the current session's work isolated on its own branch and delivered as a PR.
+- `/xm:wt`, `/xm:wt start`, `/xm:wt pr`, `/xm:wt land`, `/xm:wt status`.
 
 ## Do NOT Use When
 
 - The user wants ONE task or parallel tasks isolated → `/xm:build run --worktrees`.
-- The user wants a plain branch (no separate working directory) → `git switch -c` / git-kit.
+- The user wants several independent features as parallel PRs → `/xm:batch`.
+- The user wants a plain branch (no separate working directory) → `git-kit switch` / `git switch -c`.
 - The user only wants a subagent isolated → the Agent tool's `isolation: "worktree"`.
 - The user never said "worktree" — do not put a session into a worktree unprompted.
 
 ## Core Process — route on the first token
 
-`start` (empty / `start` / `go` / `new`) → §Start. `land` (`land` / `finish` / `done`) → §Land.
-`status` → §Status.
+`start` (empty / `start` / `go` / `new`) → §Start. `pr` (`pr` / `publish`) → §PR.
+`land` (`land` / `finish` / `done`) → §Land. `status` → §Status. Any other first token
+(`/xm:wt fix/x`) → §Start with that token as the branch name.
 
 ### Start
 
 1. **Preconditions.**
    - In a git repo (`git rev-parse --is-inside-work-tree`). If not, stop and say so.
-   - Not already in a `/xm:wt` worktree — if `git config --get branch.$(git branch --show-current).gk-parent` returns a value, you are already in one; tell the user to `/xm:wt land` (or `status`) instead of nesting.
-   - Warn if the working tree is dirty: uncommitted changes stay in the CURRENT directory and do NOT follow into a fresh worktree (see Rationalizations for `worktree.baseRef`). Offer to commit first, or proceed.
-2. **Record the parent branch** BEFORE entering:
+   - Not already in a `/xm:wt` worktree: if `git config --get branch.$(git branch --show-current).gk-parent` returns a value, tell the user to `/xm:wt pr`, `land`, or `status` instead of nesting.
+   - Warn if the working tree is dirty: uncommitted changes stay in the CURRENT checkout and do NOT follow into the new worktree. Offer to commit first, or proceed.
+2. **Pick the parent.** `--from <branch>` wins. Otherwise use `develop` when a local `develop` exists (`git rev-parse --verify --quiet refs/heads/develop`), else the base that `GK_AGENT=1 git-kit context` reports. The parent must be a LOCAL branch: `acquire --from origin/develop` skips the `gk-parent` record, and `pr` / `land` then have no target.
+3. **Pick the branch name.** Use the name the user gave. Otherwise derive `<type>/<kebab-slug>` from the stated task, matching the repository's branch history (`fix/…`, `feat/…`, `docs/…`, `chore/…`). If there is no stated task, ask once.
+4. **Refresh the long-lived branches** so the worktree starts from the remote tip:
    ```bash
-   PARENT=$(git branch --show-current)   # the branch land will merge back into
+   GK_AGENT=1 git-kit refresh
    ```
-3. **Enter the worktree** — call the `EnterWorktree` tool (pass `name` only if the user named it; otherwise let it generate one). This switches the session cwd into a new worktree on a new branch.
-4. **Persist the parent** so `land` (a separate invocation) knows the target:
+   `refresh` prints text only (no JSON envelope, even with `--json`) and only fast-forwards each branch to its own remote, so `main` is never moved to `develop`. It exits 0 even when it skips a diverged branch, so check the result yourself: `git rev-parse <PARENT>` must equal `git rev-parse origin/<PARENT>`. If they differ, the parent has local commits that are not on the remote: report it and stop, because starting from that tip would put unpushed work into the PR. A non-zero exit means the fetch failed: report it.
+5. **Create the worktree:**
    ```bash
-   NEW=$(git branch --show-current)
-   git config branch."$NEW".gk-parent "$PARENT"
+   GK_AGENT=1 git-kit worktree acquire <branch> --from <PARENT>
    ```
-5. **Report** (normal mode → Korean):
+   Read `result.path`, `result.parent`, `result.reused`, and `result.init`. `result.parent` must equal `<PARENT>`. `reused: true` means the branch already had a worktree: say that you are resuming it, not starting fresh. `acquire` runs the `.gk.yaml` `worktree.init` bootstrap (for example `bun install`) by default; report a failed `init`.
+6. **Enter it** — call `EnterWorktree` with `path: <result.path>`. Never pass `name`: that creates a second worktree under `.claude/worktrees/` from `origin/<default-branch>`, not from the parent.
+7. **Report** (normal mode → Korean):
    ```
-   🌿 worktree 진입: <NEW>  (parent: <PARENT>)
-      경로: <worktree path>
-      작업 후 /xm:wt land 로 <PARENT>에 머지하세요.
+   🌿 worktree 진입: <branch>  (parent: <PARENT>)
+      경로: <result.path>
+      작업 후 /xm:wt pr 로 <PARENT> 대상 PR을 만드세요.
+   ```
+
+### PR
+
+1. **Confirm the worktree.** `BRANCH=$(git branch --show-current)`, `PARENT=$(git config --get branch.$BRANCH.gk-parent)`. If `PARENT` is empty, this branch was not started by `/xm:wt`: stop and say so.
+2. **Dirty-tree gate.** Run `git status --porcelain`. If it is non-empty, list the files and ask: commit the intended files (`GK_AGENT=1 git-kit commit`, staging only this work), or stop. Never commit everything to get past this gate.
+3. **Something to publish?** `git rev-list --count $PARENT..HEAD`. If it is 0, there is no commit for a PR: say so and stop.
+4. **Verify** (announce, keep light): run the project's check for the changed files. In this repository, run the `bun test <file>` files that cover the change; the full `bun test` takes about 15 minutes, so announce it before running it. Report failures and ask before opening a PR on failing code.
+5. **Existing PR?** `gh pr view $BRANCH --json number,state,url`.
+   - `OPEN` → this is a review fix. Ask once to push the new commits, then run `GK_AGENT=1 git-kit push` and branch on `state`. Report the PR URL. Offer `xm:write pr <number>` only if the body no longer matches the change.
+   - `MERGED` → the PR is done: point to `/xm:wt land`.
+   - `CLOSED` → show it and ask whether to open a new PR.
+   - No PR (`no pull requests found`) → continue to step 6.
+6. **Open the PR** — invoke the `xm:write` skill with the Skill tool:
+   ```
+   Skill: xm:write
+   args: pr --base <PARENT>
+   ```
+   `--base` is required: `git-kit context` reports the repository's `base_branch` (here `main`), not the `gk-parent`, so without it the PR targets the wrong branch. `xm:write` shows the title, body, and target, asks once, and pushes the branch as part of that question. Do not run `git-kit push` or `gh pr create` yourself for a new PR.
+7. **Report** (normal mode → Korean):
+   ```
+   📬 PR #<n> → <PARENT>: <url>
+      worktree는 그대로 둡니다. 리뷰를 반영한 뒤 /xm:wt pr 로 다시 push하세요.
+      병합되면 /xm:wt land 로 정리하세요.
    ```
 
 ### Land
 
-1. **Confirm you are in a `/xm:wt` worktree**: `PARENT=$(git config --get branch.$(git branch --show-current).gk-parent)`. If empty, this session was not started by `/xm:wt` — do NOT ExitWorktree; say so and stop.
-2. **Verify before merge** (announce, keep light): run the project's quick check if one exists (`bun test` here, or the repo's verify). Report failures; ask before merging broken code.
-3. **Dirty-tree gate BEFORE finish.** Run `git status --porcelain`. If it is non-empty, list the files to the user and ask them to choose: commit the intended work first, OR acknowledge that `finish` will auto-commit EVERYTHING — including unrelated and untracked files (e.g. `package-lock.json`) — via the kiro classifier as separate, unreviewed commits onto the parent. gk's OWN gated finish path refuses a dirty tree for exactly this reason ("gate must review exactly what merges"); the ungated default path has no such guard, so you are the guard. Do not proceed silently.
-4. **Merge + clean up — one command.** `git-kit worktree finish` wraps `promote` (commit + one-hop merge into `gk-parent`, no push) and then removes the worktree and deletes the branch.
+1. **Resolve the branch and worktree.** Use `<branch>` when given, else the current branch. `PARENT=$(git config --get branch.<branch>.gk-parent)`. If it is empty: in the main checkout, list the gk worktrees whose branch has a `gk-parent` (`GK_AGENT=1 git-kit worktree list --json`) and ask which one; elsewhere stop and say this branch was not started by `/xm:wt`. Take the worktree path from the `worktree list` row for `<branch>`.
+2. **Route on the PR.** `gh pr view <branch> --json number,state,url,headRefOid`.
+   - `MERGED` → §Land after a merged PR.
+   - `OPEN` → report the URL and stop. The PR is the integration path; do not merge locally around it.
+   - `CLOSED` → show it and ask: keep the worktree, or remove it as abandoned (the branch is then deleted with `-D` only after the user agrees).
+   - No PR → §Land without a PR.
+
+#### Land after a merged PR
+
+1. **Leave the worktree first.** If the session cwd is inside the worktree, call `ExitWorktree` with `action: "keep"`. It is a no-op when this session did not enter it. If `git rev-parse --show-toplevel` is still the worktree path afterwards (a session that was started inside it), stop and tell the user to run `/xm:wt land <branch>` from the main checkout: removing the worktree would delete the session's cwd. Run every later step from the main checkout (`git -C <path> rev-parse --git-common-dir` gives its `.git`).
+2. **Nothing left behind.** `git -C <path> status --porcelain` must be empty, and `git rev-parse <branch>` must equal the PR's `headRefOid`. A dirty tree or a local tip that differs from the merged head means work that is not in the PR: list it and stop.
+3. **Refresh the parent:** `GK_AGENT=1 git-kit refresh`, then check that `git rev-parse <PARENT>` equals `git rev-parse origin/<PARENT>`. As in §Start step 4, `refresh` has no JSON envelope and exits 0 when it skips a diverged branch; if they differ, report it and stop.
+4. **Remove the worktree:** `GK_AGENT=1 git-kit worktree remove <path>`. Never pass `--force`.
+5. **Delete the branch.** If `git merge-base --is-ancestor <branch> <PARENT>` succeeds (merge-commit merge), run `git branch -d <branch>`. If it fails, the PR was squash- or rebase-merged: step 2 already proved the branch tip is the merged PR head, so show that and ask before `git branch -D <branch>`.
+6. **Remote branch.** If `git ls-remote --exit-code --heads origin <branch>` exits 0, the remote branch still exists. Deleting it changes GitHub state: ask, and only on approval run `git push origin --delete <branch>`.
+7. **Report** (normal mode → Korean):
+   ```
+   ✅ PR #<n> 병합 확인: <branch> → <PARENT>
+      <PARENT>를 원격과 맞췄고, worktree와 로컬 브랜치를 지웠습니다.
+      원격 브랜치: <삭제함 | 남겨 둠>
+   ```
+
+#### Land without a PR
+
+Local integration, no network: merge into the parent with `git-kit worktree finish`.
+
+1. **Run inside the worktree.** If the session is not in it, call `EnterWorktree` with `path: <worktree path>`.
+2. **Verify before merge**, as in §PR step 4. Ask before merging failing code.
+3. **Dirty-tree gate BEFORE finish.** If `git status --porcelain` is non-empty, list the files and ask: commit the intended work first, OR acknowledge that `finish` will auto-commit EVERYTHING — including unrelated and untracked files — as separate, unreviewed commits onto the parent. gk's own gated finish path refuses a dirty tree for this reason; the ungated path has no such guard, so you are the guard.
+4. **Merge + clean up — one command.** It wraps `promote` (commit + one-hop merge into `gk-parent`, no push), then removes the worktree and deletes the branch:
    ```bash
    GK_AGENT=1 git-kit worktree finish --cleanup --delete-branch
    ```
-   Branch STRICTLY on the JSON `state` — NEVER the exit code (the shell exits 1 when cleanup removes the cwd even on success, and gated finish uses exit 3 as a normal paused flow):
-   - `ok` → merged and cleaned. Note `removed` / `branch_deleted` from `result`; continue to step 5.
-   - `error` whose message contains `promote failed` / `exit 3` → a merge CONFLICT paused in disguise: the child promote exited paused but the ungated wrapper flattened it to a plain error, so the resume contract is lost and the merge is mid-flight INSIDE the worktree. Do NOT ExitWorktree and do NOT discard anything: run `GK_AGENT=1 git-kit context` in the worktree, report the conflict state and the resume/abort options, then **STOP**.
-   - `blocked` / any other `error` → check whether the parent already contains the branch (`git branch --contains`). If yes, the merge STANDS and only cleanup failed (a `git branch -d` refusal or a `git worktree remove` blocked on leftover untracked files) — report that distinction, do not re-merge. If no, follow `error.remedies[0]` after checking its `safety`. Never remove the worktree yourself.
-5. **Return the session** — call `ExitWorktree` with `action: "keep"`. It restores the session cwd to the parent directory. Its "Your work is preserved at <path>" message is FALSE after `--cleanup` (that directory is already deleted) — never relay it; report from the finish JSON fields (`branch`, `to`, `removed`, `branch_deleted`).
+   Branch STRICTLY on the JSON `state` — NEVER the exit code (the shell exits 1 when cleanup removes the cwd even on success):
+   - `ok` → merged and cleaned. Note `removed` / `branch_deleted` from `result`.
+   - `error` whose message contains `promote failed` / `exit 3` → a merge CONFLICT paused in disguise; the merge is mid-flight INSIDE the worktree. Do NOT ExitWorktree and do NOT discard anything: run `GK_AGENT=1 git-kit context` in the worktree, report the conflict state and the resume/abort options, then **STOP**.
+   - `blocked` / any other `error` → check whether the parent already contains the branch (`git branch --contains`). If yes, the merge STANDS and only cleanup failed — report that distinction, do not re-merge. If no, follow `error.remedies[0]` after checking its `safety`. Never remove the worktree yourself.
+5. **Return the session** — call `ExitWorktree` with `action: "keep"`. Its "Your work is preserved at <path>" message is FALSE after `--cleanup` — never relay it; report from the finish JSON fields (`branch`, `to`, `removed`, `branch_deleted`).
 6. **Report** (normal mode → Korean):
    ```
-   ✅ <NEW> → <PARENT> 머지 완료 (push 안 함).
+   ✅ <branch> → <PARENT> 로컬 머지 완료 (push 안 함).
       worktree / 브랜치 정리됨 (removed / branch_deleted).
-      세션이 <PARENT>로 복귀했습니다.
       원격 반영은 git-kit land / push 로 직접 하세요.
    ```
 
 ### Status
 
-Report where the session is: `git branch --show-current`, whether it is a
-`/xm:wt` worktree (gk-parent set?), and `git-kit worktree` list for the repo.
-Read-only — never create or remove anything under `status`.
+Report where the session is: `git branch --show-current`, its `gk-parent`, the
+PR state (`gh pr view --json number,state,url`, or "no PR"), and
+`GK_AGENT=1 git-kit worktree list` for the repo. Read-only — never create,
+push, or remove anything under `status`.
 
 ## Common Rationalizations
 
 | Excuse | Reality |
 |--------|---------|
-| "I'll just `git merge` the branch by hand." | Use `git-kit worktree finish`: it wraps `promote` (commits, resolves the fast-forward / merge-tree path, needs no parent checkout, reads `gk-parent` so it merges into the branch you actually started from) and owns cleanup. Raw merge loses that and can land on the wrong base. |
-| "I'll skip recording the parent — land will figure it out." | `land` is a SEPARATE invocation; nothing carries the parent across turns except the `branch.<name>.gk-parent` config you set at start. Skip it and `finish`'s inner `promote` falls back to the configured base, merging into the wrong branch. |
-| "The tree is dirty but I'll enter a fresh worktree anyway." | With `worktree.baseRef=fresh` (default) the new worktree branches from origin/<default>; uncommitted changes in the current dir do NOT come along. Commit first, or set `worktree.baseRef=head` to branch from where you are. |
-| "I'll push after promote to be safe." | `promote` is deliberately no-network (local integration), and `finish` inherits that. Never push without the user asking — pushing the parent is their call. |
-| "Only one vendor / no gate, so I'll add a panel review here." | `/xm:wt` is the ungated wrapper by design. Gated per-task merges are `/xm:build run --worktrees`. Don't reinvent the gate here. |
-| "I'll define a shell alias for the long git-kit command." | The Bash tool is stateless per call — an alias/function from one call is gone in the next. Call `git-kit` (or `GK_AGENT=1 git-kit`) directly every time. |
-| "I'm in a worktree already, I'll just start another." | `EnterWorktree` refuses a nested create, and a `gk-parent` already set means you are mid-session. Land or exit first. |
-| "A couple of unrelated dirty files can ride along." | `finish` auto-commits them via the kiro classifier as separate, unreviewed commits on the parent; gk's own gated path refuses dirty trees for exactly this reason. Gate on `git status --porcelain` first. |
+| "`EnterWorktree(name)` is one call; acquire plus `path` is two." | `name` creates the worktree under `.claude/worktrees/` from `origin/<default-branch>` (`main`) and records no `gk-parent`. The PR then misses every unreleased `develop` commit and `land` has no target. Create with `acquire --from <PARENT>`, enter by `path`. |
+| "I'll fast-forward `main` to `develop` so both match before starting." | `main` is the released state; it trails `develop` between releases on purpose. Moving it releases unreleased work. `git-kit refresh` aligns each branch with its OWN remote, which is what the start needs. |
+| "`xm:write` finds the base by itself." | It uses the `base_branch` that `git-kit context` reports, which is `main` here even for a branch cut from `develop`. Pass `--base <gk-parent>`. |
+| "I'll push the branch first, then call `xm:write`." | `xm:write pr` folds the push into its one publish question. A separate push is a second prompt and publishes before the user saw the PR text. |
+| "The PR is open, so `land` can merge it locally to save time." | The PR is the integration path: CI and review run there. Merging around it lands unreviewed code. Wait for the merge, then `land`. |
+| "The PR merged, so `git branch -D` is fine." | Only after the local tip equals the PR's `headRefOid` and the worktree is clean. A commit made after the merge exists nowhere else; `-D` deletes it. |
+| "`ExitWorktree(remove)` cleans up in one step." | A worktree entered by `path` is never removed by `ExitWorktree`, and it only acts on worktrees this session entered. gk created it; `git-kit worktree remove` removes it. |
+| "The remote branch is stale, I'll delete it with the local one." | Deleting a remote branch changes GitHub state. Ask first. |
 | "Non-zero exit code, so the finish failed." | The shell exits 1 when cleanup removes the cwd even on `state:"ok"`, and gated finish uses exit 3 as its normal paused flow. Branch only on the `state` field. |
-| "finish returned an error, so the worktree is junk — I'll remove it." | An error containing `exit 3` is a wrapped merge conflict: the merge is half-done inside the worktree. Preserve it and surface the conflict; do not discard. |
-| "I'll pass ExitWorktree's message through to the user." | Its "preserved at <path>" claim points at a directory gk already deleted by `--cleanup`. Report from the finish JSON instead. |
+| "finish returned an error, so the worktree is junk — I'll remove it." | An error containing `exit 3` is a wrapped merge conflict: the merge is half-done inside the worktree. Preserve it and surface the conflict. |
+| "I'll define a shell alias for the long git-kit command." | The Bash tool is stateless per call — an alias/function from one call is gone in the next. Call `GK_AGENT=1 git-kit` directly every time. |
 
 ## Red Flags
 
-- You called `EnterWorktree` without recording the parent branch first.
-- You judged `finish` by its exit code instead of the `state` field.
-- You exited/removed the worktree after a finish `error` without checking for a wrapped conflict (`exit 3`).
-- You relayed ExitWorktree's "preserved at" message to the user.
-- You ran `finish` on a dirty tree without showing the file list to the user first.
-- You pushed (`git push` / `git-kit land`) during `land` without the user asking.
-- You put the session into a worktree when the user never said "worktree".
-- You inlined a task-gate / panel review — that belongs to `/xm:build run --worktrees`, not here.
-- You defined a shell alias/function and reused it across Bash calls.
+- You called `EnterWorktree` with `name` instead of the `path` from `acquire`.
+- You passed a remote ref (`origin/develop`) to `acquire --from`, so no `gk-parent` was recorded.
+- You moved `main` to match `develop` before starting.
+- You invoked `xm:write pr` without `--base <gk-parent>`.
+- You pushed a new branch yourself before `xm:write` asked.
+- You merged locally while the branch had an `OPEN` PR.
+- You deleted a branch with `-D`, or removed a worktree, without checking it is clean and equal to the merged PR head.
+- You deleted a remote branch without asking.
+- You ran `worktree remove` while the session cwd was inside that worktree.
+- You judged `finish` by its exit code instead of the `state` field, or relayed ExitWorktree's "preserved at" message after `--cleanup`.
 
 ## Verification
 
-- After `start`: `git branch --show-current` is the new branch AND `git config --get branch.<new>.gk-parent` returns the original branch.
-- After `land` success: `git-kit worktree finish` returned `state:"ok"` with `removed:true` (and `branch_deleted:true`), the parent branch now contains the worktree branch's commits (`git branch --contains` / the parent log shows them), the session cwd is back on the parent via `ExitWorktree(keep)`, and nothing was discarded.
-- You never pushed unless the user asked.
-- On a wrapped conflict (`error` containing `exit 3`) you stopped, preserved the worktree, and surfaced the resume/abort options instead of removing anything.
+- After `start`: `git branch --show-current` is the new branch, `git config --get branch.<branch>.gk-parent` returns the parent, the cwd is under `~/.gk/worktree/<project>/`, and `git merge-base --is-ancestor origin/<PARENT> HEAD` succeeds.
+- After `pr`: `gh pr view --json baseRefName,url` shows `baseRefName` equal to the `gk-parent`, and the worktree still exists.
+- After `land` with a merged PR: the worktree path is gone from `git-kit worktree list`, `git rev-parse --verify --quiet refs/heads/<branch>` fails, the parent equals its remote, and the remote branch was deleted only with the user's approval.
+- After `land` without a PR: `finish` returned `state:"ok"` with `removed:true`, the parent contains the branch's commits, and nothing was pushed.

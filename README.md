@@ -440,7 +440,7 @@ This is a *capability*, available today; proving it produces measurably better o
 | [x-humanize](#x-humanize) | Remove AI writing patterns (v0.7.0, pre-stable) | `/xm:humanize audit text` |
 | [x-recall](#x-recall) | Cross-session artifact index | `xm recall list` |
 | [x-panel](#x-panel) | Cross-model adversarial review | `xm panel` |
-| [x-wt](#x-wt) | Session worktree — isolate & land back | `/xm:wt` |
+| [x-wt](#x-wt) | Session worktree — isolate, PR, clean up | `/xm:wt` |
 | [x-remote](#x-remote) | Drive a remote host session from Discord | `xm remote start` |
 | xm | Bundle + config + pipeline | `/xm pipeline release` |
 
@@ -1358,15 +1358,16 @@ Two adversarial add-ons turn opinions into checked facts. **`--grounded`** makes
 
 ### x-wt
 
-Session worktree. Runs the **whole current session** in an isolated git worktree, then lands it back onto the branch you started from. Unlike `/xm:build run --worktrees` (one worktree PER task, gated), `/xm:wt` is the thin, ungated "work aside, then merge back" wrapper — two verbs, no task DAG.
+Session worktree. Runs the **whole current session** in a git-kit worktree cut from `develop`, delivers the work as a PR, and removes the worktree after the PR merges. Unlike `/xm:build run --worktrees` (one worktree PER task, gated), `/xm:wt` is a thin, ungated wrapper with no task DAG.
 
 ```
-/xm:wt              # create a worktree + switch the session into it
-/xm:wt land         # verify → git-kit promote (merge into parent, no push) → return
-/xm:wt status       # where the session is + git-kit worktree list
+/xm:wt start fix/x  # git-kit refresh → worktree from develop → switch the session into it
+/xm:wt pr           # verify → xm:write pr --base develop (push + PR); the worktree stays for review fixes
+/xm:wt land         # PR merged → refresh develop → remove the worktree and branch
+/xm:wt status       # where the session is, its parent, and the PR state
 ```
 
-The harness `EnterWorktree`/`ExitWorktree` tools move the session cwd; `git-kit promote` does the merge-back (commit + merge into parent, no network). `start` records the parent as `branch.<name>.gk-parent` so `land` merges into the branch you actually came from. Nothing is pushed — you push the parent yourself when ready. State follows the worktree (each checkout keeps its own `.xm/`); config stays shared with the main repo.
+`git-kit worktree acquire <branch> --from develop` creates the worktree under `~/.gk/worktree/<project>/<branch>` and records `develop` as `branch.<name>.gk-parent`. The harness `EnterWorktree(path)`/`ExitWorktree` tools only move the session cwd. `git-kit refresh` fast-forwards `main` and `develop` to their own remotes. It never moves `main` to `develop`. If the branch has no PR, `land` merges it into the parent locally with `git-kit worktree finish` and does not push. `land` asks before it deletes the remote branch.
 
 ---
 
