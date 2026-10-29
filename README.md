@@ -1367,7 +1367,7 @@ Session worktree. Runs the **whole current session** in a git-kit worktree cut f
 /xm:wt status       # where the session is, its parent, and the PR state
 ```
 
-`git-kit worktree acquire <branch> --from develop` creates the worktree under `~/.gk/worktree/<project>/<branch>` and records `develop` as `branch.<name>.gk-parent`. The harness `EnterWorktree(path)`/`ExitWorktree` tools only move the session cwd. `git-kit refresh` fast-forwards `main` and `develop` to their own remotes. It never moves `main` to `develop`. If the branch has no PR, `land` merges it into the parent locally with `git-kit worktree finish` and does not push. `land` asks before it deletes the remote branch.
+`git-kit worktree acquire <branch> --from develop` creates the worktree under `~/.gk/worktree/<project>/<branch>` and records `develop` as `branch.<name>.gk-parent`. The harness `EnterWorktree(path)`/`ExitWorktree` tools only move the session cwd. `git-kit refresh` fast-forwards `main` and `develop` to their own remotes. It never moves `main` to `develop`. If the branch has no PR, `land` merges it into the parent locally with `git-kit worktree finish` and does not push. `land` asks before it deletes the remote branch. Before it removes the worktree, `land` moves the worktree `.xm/` (review runs, triage, `later` items) to `.xm/archive/wt/<branch>` in the main checkout.
 
 ---
 

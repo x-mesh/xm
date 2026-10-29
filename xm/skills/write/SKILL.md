@@ -371,31 +371,24 @@ Skip this step for `release`, `changelog`, `commit`, and whenever `--for ship` i
    question. Run `GK_AGENT=1 git-kit push` after approval, or directly when step 1 skipped the
    question. Branch on `state`. If it is not `ok`,
    report the error and stop — do not fall back to raw `git push`.
-3. Pass the title and body through quoted heredocs, never inline, so backticks and `$` in
-   either survive the shell:
+3. Write the body to a file with the file-writing tool (Write), not with a shell heredoc: the
+   session scratchpad directory when the system prompt lists one, otherwise the system temp
+   directory. Then run `gh` as one plain command. A session isolated in a worktree (`/xm:wt`)
+   refuses a compound heredoc command that writes outside the worktree. Put the title in single
+   quotes so backticks and `$` survive the shell, and write each `'` in it as `'\''`:
 
 ```bash
-TITLE=$(cat <<'EOF'
-<title>
-EOF
-) && BODY=$(mktemp) && cat > "$BODY" <<'EOF'
-<body>
-EOF
-gh pr create --base <base> --head <branch> --title "$TITLE" --body-file "$BODY"
+gh pr create --base <base> --head <branch> --title '<title>' --body-file <body file>
 ```
 
-   To revise, set both variables again in the same Bash call, because each call starts a fresh
-   shell:
+   To revise, write the new body to the file again, then:
 
 ```bash
-TITLE=$(cat <<'EOF'
-<title>
-EOF
-) && BODY=$(mktemp) && cat > "$BODY" <<'EOF'
-<body>
-EOF
-gh pr edit <n> --title "$TITLE" --body-file "$BODY"   # or gh issue edit <n>
+gh pr edit <n> --title '<title>' --body-file <body file>   # or gh issue edit <n>
 ```
+
+   Only when no file-writing tool exists, write the body file with a quoted heredoc
+   (`cat > <body file> <<'EOF'`) in its own command, then run `gh` in the next one.
 
    Edit the body when asked to edit. Never post a comment instead.
 4. Re-read what GitHub saved (`gh pr view <n> --json url,title,body` or `gh issue view`) and

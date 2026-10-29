@@ -1364,7 +1364,7 @@ xm panel status <run> --logs        # RAW 이벤트 로그(events.jsonl) 스트�
 /xm:wt status       # 세션 위치, 부모 브랜치, PR 상태
 ```
 
-`git-kit worktree acquire <branch> --from develop`이 `~/.gk/worktree/<project>/<branch>`에 worktree를 만들고, `develop`을 `branch.<name>.gk-parent`로 기록합니다. 하네스의 `EnterWorktree(path)`/`ExitWorktree`는 세션 cwd만 옮깁니다. `git-kit refresh`는 `main`과 `develop`을 각자의 원격으로 fast-forward할 뿐, `main`을 `develop`으로 옮기지 않습니다. PR이 없는 브랜치라면 `land`가 `git-kit worktree finish`로 부모에 로컬 머지하고 push하지 않습니다. 원격 브랜치는 물어본 뒤에만 지웁니다.
+`git-kit worktree acquire <branch> --from develop`이 `~/.gk/worktree/<project>/<branch>`에 worktree를 만들고, `develop`을 `branch.<name>.gk-parent`로 기록합니다. 하네스의 `EnterWorktree(path)`/`ExitWorktree`는 세션 cwd만 옮깁니다. `git-kit refresh`는 `main`과 `develop`을 각자의 원격으로 fast-forward할 뿐, `main`을 `develop`으로 옮기지 않습니다. PR이 없는 브랜치라면 `land`가 `git-kit worktree finish`로 부모에 로컬 머지하고 push하지 않습니다. 원격 브랜치는 물어본 뒤에만 지웁니다. worktree를 지우기 전에는 worktree의 `.xm/`(리뷰 실행 결과, triage, `later` 항목)을 메인 checkout의 `.xm/archive/wt/<branch>`로 옮깁니다.
 
 ---
 
