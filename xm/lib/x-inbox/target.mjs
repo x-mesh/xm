@@ -132,14 +132,25 @@ function gitConfigPath(path) {
   if (!gitdir) return null;
   const privateDir = resolve(path, gitdir);
   const commonDirFile = join(privateDir, 'commondir');
-  const commonDir = existsSync(commonDirFile) ? resolve(privateDir, readFileSync(commonDirFile, 'utf8').trim()) : privateDir;
-  return join(commonDir, 'config');
+  if (!existsSync(commonDirFile)) return join(privateDir, 'config');
+  try {
+    return join(resolve(privateDir, readFileSync(commonDirFile, 'utf8').trim()), 'config');
+  } catch {
+    // Broken worktree metadata only skips the duplicate check; it must not block delivery.
+    return null;
+  }
 }
 
 function originRepository(path) {
   const configPath = gitConfigPath(path);
-  if (!configPath || !existsSync(configPath)) return null;
-  const config = readFileSync(configPath, 'utf8');
+  if (!configPath) return null;
+  let config;
+  try {
+    config = readFileSync(configPath, 'utf8');
+  } catch {
+    // Missing or unreadable config: no origin to compare, so delivery proceeds unchecked.
+    return null;
+  }
   const section = config.split(/^\[/m).find((part) => /^remote\s+"origin"\]/.test(part));
   const url = section?.match(/^\s*url\s*=\s*(\S+)/m)?.[1];
   if (!url) return null;

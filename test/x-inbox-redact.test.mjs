@@ -79,10 +79,9 @@ describe('redact() — known secret patterns', () => {
     expect(redact('tokens: sk_live-9f8e = x').text).toBe('tokens: [REDACTED] = x');
   });
 
-  test('does not mask a word that is itself the key of the next assignment', () => {
-    const line = 'identical Korean description without code tokens: equivalentFinding = false';
-    expect(redact(line)).toEqual({ text: line, masked: 0 });
-    expect(redact('tokens: total = 3')).toEqual({ text: 'tokens: total = 3', masked: 0 });
+  test('masks a plural secret label even when its value looks like the next key', () => {
+    expect(redact('tokens: hunter2 = x').text).toBe('tokens: [REDACTED] = x');
+    expect(redact('tokens: password = hunter2').text).toBe('tokens: [REDACTED] = hunter2');
   });
 
   test('still masks values that end the line or sit before ordinary text', () => {

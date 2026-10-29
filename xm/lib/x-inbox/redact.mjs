@@ -93,23 +93,6 @@ const ASSIGNMENT_RE = new RegExp(
   'gi'
 );
 
-// The one shape left unmasked: a PLURAL secret term used as a label, followed by
-// an identifier that is itself assigned. Captured repro output such as
-// `code tokens: equivalentFinding = false` otherwise reached the receiver as
-// `[REDACTED] = false` (toss-20261028-646935ec). Everything ambiguous still
-// masks: a singular key (`token: abc = x`), a non-identifier value, or a
-// comparison/arrow after the value (`==`, `=>`, `::`).
-const PLURAL_LABEL_RE = new RegExp(`^(?:${SECRET_TERM})s\\s{0,10}[:=]`, 'i');
-const IDENTIFIER_RE = /^[A-Za-z_][A-Za-z0-9_]*$/;
-const NEXT_ASSIGNMENT_RE = /^[^\S\n]{0,10}(?:=(?![=>])|:(?!:))/;
-
-function isLabelOfNextAssignment(keyAndSep, unquoted, after) {
-  return unquoted !== undefined
-    && PLURAL_LABEL_RE.test(keyAndSep)
-    && IDENTIFIER_RE.test(unquoted)
-    && NEXT_ASSIGNMENT_RE.test(after);
-}
-
 // 2. `Authorization: Bearer <token>` / bare `Bearer <token>` headers. Keeps
 //    the "Bearer " marker, masks only the token.
 const BEARER_RE = /\b(Bearer\s{1,5})[A-Za-z0-9._~+/=-]{10,500}/gi;
@@ -173,8 +156,7 @@ export function redact(text) {
   // Groups: 1 = key+separator, 2 = double-quoted value, 3 = single-quoted
   // value, 4 = unquoted value. Exactly one of 2/3/4 is defined per match; the
   // quote is re-emitted around [REDACTED] so the line still parses as it did.
-  result = result.replace(ASSIGNMENT_RE, (match, keyAndSep, dq, sq, uq, offset, whole) => {
-    if (isLabelOfNextAssignment(keyAndSep, uq, whole.slice(offset + match.length, offset + match.length + 16))) return match;
+  result = result.replace(ASSIGNMENT_RE, (_match, keyAndSep, dq, sq) => {
     masked += 1;
     const q = dq !== undefined ? '"' : sq !== undefined ? "'" : '';
     return `${keyAndSep}${q}${REDACTED}${q}`;

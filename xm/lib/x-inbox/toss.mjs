@@ -100,7 +100,7 @@ export const REDACT_MARGIN_CHARS = 2000;
  * Agents write repro scripts there by default; the directory disappears with the session, so a
  * report whose command runs a file from it cannot be reproduced by the receiver.
  */
-const SESSION_TEMP_PATH_RE = /(?:\/private)?\/tmp\/claude-\d+(?=[/\s'"]|$)[^\s'"]*/;
+const SESSION_TEMP_PATH_RE = /(?:\/private)?\/tmp\/claude-\d+(?![A-Za-z0-9_-])[^\s'";&|]*/;
 
 function nowIso() {
   return new Date().toISOString();

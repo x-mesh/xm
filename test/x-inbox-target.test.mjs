@@ -220,6 +220,34 @@ describe('resolveTarget — 3 failure modes, each with a distinct reason (t4 don
     }
   });
 
+  test('ok: unreadable git metadata on a stale entry skips the duplicate check instead of throwing', () => {
+    const home = mkdtempSync(join(tmpdir(), 'x-inbox-home-'));
+    const main = cloneOf('x-inbox-main-', 'git@github.com:x-mesh/xm.git');
+    const worktree = join(tmpdir(), `x-inbox-worktree-${process.pid}-${Date.now()}`);
+    const broken = cloneOf('x-inbox-broken-', 'git@github.com:x-mesh/xm.git');
+    const fresh = cloneOf('x-inbox-fresh-', 'git@github.com:x-mesh/xm.git');
+    try {
+      git('-c user.name=t -c user.email=t@example.test commit -q --allow-empty -m base', main);
+      git(`worktree add -q -b stale ${worktree}`, main);
+      mkdirSync(join(worktree, '.xm'), { recursive: true });
+      const privateDir = git('rev-parse --absolute-git-dir', worktree);
+      rmSync(join(privateDir, 'commondir'));
+      mkdirSync(join(privateDir, 'commondir'));
+      rmSync(join(broken, '.git', 'config'));
+      mkdirSync(join(broken, '.git', 'config'));
+      writeRegistry(home, [
+        makeEntry('xm-wt', worktree, { last_seen: '2026-10-01T00:00:00.000Z' }),
+        makeEntry('xm-broken', broken, { last_seen: '2026-10-01T00:00:00.000Z' }),
+        makeEntry('x-kit', fresh, { last_seen: '2026-10-28T00:00:00.000Z' }),
+      ]);
+
+      expect(resolveTargetIsolated('xm-wt', home)).toMatchObject({ ok: true, path: worktree });
+      expect(resolveTargetIsolated('xm-broken', home)).toMatchObject({ ok: true, path: broken });
+    } finally {
+      for (const dir of [home, main, worktree, broken, fresh]) rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
   test('ok: two clones of one repository used within the same week both stay addressable', () => {
     const home = mkdtempSync(join(tmpdir(), 'x-inbox-home-'));
     const first = cloneOf('x-inbox-first-', 'git@github.com:x-mesh/xm.git');
