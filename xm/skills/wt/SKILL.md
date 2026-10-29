@@ -68,7 +68,11 @@ project's task DAG. `/xm:wt` has no tasks and no gate panel.
    ```bash
    GK_AGENT=1 git-kit refresh
    ```
-   `refresh` prints text only (no JSON envelope, even with `--json`) and only fast-forwards each branch to its own remote, so `main` is never moved to `develop`. It exits 0 even when it skips a diverged branch, so check the result yourself: `git rev-parse <PARENT>` must equal `git rev-parse origin/<PARENT>`. If they differ, the parent has local commits that are not on the remote: report it and stop, because starting from that tip would put unpushed work into the PR. A non-zero exit means the fetch failed: report it.
+   `refresh` prints text only (no JSON envelope, even with `--json`) and only fast-forwards each branch to its own remote, so `main` is never moved to `develop`. Check the result yourself, in this order:
+   - Non-zero exit → the fetch failed and `origin/<PARENT>` may be stale. Report the error and stop.
+   - `git rev-parse --verify --quiet refs/remotes/origin/<PARENT>` fails → the parent has no remote branch, so there is nothing to compare and no PR base on the remote. Say so and ask before starting from the local tip.
+   - `git rev-parse <PARENT>` equals `git rev-parse origin/<PARENT>` → continue.
+   - Otherwise `refresh` exited 0 but skipped the parent. If `git merge-base --is-ancestor <PARENT> origin/<PARENT>` succeeds, the parent is only behind and the fast-forward was skipped: report the refresh output and stop. If it fails, the parent has commits that are not on the remote: report them and stop, because starting from that tip would put unpushed work into the PR.
 5. **Create the worktree:**
    ```bash
    GK_AGENT=1 git-kit worktree acquire <branch> --from <PARENT>
@@ -92,7 +96,8 @@ project's task DAG. `/xm:wt` has no tasks and no gate panel.
    - `OPEN` → this is a review fix. Ask once to push the new commits, then run `GK_AGENT=1 git-kit push` and branch on `state`. Report the PR URL. Offer `xm:write pr <number>` only if the body no longer matches the change.
    - `MERGED` → the PR is done: point to `/xm:wt land`.
    - `CLOSED` → show it and ask whether to open a new PR.
-   - No PR (`no pull requests found`) → continue to step 6.
+   - No PR: the command fails with `no pull requests found` → continue to step 6.
+   - Any other failure (authentication, network, a remote that is not GitHub) → the PR state is unknown. Show the `gh` error and stop.
 6. **Open the PR** — invoke the `xm:write` skill with the Skill tool:
    ```
    Skill: xm:write
@@ -113,15 +118,16 @@ project's task DAG. `/xm:wt` has no tasks and no gate panel.
    - `MERGED` → §Land after a merged PR.
    - `OPEN` → report the URL and stop. The PR is the integration path; do not merge locally around it.
    - `CLOSED` → show it and ask: keep the worktree, or remove it as abandoned (the branch is then deleted with `-D` only after the user agrees).
-   - No PR → §Land without a PR.
+   - No PR: the command fails with `no pull requests found` → §Land without a PR.
+   - Any other failure (authentication, network, a remote that is not GitHub) → the PR state is unknown, and an OPEN PR may exist. Show the `gh` error and stop. Never take §Land without a PR on a failed lookup.
 
 #### Land after a merged PR
 
 1. **Leave the worktree first.** If the session cwd is inside the worktree, call `ExitWorktree` with `action: "keep"`. It is a no-op when this session did not enter it. If `git rev-parse --show-toplevel` is still the worktree path afterwards (a session that was started inside it), stop and tell the user to run `/xm:wt land <branch>` from the main checkout: removing the worktree would delete the session's cwd. Run every later step from the main checkout (`git -C <path> rev-parse --git-common-dir` gives its `.git`).
 2. **Nothing left behind.** `git -C <path> status --porcelain` must be empty, and `git rev-parse <branch>` must equal the PR's `headRefOid`. A dirty tree or a local tip that differs from the merged head means work that is not in the PR: list it and stop.
-3. **Refresh the parent:** `GK_AGENT=1 git-kit refresh`, then check that `git rev-parse <PARENT>` equals `git rev-parse origin/<PARENT>`. As in §Start step 4, `refresh` has no JSON envelope and exits 0 when it skips a diverged branch; if they differ, report it and stop.
+3. **Refresh the parent:** `GK_AGENT=1 git-kit refresh`, then check the result with the same four cases as §Start step 4. Continue only when `<PARENT>` equals `origin/<PARENT>`.
 4. **Remove the worktree:** `GK_AGENT=1 git-kit worktree remove <path>`. Never pass `--force`.
-5. **Delete the branch.** If `git merge-base --is-ancestor <branch> <PARENT>` succeeds (merge-commit merge), run `git branch -d <branch>`. If it fails, the PR was squash- or rebase-merged: step 2 already proved the branch tip is the merged PR head, so show that and ask before `git branch -D <branch>`.
+5. **Delete the branch.** If `git merge-base --is-ancestor <branch> <PARENT>` succeeds (merge-commit merge), run `git branch -d <branch>`. `-d` checks the branch's upstream, and when `refresh --prune` has removed a deleted remote branch it checks HEAD instead, which may not be `<PARENT>`. If `-d` refuses, `--is-ancestor` has already proved that `<PARENT>` contains the branch, so run `git branch -D <branch>` without a new question. If `--is-ancestor` fails, the PR was squash- or rebase-merged: step 2 already proved the branch tip is the merged PR head, so show that and ask before `git branch -D <branch>`.
 6. **Remote branch.** If `git ls-remote --exit-code --heads origin <branch>` exits 0, the remote branch still exists. Deleting it changes GitHub state: ask, and only on approval run `git push origin --delete <branch>`.
 7. **Report** (normal mode → Korean):
    ```
@@ -183,7 +189,7 @@ push, or remove anything under `status`.
 - You moved `main` to match `develop` before starting.
 - You invoked `xm:write pr` without `--base <gk-parent>`.
 - You pushed a new branch yourself before `xm:write` asked.
-- You merged locally while the branch had an `OPEN` PR.
+- You merged locally while the branch had an `OPEN` PR, or read a failed `gh pr view` as "no PR".
 - You deleted a branch with `-D`, or removed a worktree, without checking it is clean and equal to the merged PR head.
 - You deleted a remote branch without asking.
 - You ran `worktree remove` while the session cwd was inside that worktree.
@@ -193,5 +199,5 @@ push, or remove anything under `status`.
 
 - After `start`: `git branch --show-current` is the new branch, `git config --get branch.<branch>.gk-parent` returns the parent, the cwd is under `~/.gk/worktree/<project>/`, and `git merge-base --is-ancestor origin/<PARENT> HEAD` succeeds.
 - After `pr`: `gh pr view --json baseRefName,url` shows `baseRefName` equal to the `gk-parent`, and the worktree still exists.
-- After `land` with a merged PR: the worktree path is gone from `git-kit worktree list`, `git rev-parse --verify --quiet refs/heads/<branch>` fails, the parent equals its remote, and the remote branch was deleted only with the user's approval.
+- After `land` with a merged PR: the worktree path is gone from `git-kit worktree list`, `git rev-parse --verify --quiet refs/heads/<branch>` fails unless the user declined the `-D` for a squash- or rebase-merged branch, the parent equals its remote, and the remote branch was deleted only with the user's approval.
 - After `land` without a PR: `finish` returned `state:"ok"` with `removed:true`, the parent contains the branch's commits, and nothing was pushed.
