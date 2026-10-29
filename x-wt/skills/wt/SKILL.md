@@ -152,18 +152,23 @@ every expansion. Each Bash call starts a fresh shell, so run each block below in
 1. If `<path>/.xm` does not exist (`test -d '<path>/.xm'` fails), skip this section.
 2. Look for records that belong in the main backlog:
    ```bash
-   WT='<path>'; find "$WT/.xm" -name later.json; ls -- "$WT/.xm/inbox/"*.json 2>/dev/null
+   WT='<path>'; find "$WT/.xm" \( -name later.json -o -path '*/.xm/inbox/*.json' \) -print
    ```
-   If anything is listed, show it to the user: those records are archived, not merged, so the main checkout's `xm build later list` and `xm inbox list` do not show them.
-3. Move the directory into the main checkout's `.xm/archive/wt/`. The destination is absolute, derived from the worktree's common git dir, so it does not depend on the cwd. A `/` in the branch name becomes a subdirectory, and an existing destination gets a `-<UTC timestamp>` suffix:
+   An empty result is normal. If anything is listed, show it to the user: those records are archived, not merged, so the main checkout's `xm build later list` and `xm inbox list` do not show them.
+3. Copy the directory into the main checkout's `.xm/archive/wt/`, then delete the source. The main checkout is the first entry of `git worktree list --porcelain`, so the destination is absolute and does not depend on the cwd or on where the common git dir lives. A `/` in the branch name becomes a subdirectory, and an existing destination gets a `-<UTC timestamp>` suffix. `mkdir` without `-p` creates the destination, so it fails instead of nesting when that path also exists. Copy-then-delete keeps the source intact when the copy fails, also across filesystems:
    ```bash
    WT='<path>'; BRANCH='<branch>'
-   MAIN=$(dirname -- "$(git -C "$WT" rev-parse --path-format=absolute --git-common-dir)") || exit 1
+   MAIN=$(git -C "$WT" worktree list --porcelain | sed -n '1s/^worktree //p')
+   case $MAIN in /*) ;; *) echo "main checkout not found" >&2; exit 1 ;; esac
    DEST="$MAIN/.xm/archive/wt/$BRANCH"
    if [ -e "$DEST" ]; then DEST="$DEST-$(date -u +%Y%m%dT%H%M%SZ)"; fi
-   mkdir -p -- "$(dirname -- "$DEST")" && mv -- "$WT/.xm" "$DEST" && printf 'archived: %s\n' "$DEST"
+   mkdir -p -- "$(dirname -- "$DEST")" || exit 1
+   mkdir -- "$DEST" || exit 1
+   cp -R -- "$WT/.xm/." "$DEST/" || exit 1
+   rm -rf -- "$WT/.xm" || exit 1
+   printf 'archived: %s\n' "$DEST"
    ```
-   Continue only when the block prints `archived: <DEST>`; report that `<DEST>`. If it fails, stop: the worktree still holds `.xm/`, so do not remove it. `.xm/` is gitignored in both checkouts, so the move changes no tracked file.
+   Continue only when the block prints `archived: <DEST>`; report that `<DEST>`. If it fails, stop and report: the worktree still holds `.xm/` (or a copy of it is at `<DEST>`), so do not remove the worktree. `.xm/` is gitignored in both checkouts, so the copy changes no tracked file.
 
 #### Land without a PR
 
