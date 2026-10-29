@@ -70,7 +70,7 @@ project's task DAG. `/xm:wt` has no tasks and no gate panel.
    ```
    `refresh` prints text only (no JSON envelope, even with `--json`) and only fast-forwards each branch to its own remote, so `main` is never moved to `develop`. Check the result yourself, in this order:
    - Non-zero exit → the fetch failed and `origin/<PARENT>` may be stale. Report the error and stop.
-   - `git rev-parse --verify --quiet refs/remotes/origin/<PARENT>` fails → the parent has no remote branch, so there is nothing to compare and no PR base on the remote. Say so and ask before starting from the local tip.
+   - `git rev-parse --verify --quiet refs/remotes/origin/<PARENT>` fails → the parent has no remote branch, so there is nothing to compare and `pr` has no base on the remote. Say so and stop: the user can push the parent first, or pass `--from` with a branch that exists on the remote.
    - `git rev-parse <PARENT>` equals `git rev-parse origin/<PARENT>` → continue.
    - Otherwise `refresh` exited 0 but skipped the parent. If `git merge-base --is-ancestor <PARENT> origin/<PARENT>` succeeds, the parent is only behind and the fast-forward was skipped: report the refresh output and stop. If it fails, the parent has commits that are not on the remote: report them and stop, because starting from that tip would put unpushed work into the PR.
 5. **Create the worktree:**
@@ -125,7 +125,7 @@ project's task DAG. `/xm:wt` has no tasks and no gate panel.
 
 1. **Leave the worktree first.** If the session cwd is inside the worktree, call `ExitWorktree` with `action: "keep"`. It is a no-op when this session did not enter it. If `git rev-parse --show-toplevel` is still the worktree path afterwards (a session that was started inside it), stop and tell the user to run `/xm:wt land <branch>` from the main checkout: removing the worktree would delete the session's cwd. Run every later step from the main checkout (`git -C <path> rev-parse --git-common-dir` gives its `.git`).
 2. **Nothing left behind.** `git -C <path> status --porcelain` must be empty, and `git rev-parse <branch>` must equal the PR's `headRefOid`. A dirty tree or a local tip that differs from the merged head means work that is not in the PR: list it and stop.
-3. **Refresh the parent:** `GK_AGENT=1 git-kit refresh`, then check the result with the same four cases as §Start step 4. Continue only when `<PARENT>` equals `origin/<PARENT>`.
+3. **Refresh the parent:** `GK_AGENT=1 git-kit refresh`, then diagnose the result with the same four cases as §Start step 4. Continue only when `<PARENT>` equals `origin/<PARENT>`. In every other case, report the diagnosis and stop.
 4. **Remove the worktree:** `GK_AGENT=1 git-kit worktree remove <path>`. Never pass `--force`.
 5. **Delete the branch.** If `git merge-base --is-ancestor <branch> <PARENT>` succeeds (merge-commit merge), run `git branch -d <branch>`. `-d` checks the branch's upstream, and when `refresh --prune` has removed a deleted remote branch it checks HEAD instead, which may not be `<PARENT>`. If `-d` refuses, `--is-ancestor` has already proved that `<PARENT>` contains the branch, so run `git branch -D <branch>` without a new question. If `--is-ancestor` fails, the PR was squash- or rebase-merged: step 2 already proved the branch tip is the merged PR head, so show that and ask before `git branch -D <branch>`.
 6. **Remote branch.** If `git ls-remote --exit-code --heads origin <branch>` exits 0, the remote branch still exists. Deleting it changes GitHub state: ask, and only on approval run `git push origin --delete <branch>`.
