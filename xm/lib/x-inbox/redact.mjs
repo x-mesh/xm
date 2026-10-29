@@ -93,24 +93,14 @@ const ASSIGNMENT_RE = new RegExp(
   'gi'
 );
 
-// An unquoted value that is a secret key name followed by its own `=`/`:` is
-// the key of the next assignment, as in `secrets: api_key = sk_live_…`.
-// Masking it as the value consumed that key, and the scan resumed after it,
-// so the real secret was emitted verbatim. Such a value is kept and the scan
-// restarts at it. The value class admits `:`/`=`, so the separator can also
-// end the value itself (`secrets: AWS_SECRET_ACCESS_KEY: wJalr…`). The term
-// must start the key or follow `_`/`.`/`-`, so a secret like `abcpassword`
-// is still masked; `==`, `=>`, `::` do not count as a separator.
-const NESTED_KEY_RE = /^[A-Za-z_][A-Za-z0-9_.-]{0,40}$/;
-const NESTED_KEY_TERM_RE = new RegExp(`(?:^|[_.-])(?:${SECRET_TERM})`, 'i');
-const NEXT_SEPARATOR_RE = /^\s{0,10}(?:=(?![=>])|:(?!:))/;
-
-function isNextAssignmentKey(value, after) {
-  const endsWithSeparator = /[:=]$/.test(value);
-  const key = endsWithSeparator ? value.slice(0, -1) : value;
-  const rest = endsWithSeparator ? value.slice(-1) + after : after;
-  return NESTED_KEY_RE.test(key) && NESTED_KEY_TERM_RE.test(key) && NEXT_SEPARATOR_RE.test(rest);
-}
+// An unquoted value shaped like a secret key can start the next assignment,
+// as in `secrets: api_key = sk_live_…`. The scan used to resume after the
+// masked value, so that next value was emitted verbatim. Such a value is
+// still masked (it may be the secret itself), and the scan restarts at its
+// start so the assignment it begins is masked too. The value class admits
+// `:`/`=`, so one trailing separator still counts as key-shaped. The length
+// cap keeps the rescan bounded: a long value is never rescanned.
+const KEY_SHAPED_VALUE_RE = new RegExp(`^[A-Za-z0-9_.-]{0,40}(?:${SECRET_TERM})[A-Za-z0-9_.-]{0,40}[:=]?$`, 'i');
 
 // 2. `Authorization: Bearer <token>` / bare `Bearer <token>` headers. Keeps
 //    the "Bearer " marker, masks only the token.
@@ -180,14 +170,14 @@ export function redact(text) {
   for (let match = ASSIGNMENT_RE.exec(result); match !== null; match = ASSIGNMENT_RE.exec(result)) {
     const [whole, keyAndSep, dq, sq, uq] = match;
     const valueStart = match.index + keyAndSep.length;
-    if (uq !== undefined && isNextAssignmentKey(uq, result.slice(valueStart + uq.length, valueStart + uq.length + 16))) {
-      ASSIGNMENT_RE.lastIndex = valueStart;
-      continue;
-    }
+    const valueEnd = match.index + whole.length;
+    // A rescanned match whose value lies inside an already masked value adds nothing.
+    if (valueStart < copied) continue;
     masked += 1;
     const q = dq !== undefined ? '"' : sq !== undefined ? "'" : '';
-    assigned += `${result.slice(copied, match.index)}${keyAndSep}${q}${REDACTED}${q}`;
-    copied = match.index + whole.length;
+    assigned += `${result.slice(copied, valueStart)}${q}${REDACTED}${q}`;
+    copied = valueEnd;
+    if (uq !== undefined && KEY_SHAPED_VALUE_RE.test(uq)) ASSIGNMENT_RE.lastIndex = valueStart;
   }
   result = assigned + result.slice(copied);
 

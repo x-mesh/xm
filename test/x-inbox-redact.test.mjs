@@ -85,19 +85,20 @@ describe('redact() — known secret patterns', () => {
     expect(redact('code tokens: equivalentFinding = false').text).toBe('code tokens: [REDACTED] = false');
   });
 
-  test('a value that is itself a secret key leaves its key and masks the next assignment', () => {
-    expect(redact('tokens: password = hunter2')).toEqual({ text: 'tokens: password = [REDACTED]', masked: 1 });
-    expect(redact('secrets: api_key = sk_live_abcdef123456')).toEqual({ text: 'secrets: api_key = [REDACTED]', masked: 1 });
-    expect(redact('secrets: AWS_SECRET_ACCESS_KEY: wJalrXUtnFEMI').text).toBe('secrets: AWS_SECRET_ACCESS_KEY: [REDACTED]');
-    expect(redact('token: password: api_key = deep').text).toBe('token: password: api_key = [REDACTED]');
+  test('a value that is itself a secret key is masked, and so is the assignment it starts', () => {
+    expect(redact('tokens: password = hunter2')).toEqual({ text: 'tokens: [REDACTED] = [REDACTED]', masked: 2 });
+    expect(redact('secrets: api_key = sk_live_abcdef123456')).toEqual({ text: 'secrets: [REDACTED] = [REDACTED]', masked: 2 });
+    expect(redact('secrets: AWS_SECRET_ACCESS_KEY: wJalrXUtnFEMI').text).toBe('secrets: [REDACTED] [REDACTED]');
+    expect(redact('token: password: api_key = deep').text).toBe('token: [REDACTED] [REDACTED] = [REDACTED]');
+    expect(redact('password: my_token = x').text).toBe('password: [REDACTED] = [REDACTED]');
   });
 
-  test('a key-shaped value is still masked unless its own assignment follows', () => {
-    expect(redact('password=mytokenvalue=abc').text).toBe('password=[REDACTED]');
-    expect(redact('token: abcpassword = x').text).toBe('token: [REDACTED] = x');
+  test('a key-shaped value is masked whole when no assignment follows it', () => {
+    expect(redact('api_key=sk_test_token:')).toEqual({ text: 'api_key=[REDACTED]', masked: 1 });
+    expect(redact('token: tokenAbc123=')).toEqual({ text: 'token: [REDACTED]', masked: 1 });
+    expect(redact('token: password:')).toEqual({ text: 'token: [REDACTED]', masked: 1 });
     expect(redact('token: password next').text).toBe('token: [REDACTED] next');
-    expect(redact('token: password == expected').text).toBe('token: [REDACTED] == expected');
-    expect(redact('token: password => 401').text).toBe('token: [REDACTED] => 401');
+    expect(redact('password=mytokenvalue=abc').text).toBe('password=[REDACTED]');
   });
 
   test('still masks values that end the line or sit before ordinary text', () => {
