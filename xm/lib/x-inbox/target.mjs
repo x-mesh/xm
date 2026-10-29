@@ -35,7 +35,7 @@
  * confirmation gate; deferred here on purpose.
  */
 
-import { existsSync } from 'node:fs';
+import { existsSync, readFileSync } from 'node:fs';
 import { join, resolve, basename } from 'node:path';
 
 import { loadRegistry } from '../x-projects-registry.mjs';
@@ -111,6 +111,69 @@ export function isSimilarProjectName(input, candidateId) {
   return levenshteinDistance(a, b) <= threshold;
 }
 
+// Two clones of one repository used side by side both stay fresh and are left alone. A target
+// nobody has opened for this long while another clone has been opened since is treated as
+// abandoned: a report sent there lands in a mem-mesh project nobody reads.
+const STALE_DUPLICATE_MS = 7 * 24 * 60 * 60 * 1000;
+
+function gitConfigPath(path) {
+  const dotGit = join(path, '.git');
+  let pointer;
+  try {
+    pointer = readFileSync(dotGit, 'utf8');
+  } catch (err) {
+    if (err.code === 'EISDIR') return join(dotGit, 'config');
+    // Deleted checkout or no git at all: no origin to compare.
+    return null;
+  }
+  // A linked worktree's `.git` file names its private gitdir; `commondir` there leads to the
+  // repository's shared config, where the origin lives.
+  const gitdir = pointer.match(/^gitdir:\s*(.+)$/m)?.[1]?.trim();
+  if (!gitdir) return null;
+  const privateDir = resolve(path, gitdir);
+  const commonDirFile = join(privateDir, 'commondir');
+  if (!existsSync(commonDirFile)) return join(privateDir, 'config');
+  try {
+    return join(resolve(privateDir, readFileSync(commonDirFile, 'utf8').trim()), 'config');
+  } catch {
+    // Broken worktree metadata only skips the duplicate check; it must not block delivery.
+    return null;
+  }
+}
+
+function originRepository(path) {
+  const configPath = gitConfigPath(path);
+  if (!configPath) return null;
+  let config;
+  try {
+    config = readFileSync(configPath, 'utf8');
+  } catch {
+    // Missing or unreadable config: no origin to compare, so delivery proceeds unchecked.
+    return null;
+  }
+  const section = config.split(/^\[/m).find((part) => /^remote\s+"origin"\]/.test(part));
+  const url = section?.match(/^\s*url\s*=\s*(\S+)/m)?.[1];
+  if (!url) return null;
+  return url
+    .replace(/^[a-z+]+:\/\/(?:[^@/]+@)?/i, '')
+    .replace(/^[^@/:]+@([^:/]+):/, '$1/')
+    .replace(/\.git$/, '')
+    .replace(/\/+$/, '')
+    .toLowerCase();
+}
+
+function fresherCheckout(entry, active) {
+  const seen = Date.parse(entry.last_seen) || 0;
+  // Compare by path, not id: registering a second clone with the same basename reuses the id.
+  const newer = active.filter((p) => p.path !== entry.path && (Date.parse(p.last_seen) || 0) - seen > STALE_DUPLICATE_MS);
+  if (newer.length === 0) return null;
+  const repository = originRepository(entry.path);
+  if (!repository) return null;
+  return newer
+    .filter((p) => originRepository(p.path) === repository)
+    .sort((a, b) => (Date.parse(b.last_seen) || 0) - (Date.parse(a.last_seen) || 0))[0] || null;
+}
+
 /**
  * Resolve a user-typed target name to a confirmed project before any
  * delivery attempt. MUST be called before mem-mesh `pin_add`/`add` or any
@@ -155,6 +218,22 @@ export function resolveTarget(name) {
         message: `"${exact.id}" is registered at ${exact.path}, but .xm/ no longer exists there `
           + `(the registration is stale — nothing auto-removes it). `
           + `Run \`xm project gc\` to drop it, or \`xm project add <path>\` if it moved.`,
+      };
+    }
+
+    const fresher = fresherCheckout(exact, active);
+    if (fresher) {
+      const day = (iso) => String(iso || 'never').slice(0, 10);
+      const rerun = fresher.id === exact.id ? '' : `Re-run with "${fresher.id}" if that is where the work happens now; `;
+      return {
+        ok: false,
+        reason: 'ambiguous',
+        candidates: [...new Set([fresher.id, exact.id])],
+        message: `"${exact.id}" (${exact.path}, last used ${day(exact.last_seen)}) and "${fresher.id}" `
+          + `(${fresher.path}, last used ${day(fresher.last_seen)}) are checkouts of the same repository, `
+          + `so a report sent to ${exact.path} is likely never read. ${rerun}`
+          + `run \`xm project archive ${exact.path}\` if the old checkout is abandoned, `
+          + `or run \`xm project register ${exact.path}\` first if it really is the intended target.`,
       };
     }
 

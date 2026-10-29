@@ -71,6 +71,27 @@ describe('redact() — known secret patterns', () => {
     expect(redact('Merge this branch?')).toEqual({ text: 'Merge this branch?', masked: 0 });
   });
 
+  test('masks ambiguous values that are followed by =, :, ==, or =>', () => {
+    expect(redact('token: abc123 = x').text).toBe('token: [REDACTED] = x');
+    expect(redact('password=hunter2: retry').text).toBe('password=[REDACTED] retry');
+    expect(redact('token: abc123 => 401').text).toBe('token: [REDACTED] => 401');
+    expect(redact('tokens: abc123 == expected').text).toBe('tokens: [REDACTED] == expected');
+    expect(redact('tokens: sk_live-9f8e = x').text).toBe('tokens: [REDACTED] = x');
+  });
+
+  test('masks a plural secret label even when its value looks like the next key', () => {
+    expect(redact('tokens: hunter2 = x').text).toBe('tokens: [REDACTED] = x');
+    expect(redact('tokens: password = hunter2').text).toBe('tokens: [REDACTED] = hunter2');
+  });
+
+  test('still masks values that end the line or sit before ordinary text', () => {
+    expect(redact('token: abc123def456').text).toBe('token: [REDACTED]');
+    expect(redact('password=hunter2 next').text).toBe('password=[REDACTED] next');
+    expect(redact('token=abc=def').text).toBe('token=[REDACTED]');
+    expect(redact('"password=hunter2"').text).toBe('"password=[REDACTED]"');
+    expect(redact('token: a\nnext: 1').text).toBe('token: [REDACTED]\nnext: 1');
+  });
+
   test('a provider-shaped secret inside a key=value context is masked exactly once, not double-counted', () => {
     // Regression: an earlier draft ran the whole-match provider-key pattern
     // before the key=value assignment scan, so the assignment scan would

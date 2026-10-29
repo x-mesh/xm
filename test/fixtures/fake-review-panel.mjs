@@ -43,6 +43,36 @@ const finding = { ...riskFinding, ...(severity ? { severity } : {}), ...(mode ==
 if (mode === 'mixed-severity') finding.severity = lens === 'correctness' ? 'medium' : 'high';
 finding.code = mode === 'ungrounded-finding' ? 'execSync(payload);' : 'export const b = 2;';
 finding.fix = 'Guard the exported value.';
+// Korean findings from reviewer records: the same overflow worded two ways by two lenses, and a
+// missing test next to the production defect it would catch, both citing one line.
+if (mode === 'korean-paraphrase') {
+  finding.claim = lens === 'risk' ? '테이블별 행 수 합계가 `u64` 오버플로를 검사하지 않고 계산됩니다.' : '테이블별 `u64` 행 수를 검사 없이 합산하여 전체 행 수가 `u64::MAX`를 넘으면 목록 명령이 잘못된 `total_rows`를 표시하거나 패닉할 수 있습니다.';
+  if (lens === 'risk') finding.severity = 'low';
+}
+// Different cited lines, so only the description can decide the merge.
+if (mode === 'korean-identical') {
+  finding.claim = '합계가 오버플로를 검사하지 않습니다.';
+  if (lens === 'risk') Object.assign(finding, { line: 1, code: 'export const a = 1;' });
+}
+// One description repeats the other plus a consequence: overlap is high over the shorter text,
+// low over the longer one.
+if (mode === 'korean-partial') {
+  finding.claim = lens === 'risk'
+    ? '영문 Report viewer 안내에 한국어 필터 이름이 그대로 남아 있습니다.'
+    : '영문 Report viewer 안내에 한국어 필터 이름이 그대로 남아 있어 영문 사용자가 `f`를 눌렀을 때 어떤 필터로 전환되는지 이해하기 어렵습니다.';
+  if (lens === 'risk') Object.assign(finding, { line: 1, code: 'export const a = 1;' });
+}
+// Two distinct defects quoting the same line (reviewer record 420/306 F1/F2).
+if (mode === 'shared-code-distinct') {
+  finding.claim = lens === 'risk'
+    ? 'diff 밖 의견이 51건 이상이면 51번째 이후 의견의 본문이 게시물에서 영구적으로 빠집니다.'
+    : '이동할 의견 수만 50건으로 제한하고 본문 크기는 제한하지 않아, 이동된 의견이 긴 경우 전체 리뷰 게시가 실패할 수 있습니다.';
+}
+if (mode === 'test-gap') {
+  finding.claim = lens === 'tests'
+    ? '`table_rows`가 있는 manifest에서 아카이브를 읽지 않고 해당 값을 비교에 사용하는 새 분기에 대한 테스트가 추가되지 않았습니다.'
+    : '`table_rows`가 있는 백업에서는 `data.bin`을 전혀 열지 않아, 저장된 백업 본문이 없어도 `verify --against`가 성공할 수 있습니다.';
+}
 // wrong-file: quote a line that really exists, but under a DIFFERENT file's name. The validator
 // must see the citation land in another section and drop the finding before synthesis.
 if (mode === 'wrong-file') {
@@ -65,7 +95,7 @@ if (mode === 'mixed-disposition' && lens === 'correctness') finding.opponents = 
 // otherwise fine, so this exercises the lifecycle path that must drop ONLY the sibling.
 const malformedSibling = { ...finding, claim: 'sibling finding with no line', line: null };
 const confirmedFindings = mode === 'malformed-line' ? [finding, malformedSibling] : [finding];
-const zero = mode === 'clean' || (lens !== 'risk' && !['duplicate', 'mixed-severity'].includes(mode)) || mode === 'evidence-free-zero';
+const zero = mode === 'clean' || (lens !== 'risk' && !['duplicate', 'mixed-severity', 'korean-paraphrase', 'korean-identical', 'korean-partial', 'shared-code-distinct', 'test-gap'].includes(mode)) || mode === 'evidence-free-zero';
 const checkedFiles = mode === 'missing-coverage' ? [] : targetFiles;
 process.stdout.write(`${JSON.stringify({
   run: `fake-${lens}`, models: ['fixture-risk', 'fixture-challenger'],
