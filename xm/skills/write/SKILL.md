@@ -371,31 +371,37 @@ Skip this step for `release`, `changelog`, `commit`, and whenever `--for ship` i
    question. Run `GK_AGENT=1 git-kit push` after approval, or directly when step 1 skipped the
    question. Branch on `state`. If it is not `ok`,
    report the error and stop — do not fall back to raw `git push`.
-3. Pass the title and body through quoted heredocs, never inline, so backticks and `$` in
-   either survive the shell:
+3. Write the body to a file with the file-writing tool (Write), not with a shell heredoc, then
+   run `gh` as one plain command. A session isolated in a worktree (`/xm:wt`) refuses a
+   compound heredoc command that writes outside the worktree. Pick the directory in this order:
+   - the session scratchpad directory, when the system prompt lists one;
+   - otherwise the current checkout's `.xm/` directory (inside the worktree in a `/xm:wt`
+     session), but only when `git check-ignore -q .xm/x` succeeds, so the file never shows up
+     as untracked;
+   - otherwise the system temp directory.
+
+   Create a unique file there with `mktemp`, run as its own command, so parallel sessions never
+   share one, and use the exact path it prints for Write and for `gh`:
 
 ```bash
-TITLE=$(cat <<'EOF'
-<title>
-EOF
-) && BODY=$(mktemp) && cat > "$BODY" <<'EOF'
-<body>
-EOF
-gh pr create --base <base> --head <branch> --title "$TITLE" --body-file "$BODY"
+mkdir -p '<dir>' && mktemp '<dir>/pr-body.XXXXXX'
 ```
 
-   To revise, set both variables again in the same Bash call, because each call starts a fresh
-   shell:
+   Put every argument value in single quotes so backticks, `$`, `;`, and spaces in a title,
+   branch name, or path survive the shell, and write each `'` in them as `'\''`:
 
 ```bash
-TITLE=$(cat <<'EOF'
-<title>
-EOF
-) && BODY=$(mktemp) && cat > "$BODY" <<'EOF'
-<body>
-EOF
-gh pr edit <n> --title "$TITLE" --body-file "$BODY"   # or gh issue edit <n>
+gh pr create --base '<base>' --head '<branch>' --title '<title>' --body-file '<body file>'
 ```
+
+   To revise, write the new body to the same file again, then:
+
+```bash
+gh pr edit '<n>' --title '<title>' --body-file '<body file>'   # or gh issue edit '<n>'
+```
+
+   Only when no file-writing tool exists, fill the `mktemp` file with a quoted heredoc
+   (`cat > '<body file>' <<'EOF'`) in its own command, then run `gh` in the next command.
 
    Edit the body when asked to edit. Never post a comment instead.
 4. Re-read what GitHub saved (`gh pr view <n> --json url,title,body` or `gh issue view`) and

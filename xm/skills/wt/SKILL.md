@@ -126,15 +126,49 @@ project's task DAG. `/xm:wt` has no tasks and no gate panel.
 1. **Leave the worktree first.** If the session cwd is inside the worktree, call `ExitWorktree` with `action: "keep"`. It is a no-op when this session did not enter it. If `git rev-parse --show-toplevel` is still the worktree path afterwards (a session that was started inside it), stop and tell the user to run `/xm:wt land <branch>` from the main checkout: removing the worktree would delete the session's cwd. Run every later step from the main checkout (`git -C <path> rev-parse --git-common-dir` gives its `.git`).
 2. **Nothing left behind.** `git -C <path> status --porcelain` must be empty, and `git rev-parse <branch>` must equal the PR's `headRefOid`. A dirty tree or a local tip that differs from the merged head means work that is not in the PR: list it and stop.
 3. **Refresh the parent:** `GK_AGENT=1 git-kit refresh`, then diagnose the result with the same four cases as §Start step 4. Continue only when `<PARENT>` equals `origin/<PARENT>`. In every other case, report the diagnosis and stop.
-4. **Remove the worktree:** `GK_AGENT=1 git-kit worktree remove <path>`. Never pass `--force`.
-5. **Delete the branch.** If `git merge-base --is-ancestor <branch> <PARENT>` succeeds (merge-commit merge), run `git branch -d <branch>`. `-d` checks the branch's upstream, and when `refresh --prune` has removed a deleted remote branch it checks HEAD instead, which may not be `<PARENT>`. If `-d` refuses, `--is-ancestor` has already proved that `<PARENT>` contains the branch, so run `git branch -D <branch>` without a new question. If `--is-ancestor` fails, the PR was squash- or rebase-merged: step 2 already proved the branch tip is the merged PR head, so show that and ask before `git branch -D <branch>`.
-6. **Remote branch.** If `git ls-remote --exit-code --heads origin <branch>` exits 0, the remote branch still exists. Deleting it changes GitHub state: ask, and only on approval run `git push origin --delete <branch>`.
-7. **Report** (normal mode → Korean):
+4. **Archive the worktree state** as in §Archive the worktree state.
+5. **Remove the worktree:** `GK_AGENT=1 git-kit worktree remove <path>`. Never pass `--force`.
+6. **Delete the branch.** If `git merge-base --is-ancestor <branch> <PARENT>` succeeds (merge-commit merge), run `git branch -d <branch>`. `-d` checks the branch's upstream, and when `refresh --prune` has removed a deleted remote branch it checks HEAD instead, which may not be `<PARENT>`. If `-d` refuses, `--is-ancestor` has already proved that `<PARENT>` contains the branch, so run `git branch -D <branch>` without a new question. If `--is-ancestor` fails, the PR was squash- or rebase-merged: step 2 already proved the branch tip is the merged PR head, so show that and ask before `git branch -D <branch>`.
+7. **Remote branch.** If `git ls-remote --exit-code --heads origin <branch>` exits 0, the remote branch still exists. Deleting it changes GitHub state: ask, and only on approval run `git push origin --delete <branch>`.
+8. **Report** (normal mode → Korean):
    ```
    ✅ PR #<n> 병합 확인: <branch> → <PARENT>
       <PARENT>를 원격과 맞췄고, worktree와 로컬 브랜치를 지웠습니다.
+      worktree의 .xm/: <보관 경로 | 없음>
       원격 브랜치: <삭제함 | 남겨 둠>
    ```
+
+#### Archive the worktree state
+
+Each checkout keeps its own gitignored `.xm/`: review runs, review budget, triage, and any
+`later` item or inbox entry recorded while the session was inside the worktree.
+`git-kit worktree remove` deletes ignored files with the worktree, so move `.xm/` out first.
+Run this from the main checkout, after `ExitWorktree`.
+
+A branch name can contain shell metacharacters such as `;`, `$`, or `&`, so pass the worktree
+path and the branch only as single-quoted values (write each `'` in them as `'\''`) and quote
+every expansion. Each Bash call starts a fresh shell, so run each block below in one call.
+
+1. If `<path>/.xm` does not exist (`test -d '<path>/.xm'` fails), skip this section.
+2. Look for records that belong in the main backlog:
+   ```bash
+   WT='<path>'; find "$WT/.xm" \( -name later.json -o -path '*/.xm/inbox/*.json' \) -print
+   ```
+   An empty result is normal. If anything is listed, show it to the user: those records are archived, not merged, so the main checkout's `xm build later list` and `xm inbox list` do not show them.
+3. Copy the directory into the main checkout's `.xm/archive/wt/`, then delete the source. The main checkout is the first entry of `git worktree list --porcelain`, so the destination is absolute and does not depend on the cwd or on where the common git dir lives. A `/` in the branch name becomes a subdirectory, and an existing destination gets a `-<UTC timestamp>` suffix. `mkdir` without `-p` creates the destination, so it fails instead of nesting when that path also exists. Copy-then-delete keeps the source intact when the copy fails, also across filesystems:
+   ```bash
+   WT='<path>'; BRANCH='<branch>'
+   MAIN=$(git -C "$WT" worktree list --porcelain | sed -n '1s/^worktree //p')
+   case $MAIN in /*) ;; *) echo "main checkout not found" >&2; exit 1 ;; esac
+   DEST="$MAIN/.xm/archive/wt/$BRANCH"
+   if [ -e "$DEST" ]; then DEST="$DEST-$(date -u +%Y%m%dT%H%M%SZ)"; fi
+   mkdir -p -- "$(dirname -- "$DEST")" || exit 1
+   mkdir -- "$DEST" || exit 1
+   cp -R -- "$WT/.xm/." "$DEST/" || exit 1
+   rm -rf -- "$WT/.xm" || exit 1
+   printf 'archived: %s\n' "$DEST"
+   ```
+   Continue only when the block prints `archived: <DEST>`; report that `<DEST>`. If it fails, stop and report: the worktree still holds `.xm/` (or a copy of it is at `<DEST>`), so do not remove the worktree. `.xm/` is gitignored in both checkouts, so the copy changes no tracked file.
 
 #### Land without a PR
 
@@ -143,19 +177,21 @@ Local integration, no network: merge into the parent with `git-kit worktree fini
 1. **Run inside the worktree.** If the session is not in it, call `EnterWorktree` with `path: <worktree path>`.
 2. **Verify before merge**, as in §PR step 4. Ask before merging failing code.
 3. **Dirty-tree gate BEFORE finish.** If `git status --porcelain` is non-empty, list the files and ask: commit the intended work first, OR acknowledge that `finish` will auto-commit EVERYTHING — including unrelated and untracked files — as separate, unreviewed commits onto the parent. gk's own gated finish path refuses a dirty tree for this reason; the ungated path has no such guard, so you are the guard.
-4. **Merge + clean up — one command.** It wraps `promote` (commit + one-hop merge into `gk-parent`, no push), then removes the worktree and deletes the branch:
+4. **Merge only.** `finish` wraps `promote` (commit + one-hop merge into `gk-parent`, no push). Do not pass `--cleanup` / `--delete-branch`: they remove the worktree before its `.xm/` is archived.
    ```bash
-   GK_AGENT=1 git-kit worktree finish --cleanup --delete-branch
+   GK_AGENT=1 git-kit worktree finish
    ```
-   Branch STRICTLY on the JSON `state` — NEVER the exit code (the shell exits 1 when cleanup removes the cwd even on success):
-   - `ok` → merged and cleaned. Note `removed` / `branch_deleted` from `result`.
+   Branch STRICTLY on the JSON `state` — NEVER the exit code (gated finish uses exit 3 as a normal paused flow):
+   - `ok` → merged. Continue to step 5.
    - `error` whose message contains `promote failed` / `exit 3` → a merge CONFLICT paused in disguise; the merge is mid-flight INSIDE the worktree. Do NOT ExitWorktree and do NOT discard anything: run `GK_AGENT=1 git-kit context` in the worktree, report the conflict state and the resume/abort options, then **STOP**.
-   - `blocked` / any other `error` → check whether the parent already contains the branch (`git branch --contains`). If yes, the merge STANDS and only cleanup failed — report that distinction, do not re-merge. If no, follow `error.remedies[0]` after checking its `safety`. Never remove the worktree yourself.
-5. **Return the session** — call `ExitWorktree` with `action: "keep"`. Its "Your work is preserved at <path>" message is FALSE after `--cleanup` — never relay it; report from the finish JSON fields (`branch`, `to`, `removed`, `branch_deleted`).
-6. **Report** (normal mode → Korean):
+   - `blocked` / any other `error` → check whether the parent already contains the branch (`git branch --contains`). If yes, the merge STANDS: report that and continue to step 5. If no, follow `error.remedies[0]` after checking its `safety`, and do not remove the worktree while the merge has not landed.
+5. **Return the session** — call `ExitWorktree` with `action: "keep"`. If `git rev-parse --show-toplevel` is still the worktree path afterwards (a session that was started inside it), stop: the merge has landed in `<PARENT>`, and the worktree and its `.xm/` are intact at `<path>`. Tell the user to run `/xm:wt land <branch>` from the main checkout to archive and remove it. Otherwise run every later step from the main checkout.
+6. **Archive the worktree state** as in §Archive the worktree state.
+7. **Remove the worktree and branch:** `GK_AGENT=1 git-kit worktree remove <path>` (never `--force`), then `git branch -d <branch>`. `promote` merged the branch into `<PARENT>`, so if `-d` refuses and `git merge-base --is-ancestor <branch> <PARENT>` succeeds, run `git branch -D <branch>`. If `--is-ancestor` fails, the merge did not land: stop and report.
+8. **Report** (normal mode → Korean):
    ```
    ✅ <branch> → <PARENT> 로컬 머지 완료 (push 안 함).
-      worktree / 브랜치 정리됨 (removed / branch_deleted).
+      worktree와 브랜치를 지웠습니다. worktree의 .xm/: <보관 경로 | 없음>
       원격 반영은 git-kit land / push 로 직접 하세요.
    ```
 
@@ -178,7 +214,8 @@ push, or remove anything under `status`.
 | "The PR merged, so `git branch -D` is fine." | Only after the local tip equals the PR's `headRefOid` and the worktree is clean. A commit made after the merge exists nowhere else; `-D` deletes it. |
 | "`ExitWorktree(remove)` cleans up in one step." | A worktree entered by `path` is never removed by `ExitWorktree`, and it only acts on worktrees this session entered. gk created it; `git-kit worktree remove` removes it. |
 | "The remote branch is stale, I'll delete it with the local one." | Deleting a remote branch changes GitHub state. Ask first. |
-| "Non-zero exit code, so the finish failed." | The shell exits 1 when cleanup removes the cwd even on `state:"ok"`, and gated finish uses exit 3 as its normal paused flow. Branch only on the `state` field. |
+| "Non-zero exit code, so the finish failed." | Gated finish uses exit 3 as its normal paused flow. Branch only on the `state` field. |
+| "`finish --cleanup` does the merge and the cleanup in one call." | It deletes the worktree with its gitignored `.xm/`: review runs, triage, and any `later` item recorded inside the worktree. Merge with `finish`, archive `.xm/`, then remove. |
 | "finish returned an error, so the worktree is junk — I'll remove it." | An error containing `exit 3` is a wrapped merge conflict: the merge is half-done inside the worktree. Preserve it and surface the conflict. |
 | "I'll define a shell alias for the long git-kit command." | The Bash tool is stateless per call — an alias/function from one call is gone in the next. Call `GK_AGENT=1 git-kit` directly every time. |
 
@@ -193,11 +230,13 @@ push, or remove anything under `status`.
 - You deleted a branch with `-D`, or removed a worktree, without checking it is clean and equal to the merged PR head.
 - You deleted a remote branch without asking.
 - You ran `worktree remove` while the session cwd was inside that worktree.
-- You judged `finish` by its exit code instead of the `state` field, or relayed ExitWorktree's "preserved at" message after `--cleanup`.
+- You judged `finish` by its exit code instead of the `state` field.
+- You removed a worktree before moving its `.xm/` to `.xm/archive/wt/<branch>`.
 
 ## Verification
 
 - After `start`: `git branch --show-current` is the new branch, `git config --get branch.<branch>.gk-parent` returns the parent, the cwd is under `~/.gk/worktree/<project>/`, and `git merge-base --is-ancestor origin/<PARENT> HEAD` succeeds.
 - After `pr`: `gh pr view --json baseRefName,url` shows `baseRefName` equal to the `gk-parent`, and the worktree still exists.
 - After `land` with a merged PR: the worktree path is gone from `git-kit worktree list`, `git rev-parse --verify --quiet refs/heads/<branch>` fails unless the user declined the `-D` for a squash- or rebase-merged branch, the parent equals its remote, and the remote branch was deleted only with the user's approval.
-- After `land` without a PR: `finish` returned `state:"ok"` with `removed:true`, the parent contains the branch's commits, and nothing was pushed.
+- After `land` without a PR: `finish` returned `state:"ok"`, the parent contains the branch's commits, the worktree and branch are gone, and nothing was pushed.
+- After either `land`: if the worktree had a `.xm/`, it now exists at the `<DEST>` the archive step printed: `<main checkout>/.xm/archive/wt/<branch>`, or the same path with a `-<UTC timestamp>` suffix when that path already existed.
