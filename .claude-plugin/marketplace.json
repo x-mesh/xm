@@ -295,7 +295,7 @@
     {
       "name": "xm",
       "description": "All-in-one bundle: build + op + agent + solver + eval + humble + cross-plugin quality pipeline",
-      "version": "2.47.2",
+      "version": "2.48.0",
       "author": {
         "name": "x-mesh"
       },
@@ -311,7 +311,7 @@
     {
       "name": "wt",
       "description": "Session worktree — isolate the whole session in a git worktree, then land it back to the parent branch (no gate, no task DAG)",
-      "version": "0.1.2",
+      "version": "0.2.0",
       "author": {
         "name": "x-mesh"
       },
