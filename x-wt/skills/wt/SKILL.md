@@ -145,14 +145,25 @@ Each checkout keeps its own gitignored `.xm/`: review runs, review budget, triag
 `git-kit worktree remove` deletes ignored files with the worktree, so move `.xm/` out first.
 Run this from the main checkout, after `ExitWorktree`.
 
-1. If `<path>/.xm` does not exist, skip this section.
-2. Look for records that belong in the main backlog: `find <path>/.xm -name later.json` and `<path>/.xm/inbox/*.json`. If any exist, list them for the user: they are archived, not merged, so the main checkout's `xm build later list` and `xm inbox list` do not show them.
-3. Move the directory to `.xm/archive/wt/<branch>` in the main checkout. A `/` in the branch name becomes a subdirectory. If that path already exists, append `-<UTC timestamp>`:
+A branch name can contain shell metacharacters such as `;`, `$`, or `&`, so pass the worktree
+path and the branch only as single-quoted values (write each `'` in them as `'\''`) and quote
+every expansion. Each Bash call starts a fresh shell, so run each block below in one call.
+
+1. If `<path>/.xm` does not exist (`test -d '<path>/.xm'` fails), skip this section.
+2. Look for records that belong in the main backlog:
    ```bash
-   mkdir -p .xm/archive/wt/<branch-parent-dirs>
-   mv <path>/.xm .xm/archive/wt/<branch>
+   WT='<path>'; find "$WT/.xm" -name later.json; ls -- "$WT/.xm/inbox/"*.json 2>/dev/null
    ```
-   `.xm/` is gitignored in both checkouts, so the move changes no tracked file.
+   If anything is listed, show it to the user: those records are archived, not merged, so the main checkout's `xm build later list` and `xm inbox list` do not show them.
+3. Move the directory into the main checkout's `.xm/archive/wt/`. The destination is absolute, derived from the worktree's common git dir, so it does not depend on the cwd. A `/` in the branch name becomes a subdirectory, and an existing destination gets a `-<UTC timestamp>` suffix:
+   ```bash
+   WT='<path>'; BRANCH='<branch>'
+   MAIN=$(dirname -- "$(git -C "$WT" rev-parse --path-format=absolute --git-common-dir)") || exit 1
+   DEST="$MAIN/.xm/archive/wt/$BRANCH"
+   if [ -e "$DEST" ]; then DEST="$DEST-$(date -u +%Y%m%dT%H%M%SZ)"; fi
+   mkdir -p -- "$(dirname -- "$DEST")" && mv -- "$WT/.xm" "$DEST" && printf 'archived: %s\n' "$DEST"
+   ```
+   Continue only when the block prints `archived: <DEST>`; report that `<DEST>`. If it fails, stop: the worktree still holds `.xm/`, so do not remove it. `.xm/` is gitignored in both checkouts, so the move changes no tracked file.
 
 #### Land without a PR
 
@@ -168,8 +179,8 @@ Local integration, no network: merge into the parent with `git-kit worktree fini
    Branch STRICTLY on the JSON `state` — NEVER the exit code (gated finish uses exit 3 as a normal paused flow):
    - `ok` → merged. Continue to step 5.
    - `error` whose message contains `promote failed` / `exit 3` → a merge CONFLICT paused in disguise; the merge is mid-flight INSIDE the worktree. Do NOT ExitWorktree and do NOT discard anything: run `GK_AGENT=1 git-kit context` in the worktree, report the conflict state and the resume/abort options, then **STOP**.
-   - `blocked` / any other `error` → check whether the parent already contains the branch (`git branch --contains`). If yes, the merge STANDS: report that and continue to step 5. If no, follow `error.remedies[0]` after checking its `safety`. Never remove the worktree yourself.
-5. **Return the session** — call `ExitWorktree` with `action: "keep"`. Run every later step from the main checkout.
+   - `blocked` / any other `error` → check whether the parent already contains the branch (`git branch --contains`). If yes, the merge STANDS: report that and continue to step 5. If no, follow `error.remedies[0]` after checking its `safety`, and do not remove the worktree while the merge has not landed.
+5. **Return the session** — call `ExitWorktree` with `action: "keep"`. If `git rev-parse --show-toplevel` is still the worktree path afterwards (a session that was started inside it), stop: the merge has landed in `<PARENT>`, and the worktree and its `.xm/` are intact at `<path>`. Tell the user to run `/xm:wt land <branch>` from the main checkout to archive and remove it. Otherwise run every later step from the main checkout.
 6. **Archive the worktree state** as in §Archive the worktree state.
 7. **Remove the worktree and branch:** `GK_AGENT=1 git-kit worktree remove <path>` (never `--force`), then `git branch -d <branch>`. `promote` merged the branch into `<PARENT>`, so if `-d` refuses and `git merge-base --is-ancestor <branch> <PARENT>` succeeds, run `git branch -D <branch>`. If `--is-ancestor` fails, the merge did not land: stop and report.
 8. **Report** (normal mode → Korean):
@@ -223,4 +234,4 @@ push, or remove anything under `status`.
 - After `pr`: `gh pr view --json baseRefName,url` shows `baseRefName` equal to the `gk-parent`, and the worktree still exists.
 - After `land` with a merged PR: the worktree path is gone from `git-kit worktree list`, `git rev-parse --verify --quiet refs/heads/<branch>` fails unless the user declined the `-D` for a squash- or rebase-merged branch, the parent equals its remote, and the remote branch was deleted only with the user's approval.
 - After `land` without a PR: `finish` returned `state:"ok"`, the parent contains the branch's commits, the worktree and branch are gone, and nothing was pushed.
-- After either `land`: if the worktree had a `.xm/`, it now exists at `.xm/archive/wt/<branch>` in the main checkout.
+- After either `land`: if the worktree had a `.xm/`, it now exists at the `<DEST>` the archive step printed: `<main checkout>/.xm/archive/wt/<branch>`, or the same path with a `-<UTC timestamp>` suffix when that path already existed.
