@@ -93,6 +93,25 @@ const ASSIGNMENT_RE = new RegExp(
   'gi'
 );
 
+// An unquoted value that is a secret key name followed by its own `=`/`:` is
+// the key of the next assignment, as in `secrets: api_key = sk_live_…`.
+// Masking it as the value consumed that key, and the scan resumed after it,
+// so the real secret was emitted verbatim. Such a value is kept and the scan
+// restarts at it. The value class admits `:`/`=`, so the separator can also
+// end the value itself (`secrets: AWS_SECRET_ACCESS_KEY: wJalr…`). The term
+// must start the key or follow `_`/`.`/`-`, so a secret like `abcpassword`
+// is still masked; `==`, `=>`, `::` do not count as a separator.
+const NESTED_KEY_RE = /^[A-Za-z_][A-Za-z0-9_.-]{0,40}$/;
+const NESTED_KEY_TERM_RE = new RegExp(`(?:^|[_.-])(?:${SECRET_TERM})`, 'i');
+const NEXT_SEPARATOR_RE = /^\s{0,10}(?:=(?![=>])|:(?!:))/;
+
+function isNextAssignmentKey(value, after) {
+  const endsWithSeparator = /[:=]$/.test(value);
+  const key = endsWithSeparator ? value.slice(0, -1) : value;
+  const rest = endsWithSeparator ? value.slice(-1) + after : after;
+  return NESTED_KEY_RE.test(key) && NESTED_KEY_TERM_RE.test(key) && NEXT_SEPARATOR_RE.test(rest);
+}
+
 // 2. `Authorization: Bearer <token>` / bare `Bearer <token>` headers. Keeps
 //    the "Bearer " marker, masks only the token.
 const BEARER_RE = /\b(Bearer\s{1,5})[A-Za-z0-9._~+/=-]{10,500}/gi;
@@ -156,11 +175,21 @@ export function redact(text) {
   // Groups: 1 = key+separator, 2 = double-quoted value, 3 = single-quoted
   // value, 4 = unquoted value. Exactly one of 2/3/4 is defined per match; the
   // quote is re-emitted around [REDACTED] so the line still parses as it did.
-  result = result.replace(ASSIGNMENT_RE, (_match, keyAndSep, dq, sq) => {
+  let assigned = '';
+  let copied = 0;
+  for (let match = ASSIGNMENT_RE.exec(result); match !== null; match = ASSIGNMENT_RE.exec(result)) {
+    const [whole, keyAndSep, dq, sq, uq] = match;
+    const valueStart = match.index + keyAndSep.length;
+    if (uq !== undefined && isNextAssignmentKey(uq, result.slice(valueStart + uq.length, valueStart + uq.length + 16))) {
+      ASSIGNMENT_RE.lastIndex = valueStart;
+      continue;
+    }
     masked += 1;
     const q = dq !== undefined ? '"' : sq !== undefined ? "'" : '';
-    return `${keyAndSep}${q}${REDACTED}${q}`;
-  });
+    assigned += `${result.slice(copied, match.index)}${keyAndSep}${q}${REDACTED}${q}`;
+    copied = match.index + whole.length;
+  }
+  result = assigned + result.slice(copied);
 
   BEARER_RE.lastIndex = 0;
   result = result.replace(BEARER_RE, (_match, prefix) => {
