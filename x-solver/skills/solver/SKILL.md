@@ -318,7 +318,8 @@ The leader must never directly read code or verify hypotheses in any phase. Alwa
 - Checklist: Hypothesis status verified / AskUserQuestion called / solve-advance called
 
 **resolve phase:** fix + regression proof — Fix it, then re-run the exact command recorded in `reproduce` and show the failure marker is gone: `$XMS repro verify --output-file <after> --exit-code 0 [--regression-test <path>]`. Add `--regression-cmd "<cmd>" --regression-marker "<literal>"` to prove the test fails on the recorded baseline and passes now; `verify` requires that pinned test, or `--regression-waiver "<why no test can pin it>"`. `verify` refuses to pass a reproduced problem without it, and with no hard constraint declared that proof plus the pinned or waived test passes it (`reason: regression_proof`); a declared hard constraint still needs a score. If `resolve_mode` is `narrow`, no root cause was confirmed — reversible instrumentation only.
-- Checklist: delegate agent called (including fix + exec proof) / Execution evidence confirmed / candidates add + select called / verify called / close called
+- Before the fix, the executor lists every input form that reaches the failing path and each assumption the fix adds, and covers each. The regression proof re-runs only the recorded command, so a fix can pass it and still break a sibling input the evidence already showed.
+- Checklist: delegate agent called (including fix + exec proof) / input forms and added assumptions listed and covered / Execution evidence confirmed / candidates add + select called / verify called / close called
 
 ### constrain — Contrastive Matrix
 After scoring, the leader produces a Contrastive Matrix showing each candidate scored per constraint with a Winner column, making tradeoffs visible at a glance before selection.
