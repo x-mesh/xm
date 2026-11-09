@@ -3,7 +3,7 @@ import type { EngineInterface, Register, RenderChildren, SessionReceiveInput } f
 
 import type { AutoReview, Candidate, ChatLine, ClaudeProcess, Conversation, Pair, PendingCommit, Peer, Picker } from '../../types'
 import {
-  ago, briefingPrompt, claudeProcesses, diffLines, lightReviewText, nativeKey, nativeName, nativeSession, ownSessionName, parseCommitCommand, parseDelivery, parseRelaySend, peerKey,
+  ago, briefingPrompt, claudeProcesses, diffLines, lightReviewText, nativeKey, nativeName, nativeSession, ownSessionName, socketPid, parseCommitCommand, parseDelivery, parseRelaySend, peerKey,
   sendArgv, sentRequestId, sessionRows, shortName, summarizeTranscript, transcriptPath,
 } from './parse'
 import { ICON_SVG, LABEL, badgeCells, badgeColumns, cells, displayName, fit, labels, layoutFor, pad, providerOf, statusText } from './view'
@@ -160,21 +160,44 @@ async function refreshStatus($: EngineInterface) {
   $.ui.status(statusText(await read($, conversations)))
 }
 
-/** `absorbs` names earlier conversations that turned out to be this one: they are merged into it. */
-type Opening = { key: string; name: string; peer: Peer | null; cwd?: string | null; absorbs?: (c: Conversation) => boolean }
+/** `absorbs` names earlier conversations that turned out to be this one: they are merged into it.
+ *  `address` is the native address the line came through, kept on the conversation. */
+type Opening = { key: string; name: string; peer: Peer | null; cwd?: string | null; absorbs?: (c: Conversation) => boolean; address?: string }
 
 // One listing serves a burst of native messages.
 const LISTING_TTL_MS = 30_000
 // The listing is read on the way to the model (0.4 s measured); a hung daemon must not hold a delivery for the 30 s default.
 const LISTING_TIMEOUT_MS = 3_000
+// Messages that arrive together share one read instead of each starting its own.
+let reading: Promise<ClaudeProcess[]> | null = null
 
 async function listClaude($: EngineInterface, fresh: boolean): Promise<{ processes: ClaudeProcess[]; isCached: boolean }> {
   const now = await $.clock.now()
   const cached = await read($, claudeListing)
   if (!fresh && cached && now - cached.at < LISTING_TTL_MS) return { processes: cached.processes, isCached: true }
-  const processes = claudeProcesses((await $.process.run(['xm', 'relay', 'sessions', '--provider', 'claude'], { timeoutMs: LISTING_TIMEOUT_MS })).stdout)
-  await update($, claudeListing, () => ({ at: now, processes }))
-  return { processes, isCached: false }
+  reading ??= (async () => {
+    const processes = claudeProcesses((await $.process.run(['xm', 'relay', 'sessions', '--provider', 'claude'], { timeoutMs: LISTING_TIMEOUT_MS })).stdout)
+    await update($, claudeListing, () => ({ at: now, processes }))
+    return processes
+  })().finally(() => { reading = null })
+  return { processes: await reading, isCached: false }
+}
+
+// Without a listing the session behind an address is unknown, and its pid may
+// belong to another process by now, so no session is assumed. A conversation
+// that already used this address under this name keeps the message, and the
+// peer becomes the address itself, so a reply reaches whoever sent it.
+async function unlistedOpening($: EngineInterface, to: string, name: string): Promise<Opening> {
+  const peer: Peer = { kind: 'native', to }
+  const list = await read($, conversations)
+  // The model's send passes its address as the name; only a uds: socket is not one.
+  const isName = socketPid(nativeName(name)) === null
+  const byAddress = list.find(c => c.addresses?.includes(to) && (!isName || c.name === nativeName(name)))
+  const byNameOnly = isName ? list.filter(c => c.name === nativeName(name)) : []
+  const known = byAddress ?? (byNameOnly.length === 1 ? byNameOnly[0] : undefined)
+  return known
+    ? { key: known.key, name: known.name, peer, address: to }
+    : { key: nativeKey(name), name: nativeName(name), peer, address: to }
 }
 
 // A native peer is one Claude session reached by several addresses: the name
@@ -183,25 +206,24 @@ async function listClaude($: EngineInterface, fresh: boolean): Promise<{ process
 // share a name stay apart, and the conversation is the same one an xm relay
 // exchange with that session uses.
 async function nativeOpening($: EngineInterface, to: string, name: string): Promise<Opening> {
-  const byName: Opening = { key: nativeKey(name), name: nativeName(name), peer: { kind: 'native', to } }
-  let processes: ClaudeProcess[] | null
+  let processes: ClaudeProcess[]
   try {
     let listed = await listClaude($, false)
     // A socket the cached listing does not know is a process started since.
     if (listed.isCached && !nativeSession(to, listed.processes)) listed = await listClaude($, true)
     processes = listed.processes
   } catch {
-    // A failed read falls back to the last listing, whose live sockets still name
-    // the same sessions; with none, the peer stays keyed by its name.
-    processes = (await read($, claudeListing))?.processes ?? null
+    return unlistedOpening($, to, name)
   }
-  const session = processes ? nativeSession(to, processes) : null
-  if (!processes || !session) return byName
-  const known = processes
+  const session = nativeSession(to, processes)
+  if (!session) return { key: nativeKey(name), name: nativeName(name), peer: { kind: 'native', to }, address: to }
   const peer: Peer = { kind: 'xm', provider: 'claude', sessionId: session.sessionId }
+  // A conversation kept by name while the listing failed has an old socket that
+  // no longer resolves; the name joins it, but only when no other live session carries it.
+  const nameKey = session.name && processes.filter(p => p.name === session.name).length === 1 ? nativeKey(session.name) : null
   return {
-    key: peerKey(peer), name: session.name ?? byName.name, peer, cwd: session.cwd,
-    absorbs: c => c.peer?.kind === 'native' && nativeSession(c.peer.to, known)?.sessionId === session.sessionId,
+    key: peerKey(peer), name: session.name ?? nativeName(name), peer, cwd: session.cwd, address: to,
+    absorbs: c => c.peer?.kind === 'native' && (nativeSession(c.peer.to, processes)?.sessionId === session.sessionId || c.key === nameKey),
   }
 }
 
@@ -238,6 +260,7 @@ async function record($: EngineInterface, opening: Opening, line: ChatLine) {
       peer: line.by === 'peer' && opening.peer ? opening.peer : base.peer,
       cwd: base.cwd ?? opening.cwd ?? null,
       lines: [...[...base.lines, ...merged.flatMap(c => c.lines)].sort((a, b) => a.at - b.at), line].slice(-KEEP_LINES),
+      addresses: [...new Set([...(base.addresses ?? []), ...merged.flatMap(c => c.addresses ?? []), ...(opening.address ? [opening.address] : [])])],
       // A line the person sent reads the conversation; one the pane sent on its own does not.
       unread: line.by === 'peer' ? unread + 1 : line.auto ? unread : 0,
     }

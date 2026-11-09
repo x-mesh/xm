@@ -1049,10 +1049,14 @@ describe('session.receive', () => {
       let now = 1_760_000_000_000
       mock.env(on, { HOME: '/Users/me' })
       on('clock.now', () => ({ value: now }))
+      const delivered: string[] = []
+      const relayed: string[] = []
       on('session.receive', (_$, e) => ({ text: e.text }))
-      on('session.send', () => ({ isDelivered: true }))
+      on('session.send', (_$, e) => { delivered.push(e.to); return { isDelivered: true } })
       on('process.run', (_$, e) => {
-        if (e.argv.join(' ') !== 'xm relay sessions --provider claude') throw new Error(`unexpected command: ${e.argv.join(' ')}`)
+        const argv = e.argv.join(' ')
+        if (argv.startsWith('xm relay send')) { relayed.push(argv); return ok('{"ok":true}') }
+        if (argv !== 'xm relay sessions --provider claude') throw new Error(`unexpected command: ${argv}`)
         return listed ? ok(listing) : ok('{"ok":false,"error":"daemon down"}')
       })
       await $.session.receive({ origin: { kind: 'peer' }, text: from(93147, 'dnx-76', '첫 답변') })
@@ -1064,7 +1068,73 @@ describe('session.receive', () => {
       expect(await ui.find({ key: 'tab-native:dnx-76' })).toBeUndefined()
       await ui.press({ key: `tab-claude:${PEER}` })
       for (const line of [/첫 답변/, /둘째 답변/, /고마워요/]) expect(await ui.find({ type: 'Text', text: line })).toBeDefined()
+      // Unlisted, the session behind the socket is not assumed: the reply goes back to the socket itself.
+      delivered.length = 0
+      await ui.input({ key: `say-claude:${PEER}`, text: '확인' })
+      expect(delivered).toEqual(['uds:/tmp/cc-socks/93147.sock'])
+      expect(relayed).toEqual([])
       await ui.unmount()
+    })
+
+    test('an unlisted socket under another name is not taken for the session its pid once ran', async ($, on) => {
+      let listed = true
+      let now = 1_760_000_000_000
+      mock.env(on, { HOME: '/Users/me' })
+      on('clock.now', () => ({ value: now }))
+      on('session.receive', (_$, e) => ({ text: e.text }))
+      on('process.run', () => (listed ? ok(listing) : ok('{"ok":false,"error":"daemon down"}')))
+      await $.session.receive({ origin: { kind: 'peer' }, text: from(93147, 'dnx-76', '첫 답변') })
+      listed = false
+      now += 600_000
+      await $.session.receive({ origin: { kind: 'peer' }, text: from(93147, 'gk-11', '다른 세션') })
+      const ui = await $.ui.mount({ plugin: 'xm', surface: 'terminal', component: 'Pane', requestId: 'relay-chat', props })
+      expect((await ui.find({ key: 'tab-native:gk-11' }))?.text).toContain('다른 세션')
+      expect((await ui.find({ key: `tab-claude:${PEER}` }))?.text).toContain('첫 답변')
+      await ui.unmount()
+    })
+
+    test('a conversation kept by name from an old socket joins the session when its name returns under a new pid', async ($, on) => {
+      let stdout = '{"ok":false,"error":"daemon down"}'
+      mock.clock(on, { now: 1_760_000_000_000 })
+      mock.env(on, { HOME: '/Users/me' })
+      on('session.receive', (_$, e) => ({ text: e.text }))
+      on('process.run', () => ok(stdout))
+      await $.session.receive({ origin: { kind: 'peer' }, text: from(50001, 'dnx-76', '예전 프로세스') })
+      stdout = listing
+      await $.session.receive({ origin: { kind: 'peer' }, text: from(93147, 'dnx-76', '새 프로세스') })
+      const ui = await $.ui.mount({ plugin: 'xm', surface: 'terminal', component: 'Pane', requestId: 'relay-chat', props })
+      expect(await ui.find({ key: 'tab-native:dnx-76' })).toBeUndefined()
+      await ui.press({ key: `tab-claude:${PEER}` })
+      for (const line of [/예전 프로세스/, /새 프로세스/]) expect(await ui.find({ type: 'Text', text: line })).toBeDefined()
+      await ui.unmount()
+    })
+
+    test('a name two live sessions share does not pull a name-kept conversation into either', async ($, on) => {
+      let stdout = '{"ok":false,"error":"daemon down"}'
+      mock.clock(on, { now: 1_760_000_000_000 })
+      mock.env(on, { HOME: '/Users/me' })
+      on('session.receive', (_$, e) => ({ text: e.text }))
+      on('process.run', () => ok(stdout))
+      await $.session.receive({ origin: { kind: 'peer' }, text: from(50001, 'reviewer-86', '예전 프로세스') })
+      stdout = listing
+      await $.session.receive({ origin: { kind: 'peer' }, text: from(72889, 'reviewer-86', '하나') })
+      const ui = await $.ui.mount({ plugin: 'xm', surface: 'terminal', component: 'Pane', requestId: 'relay-chat', props })
+      expect((await ui.find({ key: 'tab-native:reviewer-86' }))?.text).toContain('예전 프로세스')
+      expect((await ui.find({ key: `tab-claude:${P1}` }))?.text).toContain('하나')
+      await ui.unmount()
+    })
+
+    test('messages that arrive together read the listing once', async ($, on) => {
+      let runs = 0
+      mock.clock(on, { now: 1_760_000_000_000 })
+      mock.env(on, { HOME: '/Users/me' })
+      on('session.receive', (_$, e) => ({ text: e.text }))
+      on('process.run', async () => { runs += 1; await new Promise(r => setTimeout(r, 5)); return ok(listing) })
+      await Promise.all([
+        $.session.receive({ origin: { kind: 'peer' }, text: from(93147, 'dnx-76', '하나') }),
+        $.session.receive({ origin: { kind: 'peer' }, text: from(72889, 'reviewer-86', '둘') }),
+      ])
+      expect(runs).toBe(1)
     })
   })
 

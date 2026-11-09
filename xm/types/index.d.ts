@@ -23,6 +23,8 @@ export type Conversation = {
   unread: number
   /** True while a Cursor turn runs: its answer arrives with the send itself. */
   waiting?: boolean
+  /** Native addresses this peer has used; they keep its messages here while the session listing cannot be read. */
+  addresses?: string[]
 }
 
 export type Candidate = {
