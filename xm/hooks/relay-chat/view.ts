@@ -126,6 +126,16 @@ export function labels(all: readonly Named[]): Map<string, string> {
   }))
 }
 
+// The status line sits under the prompt in every turn: it names who wrote and
+// how much, so the person can tell whether to open the pane now.
+export function statusText(list: readonly { name: string; peer: Peer | null; unread: number }[]): string | undefined {
+  const senders = list.filter(c => c.unread > 0).sort((a, b) => b.unread - a.unread)
+  if (!senders.length) return undefined
+  const shown = senders.slice(0, 2).map(c => `${displayName(c.name, c.peer)} ${c.unread}건`)
+  const rest = senders.length - shown.length
+  return `💬 새 메시지 ${shown.join(', ')}${rest ? ` 외 ${rest}명` : ''} · /relay-chat`
+}
+
 /** A name without the "provider:" prefix older records carry; the icon says the provider. */
 export function displayName(name: string, peer: Peer | null): string {
   const provider = peer?.kind === 'xm' ? peer.provider : null
