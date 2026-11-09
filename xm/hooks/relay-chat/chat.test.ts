@@ -1149,6 +1149,22 @@ describe('session.receive', () => {
       await ui.unmount()
     })
 
+    test('a pid reused by another session within the cache window reads the listing again', async ($, on) => {
+      const P3 = '5c0f7e1a-2b3d-4e5f-8a9b-0c1d2e3f4a5b'
+      let stdout = listing
+      mock.clock(on, { now: 1_760_000_000_000 })
+      mock.env(on, { HOME: '/Users/me' })
+      on('session.receive', (_$, e) => ({ text: e.text }))
+      on('process.run', () => ok(stdout))
+      await $.session.receive({ origin: { kind: 'peer' }, text: from(93147, 'dnx-76', '예전 세션') })
+      stdout = JSON.stringify({ ok: true, sessions: [{ session_id: P3, pid: 93147, name: 'jst-11', cwd: '/w/jst' }] })
+      await $.session.receive({ origin: { kind: 'peer' }, text: from(93147, 'jst-11', '새 세션') })
+      const ui = await $.ui.mount({ plugin: 'xm', surface: 'terminal', component: 'Pane', requestId: 'relay-chat', props })
+      expect((await ui.find({ key: `tab-claude:${P3}` }))?.text).toContain('새 세션')
+      expect((await ui.find({ key: `tab-claude:${PEER}` }))?.text).not.toContain('새 세션')
+      await ui.unmount()
+    })
+
     test('messages that arrive together read the listing once', async ($, on) => {
       let runs = 0
       mock.clock(on, { now: 1_760_000_000_000 })

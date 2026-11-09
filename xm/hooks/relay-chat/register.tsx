@@ -212,8 +212,11 @@ async function nativeOpening($: EngineInterface, to: string, name: string, by: '
   let processes: ClaudeProcess[]
   try {
     let listed = await listClaude($, false)
-    // A socket the cached listing does not know is a process started since.
-    if (listed.isCached && !nativeSession(to, listed.processes)) listed = await listClaude($, true)
+    // A socket the cached listing does not know is a process started since; one
+    // whose sender names itself differently has a pid another session took over.
+    const cached = listed.isCached ? nativeSession(to, listed.processes) : null
+    const isRenamed = by === 'peer' && socketPid(nativeName(name)) === null && cached?.name !== nativeName(name)
+    if (listed.isCached && (!cached || isRenamed)) listed = await listClaude($, true)
     processes = listed.processes
   } catch {
     return unlistedOpening($, to, name, by)
