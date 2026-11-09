@@ -3,7 +3,7 @@ import type { EngineInterface, Register, RenderChildren, SessionReceiveInput } f
 
 import type { AutoReview, Candidate, ChatLine, ClaudeProcess, Conversation, Pair, PendingCommit, Peer, Picker } from '../../types'
 import {
-  ago, briefingPrompt, claudeProcesses, diffLines, lightReviewText, nativeKey, nativeName, nativeSession, ownSessionName, socketPid, parseCommitCommand, parseDelivery, parseRelaySend, peerKey,
+  ago, briefingPrompt, claudeProcesses, diffLines, lightReviewText, nativeKey, nativeName, nativeSession, ownSessionName, recentAddresses, socketPid, parseCommitCommand, parseDelivery, parseRelaySend, peerKey,
   sendArgv, sentRequestId, sessionRows, shortName, summarizeTranscript, transcriptPath,
 } from './parse'
 import { ICON_SVG, LABEL, badgeCells, badgeColumns, cells, displayName, fit, labels, layoutFor, pad, providerOf, statusText } from './view'
@@ -187,13 +187,16 @@ async function listClaude($: EngineInterface, fresh: boolean): Promise<{ process
 // belong to another process by now, so no session is assumed. A conversation
 // that already used this address under this name keeps the message, and the
 // peer becomes the address itself, so a reply reaches whoever sent it.
-async function unlistedOpening($: EngineInterface, to: string, name: string): Promise<Opening> {
+// A sender's display name alone proves nothing (two live sessions can share
+// one), so an arriving message needs its address on record; only the model's
+// send by name, which ListAgents resolved, may match the one conversation of that name.
+async function unlistedOpening($: EngineInterface, to: string, name: string, by: 'peer' | 'model'): Promise<Opening> {
   const peer: Peer = { kind: 'native', to }
   const list = await read($, conversations)
   // The model's send passes its address as the name; only a uds: socket is not one.
   const isName = socketPid(nativeName(name)) === null
   const byAddress = list.find(c => c.addresses?.includes(to) && (!isName || c.name === nativeName(name)))
-  const byNameOnly = isName ? list.filter(c => c.name === nativeName(name)) : []
+  const byNameOnly = by === 'model' && isName ? list.filter(c => c.name === nativeName(name)) : []
   const known = byAddress ?? (byNameOnly.length === 1 ? byNameOnly[0] : undefined)
   return known
     ? { key: known.key, name: known.name, peer, address: to }
@@ -205,7 +208,7 @@ async function unlistedOpening($: EngineInterface, to: string, name: string): Pr
 // by the session id, every address lands in one conversation, two sessions that
 // share a name stay apart, and the conversation is the same one an xm relay
 // exchange with that session uses.
-async function nativeOpening($: EngineInterface, to: string, name: string): Promise<Opening> {
+async function nativeOpening($: EngineInterface, to: string, name: string, by: 'peer' | 'model'): Promise<Opening> {
   let processes: ClaudeProcess[]
   try {
     let listed = await listClaude($, false)
@@ -213,7 +216,7 @@ async function nativeOpening($: EngineInterface, to: string, name: string): Prom
     if (listed.isCached && !nativeSession(to, listed.processes)) listed = await listClaude($, true)
     processes = listed.processes
   } catch {
-    return unlistedOpening($, to, name)
+    return unlistedOpening($, to, name, by)
   }
   const session = nativeSession(to, processes)
   if (!session) return { key: nativeKey(name), name: nativeName(name), peer: { kind: 'native', to }, address: to }
@@ -260,7 +263,7 @@ async function record($: EngineInterface, opening: Opening, line: ChatLine) {
       peer: line.by === 'peer' && opening.peer ? opening.peer : base.peer,
       cwd: base.cwd ?? opening.cwd ?? null,
       lines: [...[...base.lines, ...merged.flatMap(c => c.lines)].sort((a, b) => a.at - b.at), line].slice(-KEEP_LINES),
-      addresses: [...new Set([...(base.addresses ?? []), ...merged.flatMap(c => c.addresses ?? []), ...(opening.address ? [opening.address] : [])])],
+      addresses: recentAddresses([...(base.addresses ?? []), ...merged.flatMap(c => c.addresses ?? []), ...(opening.address ? [opening.address] : [])]),
       // A line the person sent reads the conversation; one the pane sent on its own does not.
       unread: line.by === 'peer' ? unread + 1 : line.auto ? unread : 0,
     }
@@ -753,7 +756,7 @@ export const register: Register = (on, options) => {
       return { consumed: 'auto review reply kept in the relay chat pane' }
     }
     const opening: Opening = parsed.peer?.kind === 'native'
-      ? await nativeOpening($, parsed.peer.to, parsed.sender)
+      ? await nativeOpening($, parsed.peer.to, parsed.sender, 'peer')
       : { key: parsed.peer ? peerKey(parsed.peer) : `unknown:${parsed.sender}`, name: parsed.sender, peer: parsed.peer, cwd: parsed.cwd }
     await record($, opening, { at: await $.clock.now(), by: 'peer', text: parsed.body })
 
@@ -792,7 +795,7 @@ export const register: Register = (on, options) => {
   on('session.send', async ($, e, next) => {
     const sent = await next(e)
     if (e.origin.kind === 'model' && e.agentId === undefined && sent.isDelivered) {
-      const opening = await nativeOpening($, e.to, e.to)
+      const opening = await nativeOpening($, e.to, e.to, 'model')
       // Unresolved, a reply to the socket a peer wrote from still belongs to that peer's conversation.
       const open = opening.peer?.kind === 'native' ? (await read($, conversations)).find(c => c.peer?.kind === 'native' && c.peer.to === e.to) : undefined
       await record($, open ? { key: open.key, name: open.name, peer: opening.peer } : opening, { at: await $.clock.now(), by: 'model', text: e.text })

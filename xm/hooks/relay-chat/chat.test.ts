@@ -1,6 +1,6 @@
 import { describe, expect, mock, test } from 'claude-code/testing'
 
-import { ago, briefingPrompt, ownSessionName, parseCommitCommand, parseDelivery, parseRelaySend, sendArgv, sessionRows, summarizeTranscript, transcriptPath } from './parse'
+import { ago, briefingPrompt, ownSessionName, recentAddresses, parseCommitCommand, parseDelivery, parseRelaySend, sendArgv, sessionRows, summarizeTranscript, transcriptPath } from './parse'
 import { badgeCells, badgeColumns, cells, displayName, fit, labels, layoutFor, statusText } from './view'
 
 const CODEX = '019a1b2c-3d4e-4f50-8a6b-7c8d9e0f1a2b'
@@ -35,6 +35,14 @@ describe('parseDelivery', () => {
   test('uses the from attribute of a native peer envelope', () => {
     const parsed = parseDelivery('<cross-session-message from="uds:/tmp/a.sock" from-name="gk-fa">\nhi\n</cross-session-message>')
     expect(parsed).toEqual({ sender: 'gk-fa', peer: { kind: 'native', to: 'uds:/tmp/a.sock' }, body: 'hi', cwd: null, inReplyTo: null })
+  })
+})
+
+describe('recentAddresses', () => {
+  test('keeps each address once at its latest use, and only the newest eight', () => {
+    expect(recentAddresses(['a', 'b', 'a'])).toEqual(['b', 'a'])
+    const many = Array.from({ length: 12 }, (_, i) => `uds:/tmp/cc-socks/${i}.sock`)
+    expect(recentAddresses(many)).toEqual(many.slice(-8))
   })
 })
 
@@ -1089,6 +1097,23 @@ describe('session.receive', () => {
       await $.session.receive({ origin: { kind: 'peer' }, text: from(93147, 'gk-11', '다른 세션') })
       const ui = await $.ui.mount({ plugin: 'xm', surface: 'terminal', component: 'Pane', requestId: 'relay-chat', props })
       expect((await ui.find({ key: 'tab-native:gk-11' }))?.text).toContain('다른 세션')
+      expect((await ui.find({ key: `tab-claude:${PEER}` }))?.text).toContain('첫 답변')
+      await ui.unmount()
+    })
+
+    test('an unlisted new socket under a known name gets its own conversation', async ($, on) => {
+      let listed = true
+      let now = 1_760_000_000_000
+      mock.env(on, { HOME: '/Users/me' })
+      on('clock.now', () => ({ value: now }))
+      on('session.receive', (_$, e) => ({ text: e.text }))
+      on('process.run', () => (listed ? ok(listing) : ok('{"ok":false,"error":"daemon down"}')))
+      await $.session.receive({ origin: { kind: 'peer' }, text: from(93147, 'dnx-76', '첫 답변') })
+      listed = false
+      now += 60_000
+      await $.session.receive({ origin: { kind: 'peer' }, text: from(93300, 'dnx-76', '같은 이름 다른 세션') })
+      const ui = await $.ui.mount({ plugin: 'xm', surface: 'terminal', component: 'Pane', requestId: 'relay-chat', props })
+      expect((await ui.find({ key: 'tab-native:dnx-76' }))?.text).toContain('같은 이름 다른 세션')
       expect((await ui.find({ key: `tab-claude:${PEER}` }))?.text).toContain('첫 답변')
       await ui.unmount()
     })

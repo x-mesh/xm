@@ -26,6 +26,14 @@ export function nativeName(to: string): string {
   return to.replace(/\s+\[[^\]]*\]$/, '')
 }
 
+// Each restart of a peer adds a socket; only the newest few can still be live.
+const KEEP_ADDRESSES = 8
+
+/** The addresses in use order, each once at its latest use, the newest KEEP_ADDRESSES of them. */
+export function recentAddresses(used: readonly string[]): string[] {
+  return used.filter((address, i) => used.lastIndexOf(address) === i).slice(-KEEP_ADDRESSES)
+}
+
 export function nativeKey(name: string): string {
   return `native:${nativeName(name)}`
 }
