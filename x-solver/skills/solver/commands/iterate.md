@@ -431,6 +431,10 @@ Problem: {problem_context}
 Resolution principles:
 - Fix the root cause, not the symptom — if the hypothesis points to a deeper issue, address that.
 - Minimal change that resolves the confirmed cause — don't refactor surrounding code.
+- Before editing, list the input forms that reach the failing path: the reproduced one and every
+  sibling form the evidence shows. List each assumption the fix adds: what identifies a record, a
+  new external call, an ordering. Check each assumption against its source, cover each input form
+  with a test, and state what happens when an added dependency fails.
 
 Verification principles:
 - "It should work" is NOT verification. Run the build, test, or command that proves it works.
@@ -441,6 +445,7 @@ Output:
 1. What was changed (specific files/lines)
 2. Verification command and its output
 3. Result: PASS (evidence) or FAIL (what's still broken)
+4. Input forms and added assumptions, each with the test or check that covers it
 ```
 
 After completion, run without fail:
