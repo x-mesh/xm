@@ -14,7 +14,7 @@
 </p>
 
 <p align="center">
-  <a href="https://github.com/x-mesh/xm/releases"><img src="https://img.shields.io/badge/version-2.48.0-blue" alt="Version" /></a>
+  <a href="https://github.com/x-mesh/xm/releases"><img src="https://img.shields.io/badge/version-2.49.0-blue" alt="Version" /></a>
   <a href="./LICENSE"><img src="https://img.shields.io/badge/license-MIT-green" alt="License: MIT" /></a>
   <a href="https://nodejs.org"><img src="https://img.shields.io/badge/node-%3E%3D18-brightgreen" alt="Node.js" /></a>
   <a href="#플러그인"><img src="https://img.shields.io/badge/plugins-18-orange" alt="Plugins" /></a>
@@ -462,7 +462,7 @@ x-plan은 무언가를 쓰기 전에 저장소부터 읽습니다. 코드가 이
 xm plan --recommend --json "<요구사항>"   # 어떤 모드가 맞는지: Quick / Standard / Ultra
 ```
 
-Quick은 결정적 스캐폴드만 만들고 끝냅니다. Standard는 저장소 조사, 좁은 범위의 인터뷰, 비평 패스를 더합니다. Ultra는 여기에 멀티 모델 architect/implementer/critic 합성을 얹습니다.
+Quick은 결정적 스캐폴드만 만들고 끝냅니다. Standard는 저장소 조사, 좁은 범위의 인터뷰, 비평 패스를 더합니다. Ultra는 여기에 멀티 모델 architect/implementer/critic 합성을 얹습니다. 모드나 세션 옵션 없이 `/xm:plan`을 실행했을 때 조사 결과 기존 테스트로 확인되는 작은 변경이면, Standard는 조사 단계에서 끝나고 세 줄 계획만 보여 주며 산출물을 저장하지 않습니다.
 
 검증된 저장소 사실, 추론, 그리고 사용자가 결정해야 할 항목은 출력에서 서로 분리해 둡니다. 경로·API·검증 명령을 추측해서 계획을 실행 가능 상태로 만드는 일은 없습니다.
 
@@ -1395,7 +1395,7 @@ xm remote start            # gateway + host 동시 기동
 
 toss는 재현 명령과 **실제 출력**(시크릿 마스킹, 뒷부분만 보존), 그리고 구체적인 수정 방향을 함께 담습니다 — 재현 없는 "조심하세요" 수준의 리포트는 거부합니다. 보내는 쪽은 자기 `.xm/outbox/<id>.json`에 기록을 남기고 대상의 `.xm/`은 절대 건드리지 않습니다. 대상 mem-mesh 공간으로의 전달은 스킬 자신의 MCP 호출로 이루어지며, 반환된 id는 `xm inbox record`로 되돌려 기록합니다. 이 분리가 중요한 이유는 CLI에 MCP 세션이 없기 때문입니다 — 원장에 남지 않은 id는 대화가 끝나는 순간 사라집니다.
 
-`/xm:relay`는 현재 실행 중인 로컬 Claude·Codex·AGY 세션만 provider별로 보여 줍니다. `--provider cursor`는 최근 7일 안에 쓴 Cursor Agent 채팅을 보여 주며, 여기로 보내면 읽기 전용 `cursor-agent` 턴을 한 번 실행해 그 답을 답장으로 돌려줍니다. 저장된 대화나 종료된 세션은 목록에 넣지 않습니다. Codex는 실제로 실행 중인 CLI 프로세스를 확인합니다. CLI가 UUID별 파일을 직접 열고 있거나, 같은 디렉터리에서 실행 중인 CLI를 대신해 공유 daemon이 열고 있어야 합니다. 실행 중인 CLI가 없는 daemon thread는 제외합니다. 한 provider의 목록은 `/xm:relay sessions --provider claude|codex|agy`로 확인합니다. 짧은 메시지는 `send`, 작업 요약은 `handoff`로 보냅니다. Claude Code에서는 `/relay-chat`으로 relay로 주고받는 세션별 대화창을 엽니다. 이 대화창은 플러그인 mod를 불러오는 Claude Code 버전에서만 보이고, 그 밖의 버전에서도 xm의 나머지 기능은 그대로 동작합니다. 메시지가 오면 toast와 입력창 위 띠에 내용 앞부분이 보이고, 띠는 대화창을 열 때까지 남습니다. 대화창 맨 위 줄에는 다른 세션의 상대 목록에 보이는 이 세션의 이름과 세션 id 앞 8자리가 나옵니다. 같은 Claude 대화를 여러 터미널에서 열면 relay가 보낼 프로세스를 고를 수 없으므로, 대화창은 그 대화를 한 번만 보여 주고 전송 불가로 표시합니다. `/relay-chat <상대> <메시지>`는 입력한 메시지를 그대로 보냅니다. 상대 이름 뒤에 조사를 붙여도 됩니다(`/relay-chat reviewer-33에게 …`). `/relay-ctx <상대> [요청]`과 대화창의 `맥락 공유`는 이 세션의 맥락을 상대에게 보냅니다. 이 세션의 모델이 목표, 현재 상태, 근거, 남은 질문을 담은 브리핑을 써서 `xm relay send` 한 번으로 보냅니다. 요청을 붙이면 브리핑 끝에 요청을 적고 답장을 요청합니다. 대화창에서는 입력란에 써 둔 글이 요청이 됩니다. `페어 지정`은 Claude나 Codex 세션을 이 프로젝트의 리뷰어로 정합니다. 대화창이 아직 리뷰하지 않은 커밋을 모아 보여 주고, `리뷰 요청`은 그 커밋들을 `xm:review diff` 요청 하나로 페어에게 보냅니다. `자동 리뷰` 옵션을 켜면 턴이 끝날 때 가벼운 검토 요청을 보내되, 쿨다운마다 한 번, diff 크기 상한 아래에서만 보냅니다(`/config`의 `xm.relayChatAutoReviewCooldownMinutes`, `xm.relayChatAutoReviewMaxLines`). 그 답장은 `모델에게 전달`을 누를 때까지 대화창에만 남습니다.
+`/xm:relay`는 현재 실행 중인 로컬 Claude·Codex·AGY 세션만 provider별로 보여 줍니다. `--provider cursor`는 최근 7일 안에 쓴 Cursor Agent 채팅을 보여 주며, 여기로 보내면 읽기 전용 `cursor-agent` 턴을 한 번 실행해 그 답을 답장으로 돌려줍니다. 저장된 대화나 종료된 세션은 목록에 넣지 않습니다. Codex는 실제로 실행 중인 CLI 프로세스를 확인합니다. CLI가 UUID별 파일을 직접 열고 있거나, 같은 디렉터리에서 실행 중인 CLI를 대신해 공유 daemon이 열고 있어야 합니다. 실행 중인 CLI가 없는 daemon thread는 제외합니다. 한 provider의 목록은 `/xm:relay sessions --provider claude|codex|agy`로 확인합니다. 짧은 메시지는 `send`, 작업 요약은 `handoff`로 보냅니다. Claude Code에서는 `/relay-chat`으로 relay로 주고받는 세션별 대화창을 엽니다. 이 대화창은 플러그인 mod를 불러오는 Claude Code 버전에서만 보이고, 그 밖의 버전에서도 xm의 나머지 기능은 그대로 동작합니다. 메시지가 오면 toast와 입력창 위 띠에 내용 앞부분이 보이고, 띠는 대화창을 열 때까지 남습니다. 상태 줄에는 읽지 않은 메시지를 보낸 상대와 상대별 건수가 나옵니다. 한 Claude 세션이 이름과 소켓처럼 여러 주소로 보낸 메시지는 대화 하나에 모입니다. 대화창 맨 위 줄에는 다른 세션의 상대 목록에 보이는 이 세션의 이름과 세션 id 앞 8자리가 나옵니다. 같은 Claude 대화를 여러 터미널에서 열면 relay가 보낼 프로세스를 고를 수 없으므로, 대화창은 그 대화를 한 번만 보여 주고 전송 불가로 표시합니다. `/relay-chat <상대> <메시지>`는 입력한 메시지를 그대로 보냅니다. 상대 이름 뒤에 조사를 붙여도 됩니다(`/relay-chat reviewer-33에게 …`). `/relay-ctx <상대> [요청]`과 대화창의 `맥락 공유`는 이 세션의 맥락을 상대에게 보냅니다. 이 세션의 모델이 목표, 현재 상태, 근거, 남은 질문을 담은 브리핑을 써서 `xm relay send` 한 번으로 보냅니다. 요청을 붙이면 브리핑 끝에 요청을 적고 답장을 요청합니다. 대화창에서는 입력란에 써 둔 글이 요청이 됩니다. `페어 지정`은 Claude나 Codex 세션을 이 프로젝트의 리뷰어로 정합니다. 대화창이 아직 리뷰하지 않은 커밋을 모아 보여 주고, `리뷰 요청`은 그 커밋들을 `xm:review diff` 요청 하나로 페어에게 보냅니다. `자동 리뷰` 옵션을 켜면 턴이 끝날 때 가벼운 검토 요청을 보내되, 쿨다운마다 한 번, diff 크기 상한 아래에서만 보냅니다(`/config`의 `xm.relayChatAutoReviewCooldownMinutes`, `xm.relayChatAutoReviewMaxLines`). 그 답장은 `모델에게 전달`을 누를 때까지 대화창에만 남습니다.
 
 macOS와 Linux에서 셸 adapter는 Claude의 비공개 로컬 inbox에 메시지를 제출하고, Codex 메시지는 공유 daemon의 queue에 넣습니다. 어느 쪽도 상대가 읽었다는 보장은 아닙니다. Windows named pipe는 지원하지 않습니다.
 
