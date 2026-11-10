@@ -1,7 +1,6 @@
 #!/usr/bin/env node
 
-import { pathToFileURL } from 'node:url';
-import { resolve } from 'node:path';
+import { isMainModule } from './is-main-module.mjs';
 import { startReview, resumeReview, prepareReview, submitReview, finalizeReview, statusReview, closeReview, associateReview, reserveGateAuthoring } from './review-lifecycle.mjs';
 
 function usage() {
@@ -85,4 +84,4 @@ export async function main(argv = process.argv.slice(2), env = process.env) {
   }
 }
 
-if (process.argv[1] && import.meta.url === pathToFileURL(resolve(process.argv[1])).href) process.exitCode = await main();
+if (isMainModule(import.meta.url)) process.exitCode = await main();
