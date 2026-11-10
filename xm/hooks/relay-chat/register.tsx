@@ -1,12 +1,12 @@
 import { atom, read, update } from 'claude-code'
 import type { EngineInterface, Register, RenderChildren, SessionReceiveInput } from 'claude-code'
 
-import type { AutoReview, Candidate, ChatLine, Conversation, Pair, PendingCommit, Peer, Picker } from '../../types'
+import type { AutoReview, Candidate, ChatLine, ClaudeProcess, Conversation, Pair, PendingCommit, Peer, Picker } from '../../types'
 import {
-  ago, briefingPrompt, diffLines, lightReviewText, ownSessionName, parseCommitCommand, parseDelivery, parseRelaySend, peerKey,
+  ago, briefingPrompt, claudeProcesses, diffLines, lightReviewText, nativeKey, nativeName, nativeSession, ownSessionName, recentAddresses, socketPid, parseCommitCommand, parseDelivery, parseRelaySend, peerKey,
   sendArgv, sentRequestId, sessionRows, shortName, summarizeTranscript, transcriptPath,
 } from './parse'
-import { ICON_SVG, LABEL, badgeCells, badgeColumns, cells, displayName, fit, labels, layoutFor, pad, providerOf } from './view'
+import { ICON_SVG, LABEL, badgeCells, badgeColumns, cells, displayName, fit, labels, layoutFor, pad, providerOf, statusText } from './view'
 import type { Who } from './view'
 
 const PANE = 'relay-chat'
@@ -34,6 +34,7 @@ const quietRequests = atom({ plugin: 'xm', key: 'relayChatQuietRequests' } as co
 // The time of the newest peer line the person dismissed from the band; a newer line shows it again.
 const bandDismissedAt = atom({ plugin: 'xm', key: 'relayChatBandDismissedAt' } as const, null)
 const self = atom({ plugin: 'xm', key: 'relayChatSelf' } as const, null)
+const claudeListing = atom({ plugin: 'xm', key: 'relayChatClaudeProcesses' } as const, null)
 
 // Start values, not measured ones; the manifest's userConfig lets a person change them.
 const DEFAULT_AUTO_COOLDOWN_MINUTES = 30
@@ -156,15 +157,89 @@ function isPeerDelivery(e: SessionReceiveInput): boolean {
 }
 
 async function refreshStatus($: EngineInterface) {
-  const unread = (await read($, conversations)).reduce((sum, c) => sum + c.unread, 0)
-  $.ui.status(unread ? `💬 relay ${unread}` : undefined)
+  $.ui.status(statusText(await read($, conversations)))
 }
 
-type Opening = { key: string; name: string; peer: Peer | null; cwd?: string | null }
+/** `absorbs` names earlier conversations that turned out to be this one: they are merged into it.
+ *  `address` is the native address the line came through, kept on the conversation. */
+type Opening = { key: string; name: string; peer: Peer | null; cwd?: string | null; absorbs?: (c: Conversation) => boolean; address?: string }
+
+// One listing serves a burst of native messages.
+const LISTING_TTL_MS = 30_000
+// The listing is read on the way to the model (0.4 s measured); a hung daemon must not hold a delivery for the 30 s default.
+const LISTING_TIMEOUT_MS = 3_000
+// Messages that arrive together share one read instead of each starting its own.
+let reading: Promise<ClaudeProcess[]> | null = null
+
+async function listClaude($: EngineInterface, fresh: boolean): Promise<{ processes: ClaudeProcess[]; isCached: boolean }> {
+  const now = await $.clock.now()
+  const cached = await read($, claudeListing)
+  if (!fresh && cached && now - cached.at < LISTING_TTL_MS) return { processes: cached.processes, isCached: true }
+  reading ??= (async () => {
+    const processes = claudeProcesses((await $.process.run(['xm', 'relay', 'sessions', '--provider', 'claude'], { timeoutMs: LISTING_TIMEOUT_MS })).stdout)
+    await update($, claudeListing, () => ({ at: now, processes }))
+    return processes
+  })().finally(() => { reading = null })
+  return { processes: await reading, isCached: false }
+}
+
+// Without a listing the session behind an address is unknown, and its pid may
+// belong to another process by now, so no session is assumed. A conversation
+// that already used this address under this name keeps the message, and the
+// peer becomes the address itself, so a reply reaches whoever sent it.
+// A sender's display name alone proves nothing (two live sessions can share
+// one), so an arriving message needs its address on record; only the model's
+// send by name, which ListAgents resolved, may match the one conversation of that name.
+async function unlistedOpening($: EngineInterface, to: string, name: string, by: 'peer' | 'model'): Promise<Opening> {
+  const peer: Peer = { kind: 'native', to }
+  const list = await read($, conversations)
+  // The model's send passes its address as the name; only a uds: socket is not one.
+  const isName = socketPid(nativeName(name)) === null
+  const byAddress = list.find(c => c.addresses?.includes(to) && (!isName || c.name === nativeName(name)))
+  const byNameOnly = by === 'model' && isName ? list.filter(c => c.name === nativeName(name)) : []
+  const known = byAddress ?? (byNameOnly.length === 1 ? byNameOnly[0] : undefined)
+  return known
+    ? { key: known.key, name: known.name, peer, address: to }
+    : { key: nativeKey(name), name: nativeName(name), peer, address: to }
+}
+
+// A native peer is one Claude session reached by several addresses: the name
+// the model sends to, and the socket each of its processes replies from. Keyed
+// by the session id, every address lands in one conversation, two sessions that
+// share a name stay apart, and the conversation is the same one an xm relay
+// exchange with that session uses.
+async function nativeOpening($: EngineInterface, to: string, name: string, by: 'peer' | 'model'): Promise<Opening> {
+  let processes: ClaudeProcess[]
+  try {
+    let listed = await listClaude($, false)
+    // A socket the cached listing does not know is a process started since; one
+    // whose sender names itself differently has a pid another session took over.
+    const cached = listed.isCached ? nativeSession(to, listed.processes) : null
+    const isRenamed = by === 'peer' && socketPid(nativeName(name)) === null && cached?.name !== nativeName(name)
+    if (listed.isCached && (!cached || isRenamed)) listed = await listClaude($, true)
+    processes = listed.processes
+  } catch {
+    return unlistedOpening($, to, name, by)
+  }
+  const session = nativeSession(to, processes)
+  if (!session) return { key: nativeKey(name), name: nativeName(name), peer: { kind: 'native', to }, address: to }
+  const peer: Peer = { kind: 'xm', provider: 'claude', sessionId: session.sessionId }
+  // A conversation kept by name while the listing failed has an old socket that
+  // no longer resolves; the name joins it, but only when no other live session carries it.
+  const nameKey = session.name && processes.filter(p => p.name === session.name).length === 1 ? nativeKey(session.name) : null
+  return {
+    key: peerKey(peer), name: session.name ?? nativeName(name), peer, cwd: session.cwd, address: to,
+    absorbs: c => c.peer?.kind === 'native' && (nativeSession(c.peer.to, processes)?.sessionId === session.sessionId || c.key === nameKey),
+  }
+}
+
+function openingKey(peer: Peer, name: string): string {
+  return peer.kind === 'native' ? nativeKey(name) : peerKey(peer)
+}
 
 // A peer's message is announced where the person is looking: a toast with its
 // first words, and the band above the prompt until the pane shows it. The
-// status line alone ("💬 relay 1") gave no way to see what arrived.
+// status line alone gives only who wrote and how much, not what arrived.
 function preview(text: string, width = 80): string {
   return fit(text.replace(/\s+/g, ' ').trim(), width)
 }
@@ -175,18 +250,30 @@ async function record($: EngineInterface, opening: Opening, line: ChatLine) {
     const who = displayName(opening.name, opening.peer)
     $.ui.toast(line.quiet ? `🔕 ${who}의 자동 검토 답장 · /relay-chat에서 확인` : `💬 ${who}: ${preview(line.text, 60)}`)
   }
+  let absorbed: string[] = []
   await update($, conversations, list => {
-    const found = list.find(c => c.key === opening.key)
+    const merged = list.filter(c => c.key !== opening.key && opening.absorbs?.(c) === true)
+    absorbed = merged.map(c => c.key)
+    const rest = list.filter(c => !absorbed.includes(c.key))
+    const found = rest.find(c => c.key === opening.key)
     const base: Conversation = found ?? { key: opening.key, name: opening.name, peer: opening.peer, cwd: opening.cwd ?? null, lines: [], unread: 0 }
+    const unread = base.unread + merged.reduce((sum, c) => sum + c.unread, 0)
     const next: Conversation = {
       ...base,
+      // An xm relay delivery names the session by its id; a native one brings the name its peers know.
+      name: base.peer && base.name === shortName(base.peer) ? opening.name : base.name,
+      // A native peer replies from the socket of its current process; that is the address to answer.
+      peer: line.by === 'peer' && opening.peer ? opening.peer : base.peer,
       cwd: base.cwd ?? opening.cwd ?? null,
-      lines: [...base.lines, line].slice(-KEEP_LINES),
+      lines: [...[...base.lines, ...merged.flatMap(c => c.lines)].sort((a, b) => a.at - b.at), line].slice(-KEEP_LINES),
+      addresses: recentAddresses([...(base.addresses ?? []), ...merged.flatMap(c => c.addresses ?? []), ...(opening.address ? [opening.address] : [])]),
       // A line the person sent reads the conversation; one the pane sent on its own does not.
-      unread: line.by === 'peer' ? base.unread + 1 : line.auto ? base.unread : 0,
+      unread: line.by === 'peer' ? unread + 1 : line.auto ? unread : 0,
     }
-    return found ? list.map(c => (c.key === opening.key ? next : c)) : [...list, next]
+    return found ? rest.map(c => (c.key === opening.key ? next : c)) : [...rest, next]
   })
+  const active = await read($, activeKey)
+  if (active && absorbed.includes(active)) await update($, activeKey, () => opening.key)
   await refreshStatus($)
 }
 
@@ -666,13 +753,15 @@ export const register: Register = (on, options) => {
     // The answer to an automatic review request stays in the pane: it was not
     // asked for by the model, and the person decides whether it goes in.
     if (parsed.inReplyTo && (await read($, quietRequests)).includes(parsed.inReplyTo)) {
-      const opening = parsed.peer ? { key: peerKey(parsed.peer), name: parsed.sender, peer: parsed.peer, cwd: parsed.cwd } : { key: `native:${parsed.sender}`, name: parsed.sender, peer: null }
+      const opening = parsed.peer ? { key: openingKey(parsed.peer, parsed.sender), name: parsed.sender, peer: parsed.peer, cwd: parsed.cwd } : { key: `native:${parsed.sender}`, name: parsed.sender, peer: null }
       await record($, opening, { at: await $.clock.now(), by: 'peer', quiet: true, text: parsed.body })
       await update($, quietRequests, ids => ids.filter(id => id !== parsed.inReplyTo))
       return { consumed: 'auto review reply kept in the relay chat pane' }
     }
-    const key = parsed.peer ? peerKey(parsed.peer) : `unknown:${parsed.sender}`
-    await record($, { key, name: parsed.sender, peer: parsed.peer, cwd: parsed.cwd }, { at: await $.clock.now(), by: 'peer', text: parsed.body })
+    const opening: Opening = parsed.peer?.kind === 'native'
+      ? await nativeOpening($, parsed.peer.to, parsed.sender, 'peer')
+      : { key: parsed.peer ? peerKey(parsed.peer) : `unknown:${parsed.sender}`, name: parsed.sender, peer: parsed.peer, cwd: parsed.cwd }
+    await record($, opening, { at: await $.clock.now(), by: 'peer', text: parsed.body })
 
     return next(e)
   })
@@ -709,8 +798,10 @@ export const register: Register = (on, options) => {
   on('session.send', async ($, e, next) => {
     const sent = await next(e)
     if (e.origin.kind === 'model' && e.agentId === undefined && sent.isDelivered) {
-      const peer: Peer = { kind: 'native', to: e.to }
-      await record($, { key: peerKey(peer), name: e.to, peer }, { at: await $.clock.now(), by: 'model', text: e.text })
+      const opening = await nativeOpening($, e.to, e.to, 'model')
+      // Unresolved, a reply to the socket a peer wrote from still belongs to that peer's conversation.
+      const open = opening.peer?.kind === 'native' ? (await read($, conversations)).find(c => c.peer?.kind === 'native' && c.peer.to === e.to) : undefined
+      await record($, open ? { key: open.key, name: open.name, peer: opening.peer } : opening, { at: await $.clock.now(), by: 'model', text: e.text })
     }
 
     return sent
