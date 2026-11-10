@@ -1,4 +1,4 @@
-import type { Candidate, Peer, Provider } from '../../types'
+import type { Candidate, ClaudeProcess, Peer, Provider } from '../../types'
 
 const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i
 const ENVELOPE = /^\s*<cross-session-message\b([^>]*)>\n?([\s\S]*?)\n?<\/cross-session-message>\s*$/
@@ -17,6 +17,25 @@ export function isUuid(value: unknown): value is string {
 
 export function peerKey(peer: Peer): string {
   return peer.kind === 'xm' ? `${peer.provider}:${peer.sessionId}` : `native:${peer.to}`
+}
+
+// A native peer is reached at an address that changes by path: the model sends
+// to the ListAgents name (with a ` [ref]` suffix when names collide) and the
+// reply arrives from a uds: socket under from-name. The name is what both share.
+export function nativeName(to: string): string {
+  return to.replace(/\s+\[[^\]]*\]$/, '')
+}
+
+// Each restart of a peer adds a socket; only the newest few can still be live.
+const KEEP_ADDRESSES = 8
+
+/** The addresses in use order, each once at its latest use, the newest KEEP_ADDRESSES of them. */
+export function recentAddresses(used: readonly string[]): string[] {
+  return used.filter((address, i) => used.lastIndexOf(address) === i).slice(-KEEP_ADDRESSES)
+}
+
+export function nativeKey(name: string): string {
+  return `native:${nativeName(name)}`
 }
 
 export function shortName(peer: Peer): string {
@@ -231,6 +250,7 @@ export function parseRelaySend(command: string): RelaySend | null {
 
 type SessionRow = {
   session_id?: unknown
+  pid?: unknown
   thread_id?: unknown
   name?: unknown
   cwd?: unknown
@@ -291,6 +311,33 @@ function collapseShared(rows: Candidate[]): Candidate[] {
     out.push(count > 1 && row.provider === 'claude' ? { ...row, unavailable: `같은 세션을 프로세스 ${count}개가 실행 중` } : row)
   }
   return out
+}
+
+/** Live Claude processes from `xm relay sessions --provider claude`, one row per pid. */
+export function claudeProcesses(stdout: string): ClaudeProcess[] {
+  const parsed = JSON.parse(stdout) as { ok?: unknown; error?: unknown; sessions?: SessionRow[] }
+  if (parsed.ok !== true) throw new Error(String(parsed.error ?? 'xm relay sessions failed'))
+  return (parsed.sessions ?? []).flatMap(row => (typeof row.pid === 'number' && isUuid(row.session_id) && row.capabilities?.send !== false
+    ? [{ pid: row.pid, sessionId: row.session_id, name: text(row.name), cwd: text(row.cwd) }]
+    : []))
+}
+
+// Claude Code names a session's inbox socket after its process id.
+export function socketPid(to: string): number | null {
+  const match = /^uds:.*\/(\d+)\.sock$/.exec(to)
+  return match ? Number(match[1]) : null
+}
+
+/** The Claude session a native address reaches: the process behind its socket,
+ *  else the one live session that carries the name. A name two sessions share,
+ *  or an id several processes share (`claude -c`), resolves to none: relay could
+ *  not tell them apart, and refuses to send to a shared id. */
+export function nativeSession(to: string, processes: readonly ClaudeProcess[]): ClaudeProcess | null {
+  const pid = socketPid(to)
+  const matches = pid === null ? processes.filter(p => p.name === nativeName(to)) : processes.filter(p => p.pid === pid)
+  const [one] = matches
+  if (!one || matches.length > 1) return null
+  return processes.filter(p => p.sessionId === one.sessionId).length === 1 ? one : null
 }
 
 // $.session has no display name; the row other sessions pick this one from carries it.

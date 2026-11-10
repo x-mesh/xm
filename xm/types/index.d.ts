@@ -23,6 +23,8 @@ export type Conversation = {
   unread: number
   /** True while a Cursor turn runs: its answer arrives with the send itself. */
   waiting?: boolean
+  /** Native addresses this peer has used; they keep its messages here while the session listing cannot be read. */
+  addresses?: string[]
 }
 
 export type Candidate = {
@@ -61,6 +63,9 @@ export type AutoReview = { enabled: boolean; lastAt: number | null; skippedSha: 
 /** This session as its peers list it: its id, and the name `xm relay sessions` gives it (null when the listing has no row for it or could not be read). */
 export type SelfSession = { id: string; name: string | null }
 
+/** A live Claude process as `xm relay sessions --provider claude` lists it; its inbox socket is named after its pid. */
+export type ClaudeProcess = { pid: number; sessionId: string; name: string | null; cwd: string | null }
+
 declare module 'claude-code' {
   interface PluginState {
     xm: {
@@ -74,6 +79,8 @@ declare module 'claude-code' {
       relayChatQuietRequests: string[]
       relayChatBandDismissedAt: number | null
       relayChatSelf: SelfSession | null
+      /** The last Claude process listing and when it was read, so a burst of native messages reads it once. */
+      relayChatClaudeProcesses: { at: number; processes: ClaudeProcess[] } | null
     }
   }
 }
