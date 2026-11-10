@@ -3,7 +3,7 @@
 
 import { readFileSync, writeFileSync } from 'node:fs';
 import { resolve } from 'node:path';
-import { pathToFileURL } from 'node:url';
+import { isMainModule } from '../../../lib/is-main-module.mjs';
 
 function parsePathToken(value, start) {
   let index = start;
@@ -77,4 +77,4 @@ export function main(argv = process.argv.slice(2)) {
   } catch (error) { process.stderr.write('retry target failed: ' + error.message + '\n'); return 2; }
 }
 
-if (process.argv[1] && import.meta.url === pathToFileURL(resolve(process.argv[1])).href) process.exitCode = main();
+if (isMainModule(import.meta.url)) process.exitCode = main();

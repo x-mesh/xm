@@ -6,7 +6,7 @@ import { randomBytes, randomUUID } from 'node:crypto';
 import { homedir } from 'node:os';
 import { basename, dirname, join, resolve } from 'node:path';
 import net from 'node:net';
-import { pathToFileURL } from 'node:url';
+import { isMainModule } from './is-main-module.mjs';
 import { runChat, createProjectNameResolver } from './x-relay-chat.mjs';
 import { agySessions, agyApi, verifyAgyRecipient } from './x-relay-agy.mjs';
 import { cursorChats, cursorPreamble, cursorSessions, cursorTurn } from './x-relay-cursor.mjs';
@@ -655,7 +655,7 @@ async function main(argv) {
   return dispatchSend(options);
 }
 
-if (process.argv[1] && import.meta.url === pathToFileURL(resolve(process.argv[1])).href) {
+if (isMainModule(import.meta.url)) {
   try {
     const result = await main(process.argv.slice(2));
     if (result !== null) {

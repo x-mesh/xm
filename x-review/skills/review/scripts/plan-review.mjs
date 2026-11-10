@@ -4,7 +4,7 @@
 import { createHash } from 'node:crypto';
 import { existsSync, mkdirSync, readFileSync, writeFileSync } from 'node:fs';
 import { basename, resolve } from 'node:path';
-import { pathToFileURL } from 'node:url';
+import { isMainModule } from '../../../lib/is-main-module.mjs';
 
 const PROFILE_ORDER = ['correctness', 'risk', 'migrations', 'type-design', 'docs'];
 const DEFAULT_CHUNK_TOKEN_BUDGET = 24_000;
@@ -665,6 +665,6 @@ export function main(argv = process.argv.slice(2)) {
   }
 }
 
-if (process.argv[1] && import.meta.url === pathToFileURL(resolve(process.argv[1])).href) {
+if (isMainModule(import.meta.url)) {
   process.exitCode = main();
 }

@@ -4,7 +4,7 @@
 import { createHash } from 'node:crypto';
 import { readFileSync, readdirSync, writeFileSync } from 'node:fs';
 import { resolve } from 'node:path';
-import { pathToFileURL } from 'node:url';
+import { isMainModule } from '../../../lib/is-main-module.mjs';
 
 const SEVERITIES = new Set(['Critical', 'High', 'Medium', 'Low']);
 const TASK_ID_RE = /^[A-Za-z0-9][A-Za-z0-9._-]{5,127}$/;
@@ -746,6 +746,6 @@ export function main(argv = process.argv.slice(2)) {
   return result.ok ? 0 : 1;
 }
 
-if (process.argv[1] && import.meta.url === pathToFileURL(resolve(process.argv[1])).href) {
+if (isMainModule(import.meta.url)) {
   process.exitCode = main();
 }
