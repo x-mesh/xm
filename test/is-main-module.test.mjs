@@ -5,6 +5,8 @@ import { tmpdir } from 'node:os';
 import { dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 
+import { isMainModule } from '../x-review/lib/is-main-module.mjs';
+
 const ROOT = join(dirname(fileURLToPath(import.meta.url)), '..');
 const LINK_ROOT = mkdtempSync(join(tmpdir(), 'xm-main-guard-'));
 
@@ -38,5 +40,28 @@ describe('CLI main guard', () => {
 
     expect(direct.status === 0 && direct.stdout === '' && direct.stderr === '').toBe(false);
     expect(linked).toEqual(direct);
+  });
+});
+
+describe('isMainModule', () => {
+  const helperUrl = new URL('../x-review/lib/is-main-module.mjs', import.meta.url).href;
+
+  function withEntry(entry, fn) {
+    const saved = process.argv[1];
+    process.argv[1] = entry;
+    try { return fn(); } finally { process.argv[1] = saved; }
+  }
+
+  test('returns false when there is no entry script', () => {
+    expect(withEntry(undefined, () => isMainModule(helperUrl))).toBe(false);
+  });
+
+  test('returns false when the entry path does not exist', () => {
+    expect(withEntry(join(LINK_ROOT, 'missing.mjs'), () => isMainModule(helperUrl))).toBe(false);
+  });
+
+  test('throws when the entry path cannot be resolved for another reason', () => {
+    const throughFile = join(fileURLToPath(helperUrl), 'child.mjs');
+    expect(() => withEntry(throughFile, () => isMainModule(helperUrl))).toThrow(expect.objectContaining({ code: 'ENOTDIR' }));
   });
 });
