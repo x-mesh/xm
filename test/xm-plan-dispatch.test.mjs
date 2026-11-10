@@ -45,6 +45,21 @@ describe('xm plan dispatch and packaging', () => {
     expect(alias.content).toContain('Standard (Recommended)');
     expect(alias.content).toContain('Ultra');
   });
+  test('the inline exit stays closed to callers that need a saved executable envelope', () => {
+    const source = readFileSync(join(ROOT, 'x-plan', 'skills', 'plan', 'SKILL.md'), 'utf8');
+    const bundled = readFileSync(join(ROOT, 'xm', 'skills', 'plan', 'SKILL.md'), 'utf8');
+    const build = readFileSync(join(ROOT, 'x-build', 'skills', 'build', 'SKILL.md'), 'utf8');
+    const exit = source.slice(source.indexOf('**Inline exit.**'), source.indexOf('2. Classify'));
+    expect(exit).toContain('after inspection');
+    for (const closed of ['`--mode`', 'model list', '`--session`', '`--persist`', "x-build's planner", 'another skill', 'a subagent']) expect(exit).toContain(closed);
+    expect(exit).toContain('every input form to test');
+    expect(exit).toContain('If any condition is unverified, continue Standard.');
+    expect(bundled).toBe(source);
+    expect(build).toContain('`executable=true`');
+    const skills = scanAll({ skillsDir: join(ROOT, 'xm', 'skills'), libDir: join(ROOT, 'xm', 'lib') });
+    const rendered = renderCodexWithDiagnostics(skills, { scope: 'local', installRoot: ROOT, pluginVersion: '0.0.0' });
+    expect(rendered.outputs.find((item) => item.relativePath.endsWith('.agents/skills/xm-plan/SKILL.md')).content).toContain('**Inline exit.**');
+  });
   test('Codex renderer preserves allowed-tools for interactive skills', () => {
     const skills = scanAll({ skillsDir: join(ROOT, 'xm', 'skills'), libDir: join(ROOT, 'xm', 'lib') });
     const rendered = renderCodexWithDiagnostics(skills, { scope: 'local', installRoot: ROOT, pluginVersion: '0.0.0' });

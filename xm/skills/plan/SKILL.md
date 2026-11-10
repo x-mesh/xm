@@ -23,7 +23,7 @@ allowed-tools:
 
 When the user did not already choose a mode, first run `xm plan --recommend --json <requirements>`. Use its recommendation directly unless `confirmation_required` is true. Only then show the context below and call AskUserQuestion once:
 
-Quick creates the deterministic scaffold immediately. Standard adds repository inspection, a focused interview, and critique. Ultra adds multi-model architect/implementer/critic synthesis to the Standard workflow.
+Quick creates the deterministic scaffold immediately. Standard adds repository inspection, a focused interview, and critique, and ends after inspection when the change qualifies for its inline exit. Ultra adds multi-model architect/implementer/critic synthesis to the Standard workflow.
 
 - Header: Plan mode
 - Standard (Recommended): inspect, interview, draft, critique, and finalize one grounded plan.
@@ -43,6 +43,13 @@ Run the existing deterministic scaffold path. It converts requirement lines dire
 Run inspect → clarify → draft → critique → finalize:
 
 1. Inspect the repository first. Record verified paths, APIs, conventions, and test commands as evidence. Do not ask discoverable questions.
+   **Inline exit.** A small change does not need a persisted plan. The recommender reads only the requirement text, so this decision is made here, after inspection. End planning at this step, without artifacts or questions, only when every condition holds:
+   - The user invoked x-plan directly in this session and named no mode, `--mode`, model list, `--session`, or `--persist`. x-build's planner, another skill, and a subagent need a saved executable envelope, so they never take this exit.
+   - Inspection verified the exact files to change, and they are few.
+   - One failure mode is involved, and an existing test or command observes it.
+   - The change touches no public interface, schema, migration, release, or security surface.
+
+   Then show three lines as the plan: each assumption the change relies on and the source that verified it; every input form to test, not only the reported one; what happens when a dependency the change adds fails. x-plan itself executes nothing: the session makes the change only when the user's request also asks for it; otherwise stop at the three lines. If any condition is unverified, continue Standard.
 2. Classify ambiguity as discoverable, user_owned, safe_default, or blocking_unknown. Persist the incomplete session with evidence.json and questions.json before asking, so the interview is resumable. Show findings, then ask at most three user_owned or blocking questions in one AskUserQuestion call. Stop and wait for the answers.
 3. Draft a plan whose must requirements map to tasks or validation. Every task needs expected_files and done_criteria. Fill `failure_modes` for each risk-domain requirement as `{requirement_ref, mode, mitigation, verification}` — `mode` is what breaks, `mitigation` is what the code does at the limit, `verification` is how it is observed.
 4. Critique premise validity, requirement coverage, dependency order (every dependency real, every parallel mark free of a shared compile or test unit), scope, failure modes, rollback or recovery, and validation. Remove unjustified fallbacks and unnecessary machinery before finalizing.
