@@ -610,7 +610,8 @@ describe('content-bound approval and shared review groups', () => {
     } finally {
       rmSync(tmp, { recursive: true, force: true });
     }
-  });
+    // About 24 sequential CLI spawns take 3.5 s alone and over 5 s under full-suite load.
+  }, 30000);
 
   test('checks-only depth passes the group on group checks without any LLM review', () => {
     const tmp = mkdtempSync(join(tmpdir(), 'xb-lifecycle-checks-'));
