@@ -48,7 +48,8 @@ describe('prediction calibration ledger', () => {
       import { ensureTaskPrediction, predictionLogPath } from ${JSON.stringify(pathToFileURL(ROOT).href)};
       import { readFileSync } from 'node:fs';
       const task = { id: 't1', name: 'private task text', size: 'small', role: 'executor' };
-      const now = Date.now();
+      // A clock behind the wall clock makes the slow-write race deterministic.
+      const now = Date.now() - 1000;
       const first = ensureTaskPrediction({ project: 'demo', task, model: 'sonnet', now, maxAgeMs: 50 });
       const cached = ensureTaskPrediction({ project: 'demo', task, model: 'sonnet', now: now + 1, maxAgeMs: 50 });
       const stale = ensureTaskPrediction({ project: 'demo', task, model: 'sonnet', now: now + 1000, maxAgeMs: 50 });

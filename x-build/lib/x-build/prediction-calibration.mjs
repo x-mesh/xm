@@ -42,14 +42,14 @@ function readCalibrationEvents() {
  * Append a prediction. A task id is optional for manual exploratory requests;
  * only task-bound predictions can later be calibrated against completion.
  */
-export function appendPredictionLog({ project = null, taskId = null, prediction, query = {} } = {}) {
+export function appendPredictionLog({ project = null, taskId = null, prediction, query = {}, now = Date.now() } = {}) {
   if (!finiteNonNegative(prediction?.estimate_usd)) return null;
   const taskBound = typeof project === 'string' && project && typeof taskId === 'string' && taskId;
   const event = {
     schema_v: LOG_SCHEMA_VERSION,
     type: 'prediction',
     event_id: opaqueId('pred'),
-    timestamp: new Date().toISOString(),
+    timestamp: new Date(now).toISOString(),
     correlation_id: taskBound ? correlationKey(project, taskId) : opaqueId('manual'),
     project: taskBound ? project : null,
     task_id: taskBound ? taskId : null,
@@ -106,7 +106,7 @@ export function ensureTaskPrediction({ project, task, model, now = Date.now(), m
     model,
   };
   const prediction = predictTaskCost(query);
-  const row = appendPredictionLog({ project, taskId: task.id, prediction, query });
+  const row = appendPredictionLog({ project, taskId: task.id, prediction, query, now });
   return row ? { ...prediction, cached: false, prediction_event_id: row.event_id } : null;
 }
 
