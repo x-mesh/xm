@@ -50,7 +50,16 @@ beforeAll(() => {
 // A signing or hooks setting in the developer's global git config would fail
 // these fixtures for reasons unrelated to the block under test, and a suite
 // that goes red for unrelated reasons gets skipped — reopening the regression.
-const HERMETIC_GIT = { GIT_CONFIG_GLOBAL: '/dev/null', GIT_CONFIG_SYSTEM: '/dev/null' };
+// The identity is set here because a clone does not inherit initRepo's
+// user.email, and git cannot guess one on a host name without a domain.
+const HERMETIC_GIT = {
+  GIT_CONFIG_GLOBAL: '/dev/null',
+  GIT_CONFIG_SYSTEM: '/dev/null',
+  GIT_AUTHOR_NAME: 'test',
+  GIT_AUTHOR_EMAIL: 'test@example.com',
+  GIT_COMMITTER_NAME: 'test',
+  GIT_COMMITTER_EMAIL: 'test@example.com',
+};
 
 function git(cwd, ...args) {
   const r = spawnSync('git', args, { cwd, encoding: 'utf8', env: { ...process.env, ...HERMETIC_GIT } });
