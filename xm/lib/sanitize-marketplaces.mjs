@@ -15,6 +15,7 @@
 import fs from 'node:fs';
 import path from 'node:path';
 import os from 'node:os';
+import { isMainModule } from './is-main-module.mjs';
 
 export const STALE_NAME_HINTS = new Set([
   'x-mesh-x-kit',
@@ -166,6 +167,6 @@ function main() {
   }
 }
 
-if (import.meta.url === `file://${process.argv[1]}`) {
+if (isMainModule(import.meta.url)) {
   main();
 }

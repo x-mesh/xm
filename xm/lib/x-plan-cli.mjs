@@ -4,6 +4,7 @@
 import { execFileSync } from 'node:child_process';
 import { existsSync, readFileSync } from 'node:fs';
 import { join, resolve } from 'node:path';
+import { isMainModule } from './is-main-module.mjs';
 import { savePlanArtifact } from './x-plan/artifact.mjs';
 import { createPlanEnvelope, parsePlanEnvelope, validatePlanEnvelope } from './x-plan/core.mjs';
 import { renderPlan, renderValidation } from './x-plan/render.mjs';
@@ -158,4 +159,4 @@ export async function main(argv = process.argv.slice(2), stdin = null) {
   return result.valid ? 0 : 1;
 }
 
-if (import.meta.url === `file://${process.argv[1]}`) process.exitCode = await main();
+if (isMainModule(import.meta.url)) process.exitCode = await main();

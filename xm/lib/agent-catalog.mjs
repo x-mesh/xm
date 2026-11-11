@@ -13,6 +13,7 @@
 import { readFileSync, existsSync } from 'node:fs';
 import { join, dirname } from 'node:path';
 import { fileURLToPath } from 'node:url';
+import { isMainModule } from './is-main-module.mjs';
 import { getAgentCount } from './shared-config.mjs';
 
 const __filename = fileURLToPath(import.meta.url);
@@ -504,7 +505,6 @@ function runCLI() {
 }
 
 // Run CLI only when executed directly
-const isMain = process.argv[1] && fileURLToPath(import.meta.url) === process.argv[1];
-if (isMain) {
+if (isMainModule(import.meta.url)) {
   runCLI();
 }
