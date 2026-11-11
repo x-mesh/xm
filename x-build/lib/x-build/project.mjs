@@ -19,7 +19,7 @@ import {
   repoRoot, gaugeProjectKind,
   recordBuildActivity,
 } from './core.mjs';
-import { linkSync } from 'node:fs';
+import { chmodSync, linkSync } from 'node:fs';
 import { hostname } from 'node:os';
 import { execFileSync, spawnSync } from 'node:child_process';
 import { fileURLToPath } from 'node:url';
@@ -815,21 +815,29 @@ function atomicTempPath(path) {
   return `${path}.${process.pid}.${atomicWriteSequence}.tmp`;
 }
 
-function fileMode(path, fallback = 0o666) {
+function fileMode(path) {
   try {
     const stat = statSync(path);
     if (!stat.isFile()) throw new Error(`handoff target is not a file: ${path}`);
     return stat.mode & 0o777;
   } catch (error) {
-    if (error.code === 'ENOENT') return fallback;
+    if (error.code === 'ENOENT') return null;
     throw error;
   }
+}
+
+function writeTemporary(temporary, content, mode) {
+  writeFileSync(temporary, content, { encoding: 'utf8', mode: mode ?? 0o666 });
+  // writeFileSync masks mode with the umask, so a restrictive umask (e.g. 077)
+  // would narrow an existing artifact's permissions on every replacement.
+  // A new file (mode null) keeps the umask-derived default.
+  if (mode !== null) chmodSync(temporary, mode);
 }
 
 function atomicWriteFile(path, content, mode = fileMode(path)) {
   const temporary = atomicTempPath(path);
   try {
-    writeFileSync(temporary, content, { encoding: 'utf8', mode });
+    writeTemporary(temporary, content, mode);
     renameSync(temporary, path);
     if (readFileSync(path, 'utf8') !== content) throw new Error(`verification failed after replacing ${path}`);
   } catch (error) {
@@ -943,7 +951,7 @@ function atomicWriteSet(entries) {
       if (existsSync(entry.path)) previous = readFileSync(entry.path, 'utf8');
       const temporary = atomicTempPath(entry.path);
       const mode = fileMode(entry.path);
-      writeFileSync(temporary, entry.content, { encoding: 'utf8', mode });
+      writeTemporary(temporary, entry.content, mode);
       staged.push({ ...entry, temporary, previous, mode });
     }
     for (const entry of staged) {

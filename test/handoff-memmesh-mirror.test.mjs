@@ -27,6 +27,12 @@ function cli(...args) {
   return execFileSync('node', [CLI, ...args], { cwd: repo, encoding: 'utf8' });
 }
 
+// writeFileSync's mode is masked by the umask, so permission tests pin one
+// instead of depending on the developer's shell (022 hid the bug, 077 exposed it).
+function cliWithUmask(umask, ...args) {
+  return execFileSync('sh', ['-c', `umask ${umask} && exec node "$0" "$@"`, CLI, ...args], { cwd: repo, encoding: 'utf8' });
+}
+
 function mirror() {
   const p = join(repo, '.xm', 'build', 'memmesh-mirror.json');
   return existsSync(p) ? JSON.parse(readFileSync(p, 'utf8')) : null;
@@ -204,14 +210,26 @@ test('concurrent writers safely recover one stale malformed lock inode', () => {
 });
 
 test('atomic replacement preserves existing artifact permissions', () => {
-  cli('handoff', '--full', 'first');
+  cliWithUmask('077', 'handoff', '--full', 'first');
   const buildDir = join(repo, '.xm', 'build');
-  const paths = ['SESSION-STATE.json', 'HANDOFF.md', 'memmesh-mirror.json'].map(name => join(buildDir, name));
-  for (const path of paths) if (existsSync(path)) chmodSync(path, 0o644);
+  // Only files that exist before the second run have permissions to preserve;
+  // memmesh-mirror.json is first written by the second run and follows the umask.
+  const existing = ['SESSION-STATE.json', 'HANDOFF.md', 'memmesh-mirror.json'].map(name => join(buildDir, name)).filter(existsSync);
+  expect(existing.map(path => basename(path)).sort()).toEqual(['HANDOFF.md', 'SESSION-STATE.json']);
+  for (const path of existing) chmodSync(path, 0o644);
 
-  cli('handoff', '--full', '--narrative-json', FULL_NARRATIVE, 'second');
+  cliWithUmask('077', 'handoff', '--full', '--narrative-json', FULL_NARRATIVE, 'second');
 
-  for (const path of paths) expect(statSync(path).mode & 0o777).toBe(0o644);
+  for (const path of existing) expect(statSync(path).mode & 0o777).toBe(0o644);
+});
+
+test('new handoff artifacts keep the umask-derived mode', () => {
+  cliWithUmask('077', 'handoff', '--full', 'first');
+  const buildDir = join(repo, '.xm', 'build');
+
+  for (const name of ['SESSION-STATE.json', 'HANDOFF.md']) {
+    expect(statSync(join(buildDir, name)).mode & 0o777).toBe(0o600);
+  }
 });
 
 test('an optional mirror write failure does not invalidate the local handoff', () => {
