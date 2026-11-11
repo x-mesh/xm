@@ -242,6 +242,8 @@ shopt -u nullglob
 
 echo ""
 sync_file "x-review/lib/review-budget.mjs" "x-build/lib/review-budget.mjs"
+# x-plan installs standalone, so its CLI needs its own copy of the main guard.
+sync_file "x-review/lib/is-main-module.mjs" "x-plan/lib/is-main-module.mjs"
 echo "=== Syncing x-review lib files ==="
 sync_file "x-review/lib/x-review-cli.mjs" "xm/lib/x-review-cli.mjs"
 ensure_dir "xm/lib/x-review"

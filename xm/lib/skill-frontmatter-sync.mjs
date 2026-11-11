@@ -38,7 +38,8 @@
 
 import { readFileSync, writeFileSync, existsSync, renameSync } from 'node:fs';
 import { join, dirname } from 'node:path';
-import { fileURLToPath, pathToFileURL } from 'node:url';
+import { fileURLToPath } from 'node:url';
+import { isMainModule } from './is-main-module.mjs';
 import { MODEL_PROFILES, resolveProfileName } from './x-build/cost-engine.mjs';
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
@@ -315,6 +316,6 @@ async function main() {
 }
 
 // Run only as a CLI — guarded so tests can import the exported helpers.
-if (process.argv[1] && import.meta.url === pathToFileURL(process.argv[1]).href) {
+if (isMainModule(import.meta.url)) {
   main().catch(e => { console.error(e); process.exit(1); });
 }
