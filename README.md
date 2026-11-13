@@ -473,12 +473,16 @@ x-build is the lean execution workflow around x-plan. It inspects repository evi
 
 The default is adaptive, not plan-always. Bounded, independent, low-risk work takes the direct route — but only when deterministic gates already cover its failure modes. Shared, high-risk, or weakly observable work takes the planned route instead: x-plan Standard on the configured planner model, then the configured executor model once the plan succeeds. A missing or non-executable plan artifact stops it before Execute.
 
+Before it plans or runs, x-build confirms the models once. It shows the configured planner and executor models and asks one question. For a direct route, it asks only for the executor model. To skip the question, pass `--plan <model>` and `--exec <model>`. These choices apply to the current run only and do not change the config. `xm build route confirm` records the choice, and `route start` refuses a decision without that record. On Claude Code, x-build plans in the current session and starts no planner agent when the session model has the planner tier. On Codex, the session model and effort must be equal to the planner spec. Execution always uses an executor agent, so the root session can check the changes independently. When nobody can answer, such as in a non-interactive Codex run, x-build keeps the configured models and records `source=default`. `route finish` reports that source. A direct `/xm:plan` run asks for the planner model in the same way. To skip that question, pass `--plan-model <model>`.
+
 `route start → verify → finish` binds the decision to the baseline commit, expected files, gates, byte hashes, elapsed time, and cost events. A failed direct verification can restart once from a clean planned fallback. Stale or incomplete receipts fail closed. A planned run can pass every gate and still change an undeclared file that the gates need. Then `xm build route close --decision-id <id>` closes the lease with the reason and the file list, and records no outcome. Give `--gate-cmd` once per gate, and join several commands for one gate with `&&`. `route start` needs a clean working tree. To start with uncommitted files, such as a plan PRD, add `--allow-dirty`. The baseline then records the hashes of those files. `xm build route <verb> --help` prints the options of that verb and does not run it.
 
 ```bash
 xm build route decide --kind bugfix --scope bounded --independent \
   --files src/a.mjs,test/a.test.mjs --risk low --failure-modes 2 \
   --gates test,boundary --json
+xm build route confirm --decision-id <id> --host claude --session-model claude-opus-5-5 \
+  --source asked
 xm build route start --decision-id <id> --expected-files src/a.mjs,test/a.test.mjs \
   --gate-cmd 'test=bun test test/a.test.mjs' --gate-cmd 'boundary=node scripts/check-boundary.mjs'
 # native agent edits the files

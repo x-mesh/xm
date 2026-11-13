@@ -38,7 +38,12 @@ describe('x-build simple default workflow', () => {
 
   test('pins planned execution to configured planner and executor routes', () => {
     expect(buildSkill).toContain('planner agent 안에서 x-plan Standard');
-    expect(buildSkill).toContain('현재 root session에서 plan을 대신 작성하지 않습니다');
+    expect(buildSkill).toContain('`agent`이면 `model_routes.plan`으로 planner agent를 먼저 시작');
+    expect(buildSkill).toContain('이때 현재 root session에서 plan을 대신 작성하지 않습니다');
+    expect(buildSkill).toContain('`inline`이면 현재 세션에서 x-plan Standard 전체를 수행합니다');
+    expect(buildSkill).toContain('xm build route confirm --decision-id <id> --host claude|codex');
+    expect(buildSkill).toContain('`--source default`는 AskUserQuestion을 쓸 수 없을 때');
+    expect(buildSkill).toContain('`model_routes.execute.execution`은 항상 `agent`');
     expect(buildSkill).toContain('plan 생성이 실패하면 execute로 진행하지 않습니다');
     expect(buildSkill).toContain('model_routes.plan.model_by_vendor.codex');
     expect(buildSkill).toContain('model_routes.execute.model_by_vendor.codex');

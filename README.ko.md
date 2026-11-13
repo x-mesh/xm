@@ -474,12 +474,16 @@ x-build는 x-plan을 감싸는 lean 실행 workflow입니다. 저장소 근거�
 
 기본은 항상 계획을 세우는 방식이 아니라 adaptive입니다. 범위가 작고 파일이 독립적이며 위험도가 낮은 작업은 direct route로 가되, failure mode를 결정적으로 검증할 gate가 이미 있을 때만 그렇습니다. 공유 상태를 건드리거나 위험도가 높거나 관측이 어려운 작업은 planned route로 갑니다. 설정된 planner model로 x-plan Standard를 돌리고, 계획이 성공하면 설정된 executor model에 실행을 넘깁니다. Plan artifact가 없거나 실행할 수 없으면 Execute 전에 멈춥니다.
 
+x-build는 계획이나 실행을 시작하기 전에 모델을 한 번 확인합니다. 설정된 planner·executor model을 보여 주고 한 번 묻습니다. direct route에서는 executor model만 묻습니다. `--plan <model>`과 `--exec <model>`을 주면 묻지 않습니다. 이 선택은 이번 실행에만 적용되고 config를 바꾸지 않습니다. `xm build route confirm`이 선택을 기록하고, `route start`는 기록이 없는 decision을 거부합니다. Claude Code에서는 세션 모델이 planner model과 같은 tier이면 planner agent를 띄우지 않고 현재 세션에서 계획합니다. Codex에서는 세션의 model과 effort가 planner spec과 모두 같아야 합니다. 실행은 항상 executor agent가 맡아, root 세션이 변경을 독립적으로 확인할 수 있게 합니다. Codex 비대화형 실행처럼 답할 사람이 없으면 설정된 모델을 그대로 쓰고 `source=default`로 기록하며, `route finish`가 이 source를 보여 줍니다. `/xm:plan`을 직접 실행해도 같은 방식으로 planner model을 묻고, `--plan-model <model>`을 주면 묻지 않습니다.
+
 `route start → verify → finish`는 결정과 baseline commit, 예상 파일, CLI가 실행한 gate, byte hash, 실제 시간과 비용 event를 묶습니다. Direct 검증 실패는 clean planned fallback으로 한 번만 재개합니다. Receipt가 없거나 오래된 상태는 fail-closed로 처리합니다. planned 실행이 모든 gate를 통과했지만 gate에 필요한 선언 밖 파일을 바꿨다면 `xm build route close --decision-id <id>`로 lease를 닫습니다. 이때 사유와 파일 목록만 남기고 outcome은 기록하지 않습니다. `--gate-cmd`는 gate마다 한 번만 넘기고, 한 gate에 명령이 여러 개면 `&&`로 묶습니다. `route start`는 작업 트리가 깨끗해야 시작합니다. 계획 PRD처럼 커밋하지 않은 파일이 있는 채로 시작하려면 `--allow-dirty`를 붙입니다. 그러면 baseline에 그 파일들의 hash가 기록됩니다. `xm build route <verb> --help`는 명령을 실행하지 않고 그 하위 명령의 옵션만 보여 줍니다.
 
 ```bash
 xm build route decide --kind bugfix --scope bounded --independent \
   --files src/a.mjs,test/a.test.mjs --risk low --failure-modes 2 \
   --gates test,boundary --json
+xm build route confirm --decision-id <id> --host claude --session-model claude-opus-5-5 \
+  --source asked
 xm build route start --decision-id <id> --expected-files src/a.mjs,test/a.test.mjs \
   --gate-cmd 'test=bun test test/a.test.mjs' --gate-cmd 'boundary=node scripts/check-boundary.mjs'
 # native agent가 파일 수정

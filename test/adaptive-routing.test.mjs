@@ -1,5 +1,5 @@
 import { afterAll, beforeEach, describe, expect, test } from 'bun:test';
-import { mkdirSync, mkdtempSync, rmSync, statSync, symlinkSync, writeFileSync } from 'node:fs';
+import { existsSync, mkdirSync, mkdtempSync, rmSync, statSync, symlinkSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 
@@ -889,5 +889,143 @@ describe('adaptive runtime routing', () => {
       expect(after.blockers).toContain('historical_quality_failure');
       expect(after.blockers).not.toContain('unresolved_verification_failure');
     } finally { rmSync(cwd, { recursive: true, force: true }); }
+  });
+});
+
+describe('adaptive route model confirmation', () => {
+  const cli = join(import.meta.dir, '..', 'x-build', 'lib', 'x-build-cli.mjs');
+  const config = {
+    model_overrides: { planner: 'opus', executor: 'sonnet' },
+    vendor_models: { codex: { opus: 'gpt-5.6-sol:xhigh', sonnet: 'gpt-5.6-terra:high' } },
+  };
+  const gates = ['test=node --check src/value.mjs', 'boundary=test -s src/value.mjs'];
+
+  function runCli(args) {
+    const result = Bun.spawnSync(['node', cli, 'route', ...args], {
+      env: { ...process.env, X_BUILD_ROOT: root }, stdout: 'pipe', stderr: 'pipe',
+    });
+    return { exitCode: result.exitCode, stdout: new TextDecoder().decode(result.stdout), stderr: new TextDecoder().decode(result.stderr) };
+  }
+
+  test.each([
+    ['claude', 'claude-opus-5-5', undefined, 'inline'],
+    ['claude', 'anthropic.claude-opus-5-5', undefined, 'inline'],
+    ['claude', 'claude-opus-4-5@20251101', undefined, 'inline'],
+    ['claude', 'claude-opus-5-5[1m]', undefined, 'inline'],
+    ['claude', 'claude-sonnet-5-5', undefined, 'agent'],
+    ['claude', 'my-custom-model', undefined, 'agent'],
+    ['claude', 'claude-opus-5-5', 'fable', 'agent'],
+    ['claude', 'claude-sonnet-5-5', 'inherit', 'inline'],
+    ['codex', 'gpt-5.6-sol:xhigh', undefined, 'inline'],
+    ['codex', 'gpt-5.6-sol:high', undefined, 'agent'],
+  ])('plans %s session %s with plan=%s as %s', async (host, sessionModel, plan, execution) => {
+    const { resolveConfirmedModelRoutes } = await import('../x-build/lib/x-build/adaptive-routing.mjs');
+    const resolved = resolveConfirmedModelRoutes({ host, session_model: sessionModel, plan }, config);
+    expect(resolved.model_routes.plan.execution).toBe(execution);
+    expect(resolved.model_routes.execute.execution).toBe('agent');
+  });
+
+  test('applies per-run overrides without mutating the shared config', async () => {
+    const { resolveConfirmedModelRoutes } = await import('../x-build/lib/x-build/adaptive-routing.mjs');
+    const resolved = resolveConfirmedModelRoutes({ host: 'claude', session_model: 'claude-opus-5-5', plan: 'fable', exec: 'opus' }, config);
+    expect(resolved.model_routes.plan.model_by_vendor.claude).toBe('fable');
+    expect(resolved.model_routes.execute.model_by_vendor.claude).toBe('opus');
+    expect(config.model_overrides).toEqual({ planner: 'opus', executor: 'sonnet' });
+  });
+
+  test.each([
+    [{ host: 'claude' }, '--session-model is required'],
+    [{ session_model: 'claude-opus-5-5' }, '--host must be claude or codex'],
+    [{ host: 'gemini', session_model: 'claude-opus-5-5' }, '--host must be claude or codex'],
+    [{ host: 'claude', session_model: 'claude-opus-5-5', plan: 'opsu' }, '--plan must be haiku'],
+    [{ host: 'claude', session_model: 'claude-opus-5-5', exec: 'codex:' }, '--exec must be haiku'],
+    [{ host: 'codex', session_model: 'gpt-5.6-sol:xhigh', plan: 'fable' }, 'codex has no model for plan'],
+  ])('rejects %o', async (input, message) => {
+    const { resolveConfirmedModelRoutes } = await import('../x-build/lib/x-build/adaptive-routing.mjs');
+    expect(() => resolveConfirmedModelRoutes(input, config)).toThrow(message);
+  });
+
+  test.each([
+    ['gpt-5.6-sol:xhigh', 'inline'],
+    ['gpt-5.6-sol:high', 'agent'],
+  ])('accepts a codex pin on a codex host and plans session %s as %s', async (sessionModel, execution) => {
+    const { resolveConfirmedModelRoutes } = await import('../x-build/lib/x-build/adaptive-routing.mjs');
+    const resolved = resolveConfirmedModelRoutes(
+      { host: 'codex', session_model: sessionModel, plan: 'codex:gpt-5.6-sol:xhigh', exec: 'codex:gpt-5.6-terra:high' },
+      config,
+    );
+    expect(resolved.model_routes.plan.model_by_vendor.codex).toBe('gpt-5.6-sol:xhigh');
+    expect(resolved.model_routes.execute.model_by_vendor.codex).toBe('gpt-5.6-terra:high');
+    expect(resolved.model_routes.plan.execution).toBe(execution);
+  });
+
+  test('rejects a pin for a vendor other than the host', async () => {
+    const { resolveConfirmedModelRoutes } = await import('../x-build/lib/x-build/adaptive-routing.mjs');
+    expect(() => resolveConfirmedModelRoutes({ host: 'claude', session_model: 'claude-opus-5-5', plan: 'codex:gpt-5.6-sol:xhigh' }, config))
+      .toThrow('targets codex, but this run\'s host is claude');
+  });
+
+  test('rejects inherit under the economy profile instead of swapping it', async () => {
+    const { resolveConfirmedModelRoutes } = await import('../x-build/lib/x-build/adaptive-routing.mjs');
+    expect(() => resolveConfirmedModelRoutes(
+      { host: 'claude', session_model: 'claude-opus-5-5', plan: 'inherit' },
+      { ...config, model_profile: 'economy' },
+    )).toThrow('inherit is not allowed under the economy profile');
+  });
+
+  test('requires one confirmation before a marked decision can start, and reports its source', async () => {
+    const module = await import('../x-build/lib/x-build/adaptive-routing.mjs');
+    const cwd = fixtureRepo();
+    try {
+      const decision = module.decideAdaptiveRoute(eligible);
+      module.recordAdaptiveDecision(decision, { model_confirmation_required: true });
+      expect(() => module.startAdaptiveRun({ decision_id: decision.decision_id, cwd, expected_files: ['src/value.mjs'], gate_commands: gates }))
+        .toThrow(`model routes are not confirmed for ${decision.decision_id}`);
+      expect(() => module.confirmAdaptiveModels({ decision_id: 'route-missing', host: 'claude', session_model: 'claude-opus-5-5', source: 'asked' }, config))
+        .toThrow('decision_id must match exactly one recorded route decision');
+      expect(() => module.confirmAdaptiveModels({ decision_id: decision.decision_id, host: 'claude', session_model: 'claude-opus-5-5', source: 'guess' }, config))
+        .toThrow('--source must be asked, args, or default');
+      const confirmed = module.confirmAdaptiveModels({ decision_id: decision.decision_id, host: 'claude', session_model: 'claude-opus-5-5', source: 'asked' }, config);
+      expect(confirmed.model_routes.plan.execution).toBe('inline');
+      expect(() => module.confirmAdaptiveModels({ decision_id: decision.decision_id, host: 'claude', session_model: 'claude-opus-5-5', source: 'asked' }, config))
+        .toThrow('decision_id already has confirmed model routes');
+      module.startAdaptiveRun({ decision_id: decision.decision_id, cwd, expected_files: ['src/value.mjs'], gate_commands: gates, now_ms: 1000 });
+      writeFileSync(join(cwd, 'src', 'value.mjs'), 'export const value = 2;\n');
+      expect(module.verifyAdaptiveRun({ decision_id: decision.decision_id }).passed).toBe(true);
+      const finished = module.finishAdaptiveRun({ decision_id: decision.decision_id, now_ms: 1200 });
+      expect(finished.model_confirmation_source).toBe('asked');
+    } finally { rmSync(cwd, { recursive: true, force: true }); }
+  });
+
+  test('leaves unmarked decisions startable without a confirmation', async () => {
+    const module = await import('../x-build/lib/x-build/adaptive-routing.mjs');
+    const cwd = fixtureRepo();
+    try {
+      const decision = module.decideAdaptiveRoute(eligible);
+      module.recordAdaptiveDecision(decision);
+      const lease = module.startAdaptiveRun({ decision_id: decision.decision_id, cwd, expected_files: ['src/value.mjs'], gate_commands: gates });
+      expect(lease.status).toBe('started');
+    } finally { rmSync(cwd, { recursive: true, force: true }); }
+  });
+
+  test('CLI rejects a model flag given without a value instead of confirming the default', () => {
+    const result = runCli(['models', '--host', 'claude', '--session-model', 'claude-opus-5-5', '--plan']);
+    expect(result.exitCode).not.toBe(0);
+    expect(result.stderr).toContain('--plan requires a model value');
+  });
+
+  test('CLI decide marks the decision and route models writes nothing', async () => {
+    const { adaptiveRoutingPath, readAdaptiveRoutingEvents } = await import('../x-build/lib/x-build/adaptive-routing.mjs');
+    const models = runCli(['models', '--host', 'claude', '--session-model', 'claude-opus-5-5', '--plan', 'opus']);
+    expect(models.exitCode).toBe(0);
+    expect(JSON.parse(models.stdout).model_routes.plan.execution).toBe('inline');
+    expect(existsSync(adaptiveRoutingPath())).toBe(false);
+    const decide = runCli(['decide', '--kind', 'feature', '--scope', 'broad', '--shared', '--files', 'a.mjs', '--risk', 'medium', '--failure-modes', '1', '--gates', 'test']);
+    expect(decide.exitCode).toBe(0);
+    const decision = JSON.parse(decide.stdout);
+    expect(decision.model_confirmation.required).toBe(true);
+    expect(decision.model_confirmation.command).toContain(`route confirm --decision-id ${decision.decision_id}`);
+    const recorded = readAdaptiveRoutingEvents().find((row) => row.decision_id === decision.decision_id);
+    expect(recorded.model_confirmation_required).toBe(true);
   });
 });
