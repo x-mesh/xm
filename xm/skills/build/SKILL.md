@@ -89,7 +89,7 @@ xm build route confirm --decision-id <id> --host claude|codex --session-model <�
 - `--host`는 현재 host입니다(Claude Code는 `claude`, Codex는 `codex`). `--session-model`은 시스템 프롬프트에 적힌 현재 세션의 정확한 model id입니다. 확인할 수 없으면 `unknown`을 넘기며, 이 경우 계획은 agent로 판정됩니다.
 - 사용자가 `--plan`이나 `--exec` 인자를 주었으면 묻지 않고 그 값과 `--source args`로 확정합니다.
 - 같은 세션에서 사용자가 앞서 "이번 세션 동안 유지"를 골랐다면 묻지 않고 그 값을 `--plan`/`--exec`로 넘겨 `--source args`로 확정합니다.
-- 그 밖에는 `route models`로 기본값을 확인한 뒤 AskUserQuestion 한 번의 호출로 묻고 `--source asked`로 확정합니다. 방향 승인 질문이 있으면 같은 호출에 합칩니다. planned는 계획 모델 질문과 실행 모델 질문을 따로 넣고, direct는 실행 모델 질문만 넣습니다. 각 질문의 첫 선택지는 현재 값(권장)이고, 나머지 선택지는 haiku·sonnet·opus·fable 중 다른 값입니다. 세션 유지는 질문을 하나 더 넣어 "이번 실행만 / 이번 세션 동안 유지"로 묻습니다.
+- 그 밖에는 `route models`로 기본값을 확인한 뒤 AskUserQuestion 한 번의 호출로 묻고, 사용자가 고른 값을 `--plan`/`--exec`로 넘겨 `--source asked`로 확정합니다. 방향 승인 질문이 있으면 같은 호출에 합칩니다. planned는 계획 모델 질문과 실행 모델 질문을 따로 넣고, direct는 실행 모델 질문만 넣습니다. 각 질문의 첫 선택지는 현재 값(권장)이고, 나머지 선택지는 haiku·sonnet·opus·fable 중 다른 값입니다. 세션 유지는 질문을 하나 더 넣어 "이번 실행만 / 이번 세션 동안 유지"로 묻습니다.
 - direct route가 planned로 escalation되면 다시 묻지 않습니다. confirm은 decision마다 한 번만 기록되므로 그때 기록된 계획 모델(direct에서는 묻지 않은 기본값)로 계획합니다.
 - 질문에 가격을 넣지 않습니다. x-kit 가격표가 현재 모델 가격보다 낡았습니다.
 - `--source default`는 AskUserQuestion을 쓸 수 없을 때(사람이 답할 수 없는 Codex 비대화형 실행, 다른 skill이나 subagent가 부른 실행)만 씁니다. 대화형 세션에서 질문을 건너뛰려고 쓰지 않습니다.

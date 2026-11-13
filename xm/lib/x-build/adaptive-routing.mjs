@@ -357,7 +357,7 @@ const MODEL_CONFIRMATION_SOURCES = new Set(['asked', 'args', 'default']);
 const CLAUDE_SESSION_TIER = /claude-(haiku|sonnet|opus|fable)-/;
 const MODEL_CONFIRM_COMMAND = 'xm build route confirm --decision-id <id> --host claude|codex --session-model <id> [--plan <model>] [--exec <model>] --source asked|args|default';
 
-function validateModelChoice(flag, value, config) {
+function validateModelChoice(flag, value, config, host) {
   if (value == null) return;
   const text = String(value).trim();
   if (MODEL_TIER_CHOICES.has(text)) {
@@ -371,6 +371,11 @@ function validateModelChoice(flag, value, config) {
   const pin = parseModelPin(text, config);
   if (!pin.isPin || pin.warning) {
     throw new Error(`${flag} must be haiku, sonnet, opus, fable, inherit, or a vendor:model[:effort] pin (got "${text}")${pin.warning ? `: ${pin.warning}` : ''}`);
+  }
+  // A pin for another vendor would leave this host running only the tier inferred from it,
+  // which is not the model the user confirmed.
+  if (pin.vendor !== host) {
+    throw new Error(`${flag} pin "${text}" targets ${pin.vendor}, but this run's host is ${host}; pass a tier or a ${host}: pin`);
   }
 }
 
@@ -388,8 +393,8 @@ export function resolveConfirmedModelRoutes(input, config = loadSharedConfig()) 
   if (!MODEL_HOSTS.has(host)) throw new Error('--host must be claude or codex');
   const sessionModel = String(input.session_model || '').trim();
   if (!sessionModel) throw new Error('--session-model is required: pass the exact model id of the current session');
-  validateModelChoice('--plan', input.plan, config);
-  validateModelChoice('--exec', input.exec, config);
+  validateModelChoice('--plan', input.plan, config, host);
+  validateModelChoice('--exec', input.exec, config, host);
   const overrides = { ...(config.model_overrides || {}) };
   if (input.plan != null) overrides.planner = String(input.plan).trim();
   if (input.exec != null) overrides.executor = String(input.exec).trim();

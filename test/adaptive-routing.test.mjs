@@ -945,6 +945,26 @@ describe('adaptive route model confirmation', () => {
     expect(() => resolveConfirmedModelRoutes(input, config)).toThrow(message);
   });
 
+  test.each([
+    ['gpt-5.6-sol:xhigh', 'inline'],
+    ['gpt-5.6-sol:high', 'agent'],
+  ])('accepts a codex pin on a codex host and plans session %s as %s', async (sessionModel, execution) => {
+    const { resolveConfirmedModelRoutes } = await import('../x-build/lib/x-build/adaptive-routing.mjs');
+    const resolved = resolveConfirmedModelRoutes(
+      { host: 'codex', session_model: sessionModel, plan: 'codex:gpt-5.6-sol:xhigh', exec: 'codex:gpt-5.6-terra:high' },
+      config,
+    );
+    expect(resolved.model_routes.plan.model_by_vendor.codex).toBe('gpt-5.6-sol:xhigh');
+    expect(resolved.model_routes.execute.model_by_vendor.codex).toBe('gpt-5.6-terra:high');
+    expect(resolved.model_routes.plan.execution).toBe(execution);
+  });
+
+  test('rejects a pin for a vendor other than the host', async () => {
+    const { resolveConfirmedModelRoutes } = await import('../x-build/lib/x-build/adaptive-routing.mjs');
+    expect(() => resolveConfirmedModelRoutes({ host: 'claude', session_model: 'claude-opus-5-5', plan: 'codex:gpt-5.6-sol:xhigh' }, config))
+      .toThrow('targets codex, but this run\'s host is claude');
+  });
+
   test('rejects inherit under the economy profile instead of swapping it', async () => {
     const { resolveConfirmedModelRoutes } = await import('../x-build/lib/x-build/adaptive-routing.mjs');
     expect(() => resolveConfirmedModelRoutes(
