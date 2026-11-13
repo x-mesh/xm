@@ -11,7 +11,7 @@ import { spawnSync } from 'node:child_process';
 import { buildRoot } from './root.mjs';
 import {
   COST_EVENT_MAX_BYTES, INHERIT_MODEL, METRICS_MAX_BYTES, resolveRoleModel,
-  metricsPath, parseModelSpec, resolveVendorModel,
+  metricsPath, parseModelPin, parseModelSpec, resolveProfileName, resolveVendorModel,
 } from './cost-engine.mjs';
 import { loadSharedConfig } from './config-loader.mjs';
 import { appendCostEvent, readCostEvents } from '../cost/index.mjs';
@@ -349,7 +349,96 @@ export function resolveAdaptiveModelRoutes(config = loadSharedConfig()) {
   };
 }
 
-export function recordAdaptiveDecision(decision) {
+const MODEL_TIER_CHOICES = new Set(['haiku', 'sonnet', 'opus', 'fable', INHERIT_MODEL]);
+const MODEL_HOSTS = new Set(['claude', 'codex']);
+const MODEL_CONFIRMATION_SOURCES = new Set(['asked', 'args', 'default']);
+// Searched anywhere in the id: Bedrock prefixes `anthropic.`, Vertex appends
+// `@<version>`, and 1M-context variants append `[1m]`.
+const CLAUDE_SESSION_TIER = /claude-(haiku|sonnet|opus|fable)-/;
+const MODEL_CONFIRM_COMMAND = 'xm build route confirm --decision-id <id> --host claude|codex --session-model <id> [--plan <model>] [--exec <model>] --source asked|args|default';
+
+function validateModelChoice(flag, value, config) {
+  if (value == null) return;
+  const text = String(value).trim();
+  if (MODEL_TIER_CHOICES.has(text)) {
+    // resolveRoleModel silently swaps inherit for the economy default; a choice the user
+    // just made must not be replaced without telling them.
+    if (text === INHERIT_MODEL && resolveProfileName(config.model_profile) === 'economy') {
+      throw new Error(`${flag} inherit is not allowed under the economy profile`);
+    }
+    return;
+  }
+  const pin = parseModelPin(text, config);
+  if (!pin.isPin || pin.warning) {
+    throw new Error(`${flag} must be haiku, sonnet, opus, fable, inherit, or a vendor:model[:effort] pin (got "${text}")${pin.warning ? `: ${pin.warning}` : ''}`);
+  }
+}
+
+function planExecution(host, sessionModel, planRoute) {
+  if (planRoute.model === INHERIT_MODEL) return 'inline';
+  if (host === 'claude') {
+    const match = sessionModel.match(CLAUDE_SESSION_TIER);
+    return match && match[1] === planRoute.model_by_vendor.claude ? 'inline' : 'agent';
+  }
+  return planRoute.model_by_vendor.codex === sessionModel ? 'inline' : 'agent';
+}
+
+export function resolveConfirmedModelRoutes(input, config = loadSharedConfig()) {
+  const host = String(input.host || '');
+  if (!MODEL_HOSTS.has(host)) throw new Error('--host must be claude or codex');
+  const sessionModel = String(input.session_model || '').trim();
+  if (!sessionModel) throw new Error('--session-model is required: pass the exact model id of the current session');
+  validateModelChoice('--plan', input.plan, config);
+  validateModelChoice('--exec', input.exec, config);
+  const overrides = { ...(config.model_overrides || {}) };
+  if (input.plan != null) overrides.planner = String(input.plan).trim();
+  if (input.exec != null) overrides.executor = String(input.exec).trim();
+  const routes = resolveAdaptiveModelRoutes({ ...config, model_overrides: overrides });
+  if (host === 'codex') {
+    const missing = ['plan', 'execute'].filter((step) => !routes[step].model_by_vendor.codex);
+    if (missing.length) {
+      throw new Error(`codex has no model for ${missing.join(' and ')} (${routes.warnings.join('; ')}); set vendor_models.codex or pass a codex:<model>[:effort] pin`);
+    }
+  }
+  routes.plan.execution = planExecution(host, sessionModel, routes.plan);
+  // Execution stays in an agent even on the session model: the root session checks the
+  // executor's changes, and that check is only independent when someone else made them.
+  routes.execute.execution = 'agent';
+  return { host, session_model: sessionModel, model_routes: routes };
+}
+
+function modelConfirmations(events, decisionId) {
+  return events.filter((row) => row?.type === 'adaptive_route_models_confirmed' && row.decision_id === decisionId);
+}
+
+export function confirmAdaptiveModels(input, config = loadSharedConfig()) {
+  const source = String(input.source || '');
+  if (!MODEL_CONFIRMATION_SOURCES.has(source)) throw new Error('--source must be asked, args, or default');
+  const ledger = input.events || readAdaptiveRoutingEvents();
+  const decisions = ledger.filter((row) => row?.type === 'adaptive_route_decision' && row.decision_id === input.decision_id);
+  if (decisions.length !== 1) throw new Error('decision_id must match exactly one recorded route decision');
+  const decision = decisions[0];
+  if (modelConfirmations(ledger, decision.decision_id).length) throw new Error('decision_id already has confirmed model routes');
+  const resolved = resolveConfirmedModelRoutes(input, config);
+  const event = appendAdaptiveEvent({
+    schema_v: 1,
+    type: 'adaptive_route_models_confirmed',
+    event_id: `arm-${randomBytes(8).toString('hex')}`,
+    timestamp: new Date().toISOString(),
+    decision_id: decision.decision_id,
+    task_class: decision.task_class,
+    source,
+    host: resolved.host,
+    session_model: resolved.session_model,
+    model_routes: resolved.model_routes,
+  });
+  return {
+    schema: 1, decision_id: decision.decision_id, selected_route: decision.selected_route,
+    source, ...resolved, event_id: event.event_id,
+  };
+}
+
+export function recordAdaptiveDecision(decision, options = {}) {
   if (!decision?.decision_id || !TASK_CLASS_PATTERN.test(String(decision.task_class || '')) || !ROUTES.has(decision.route)) {
     throw new Error('invalid adaptive route decision');
   }
@@ -364,6 +453,7 @@ export function recordAdaptiveDecision(decision) {
     quality_hard_gate: true,
     blockers: decision.blockers,
     required_gates: normalizeGates(decision.gates),
+    ...(options.model_confirmation_required === true ? { model_confirmation_required: true } : {}),
   });
 }
 
@@ -486,6 +576,9 @@ export function startAdaptiveRun(input) {
   const decisions = ledger.filter((row) => row?.type === 'adaptive_route_decision' && row.decision_id === input.decision_id);
   if (decisions.length !== 1) throw new Error('decision_id must match exactly one recorded route decision');
   const decision = decisions[0];
+  if (decision.model_confirmation_required === true && !modelConfirmations(ledger, decision.decision_id).length) {
+    throw new Error(`model routes are not confirmed for ${decision.decision_id}: run ${MODEL_CONFIRM_COMMAND.replace('<id>', decision.decision_id)}`);
+  }
   const previousLease = readLocalJSON(leasePath(input.decision_id));
   const fallback = input.fallback === true;
   if (previousLease && !fallback) throw new Error('decision_id already has an execution lease');
@@ -623,7 +716,12 @@ export function finishAdaptiveRun(input) {
     receipt_verified: true,
   });
   writeLocalJSON(leasePath(lease.decision_id), { ...lease, status: 'finished', finished_at: outcome.timestamp });
-  return { lease: readLocalJSON(leasePath(lease.decision_id)), receipt, outcome };
+  // Surfaced so a run that skipped the model question (source=default) is visible in the report.
+  const confirmation = modelConfirmations(readAdaptiveRoutingEvents(), lease.decision_id)[0] || null;
+  return {
+    lease: readLocalJSON(leasePath(lease.decision_id)), receipt, outcome,
+    model_confirmation_source: confirmation?.source ?? null,
+  };
 }
 
 export function adaptiveRunStatus(decisionId = null, nowMs = Date.now()) {
@@ -745,6 +843,12 @@ function take(args, name, fallback = null) {
 }
 
 function has(args, name) { return args.includes(`--${name}`); }
+// A trailing `--plan` with no value would otherwise read as "no override" and confirm the default.
+function modelOption(args, name) {
+  const value = take(args, name);
+  if (value == null && has(args, name)) throw new Error(`--${name} requires a model value`);
+  return value;
+}
 function list(value) { return String(value || '').split(',').map((item) => item.trim()).filter(Boolean); }
 function values(args, name) {
   const result = [];
@@ -755,10 +859,12 @@ function values(args, name) {
   return result;
 }
 
-const ROUTE_USAGE = 'Usage: xm build route decide|start|verify|finish|status|abandon|close|record|report [options]';
+const ROUTE_USAGE = 'Usage: xm build route decide|confirm|models|start|verify|finish|status|abandon|close|record|report [options]';
 
 const ROUTE_HELP = {
   decide: '--kind <kind> --scope bounded|broad --independent|--shared --files a,b --risk low|medium|high --failure-modes <n> --gates test,boundary,... [--class <id>] [--public-contract] [--external-dependency] [--data-migration] [--security-sensitive] [--json]',
+  confirm: '--decision-id <id> --host claude|codex --session-model <id> [--plan <model>] [--exec <model>] --source asked|args|default\n  <model>  haiku|sonnet|opus|fable|inherit or vendor:model[:effort]; applies to this decision only and never edits config\n  --source asked = the user answered the question, args = the user passed --plan/--exec, default = the caller cannot ask',
+  models: '--host claude|codex --session-model <id> [--plan <model>] [--exec <model>]\n  Resolves the same routes as confirm without writing the ledger.',
   start: '--decision-id <id> --expected-files a,b --gate-cmd \'<gate>=<command>\' (once per gate; chain several commands with &&) [--allow-dirty] [--fallback]\n  --allow-dirty  start with pre-existing uncommitted files (e.g. an uncommitted plan PRD); their hashes are kept in the baseline',
   verify: '--decision-id <id> [--expected-files a,b] [--timeout-ms <n>]',
   finish: '--decision-id <id> [--cost-event-id <id>]',
@@ -796,9 +902,35 @@ export function cmdAdaptiveRoute(args) {
         gates: list(take(args, 'gates')),
         model_routes: resolveAdaptiveModelRoutes(),
       }, readAdaptiveRoutingEvents());
-      recordAdaptiveDecision(decision);
-      console.log(JSON.stringify(decision, null, 2));
-      return decision;
+      recordAdaptiveDecision(decision, { model_confirmation_required: true });
+      const result = {
+        ...decision,
+        model_confirmation: {
+          required: true, confirmed: false,
+          command: MODEL_CONFIRM_COMMAND.replace('<id>', decision.decision_id),
+        },
+      };
+      console.log(JSON.stringify(result, null, 2));
+      return result;
+    }
+    if (verb === 'confirm') {
+      const result = confirmAdaptiveModels({
+        decision_id: take(args, 'decision-id'), host: take(args, 'host'), session_model: take(args, 'session-model'),
+        plan: modelOption(args, 'plan'), exec: modelOption(args, 'exec'), source: take(args, 'source'),
+      });
+      console.log(JSON.stringify(result, null, 2));
+      return result;
+    }
+    if (verb === 'models') {
+      const result = {
+        schema: 1,
+        ...resolveConfirmedModelRoutes({
+          host: take(args, 'host'), session_model: take(args, 'session-model'),
+          plan: modelOption(args, 'plan'), exec: modelOption(args, 'exec'),
+        }),
+      };
+      console.log(JSON.stringify(result, null, 2));
+      return result;
     }
     if (verb === 'record') {
       const quality = take(args, 'quality');

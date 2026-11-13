@@ -769,6 +769,10 @@ ${C.bold}Analysis & Utilities:${C.reset}
                                  Compare workflow value using local semantic metrics
   route decide --kind bugfix|feature|refactor|docs|test|config|dependency|schema|security|architecture --scope bounded --independent --files a,b --risk low --failure-modes N --gates test,boundary --json
                                  Select direct/planned from quality observability and measured outcomes
+  route confirm --decision-id ID --host claude|codex --session-model ID [--plan M] [--exec M] --source asked|args|default
+                                 Confirm this run's planner/executor models; route start requires it
+  route models --host claude|codex --session-model ID [--plan M] [--exec M]
+                                 Preview the same routes without writing the ledger
   route start --decision-id ID --expected-files a,b --gate-cmd gate=command
   route verify --decision-id ID; route finish --decision-id ID
                                  Bind native execution to baseline, files, CLI-run gates, and byte receipt

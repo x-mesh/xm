@@ -40,6 +40,17 @@ Run the existing deterministic scaffold path. It converts requirement lines dire
 
 ### Standard
 
+#### Planner model (direct runs only)
+
+Confirm the planner model once before step 1, only when the user invoked x-plan directly in this session. Skip this section when x-build's planner, another skill, or a subagent called x-plan, during --validate, --persist, or --session continuation, and in Ultra, which names its models explicitly.
+
+1. Run `xm build route models --host claude|codex --session-model <exact model id of this session> [--plan <model>]`. `<model>` is haiku, sonnet, opus, fable, inherit, or a vendor:model[:effort] pin. Pass `unknown` as the session model when the system prompt does not state it.
+2. If the user passed `--plan-model <model>`, pass it as `--plan` and do not ask. Remove `--plan-model <model>` from the requirements before any `xm plan` call: that CLI rejects unknown options. Otherwise ask once with AskUserQuestion: keep the shown planner model (Recommended), or pick another. When the mode question is also due, ask both in the same call. Do not show prices: the x-kit price table is stale. If AskUserQuestion is unavailable, keep the configured model.
+3. If the CLI rejects the choice, show the error and ask again. Never substitute another model.
+4. If `model_routes.plan.execution` is `inline`, run Standard in this session. If it is `agent`, start one planner agent with `model_routes.plan.model_by_vendor.claude` (Codex: `model_by_vendor.codex`) and have it run Standard. The agent persists its interview questions with the session, returns the run id and the questions, and stops. Ask them here, then pass the answers back so the agent continues the same `--session`.
+
+No CLI record enforces this choice; these instructions are the only check.
+
 Run inspect → clarify → draft → critique → finalize:
 
 1. Inspect the repository first. Record verified paths, APIs, conventions, and test commands as evidence. Do not ask discoverable questions.
