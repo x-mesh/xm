@@ -10,7 +10,7 @@
     {
       "name": "build",
       "description": "Repository-grounded planning with lean native execution; legacy phase, worktree, and gate workflows remain explicit opt-ins",
-      "version": "3.24.2",
+      "version": "3.25.0",
       "author": {
         "name": "x-mesh"
       },
@@ -118,7 +118,7 @@
     {
       "name": "plan",
       "description": "Repository-grounded implementation planning with readable plans and validated PlanEnvelope artifacts",
-      "version": "0.5.1",
+      "version": "0.6.0",
       "author": {
         "name": "x-mesh"
       },
@@ -295,7 +295,7 @@
     {
       "name": "xm",
       "description": "All-in-one bundle: build + op + agent + solver + eval + humble + cross-plugin quality pipeline",
-      "version": "2.49.4",
+      "version": "2.50.0",
       "author": {
         "name": "x-mesh"
       },
