@@ -27,6 +27,7 @@ Credit: English pattern set adapted from `blader/humanizer` (MIT) — itself bas
 - Korean UI strings read like literal English ("번역체", "UI 문구 다듬어줘", "어색한 한글 UI", "설정 화면 문구 정리") → `ui` mode
 - Korean CLI help or status text reads like translated English or ends every line in a verb ("CLI 한글화", "도움말 문구 다듬어줘", "상태 메시지 정리") → `ui` mode
 - UI copy in either language is vague or promises behavior the control lacks ("UI 문구가 어색해", "clarify UI copy", "fix button labels", "error messages") → `ui` mode
+- A screen or feature in a codebase needs its wording reviewed ("결제 화면 문구 개선", "이 화면에 쓰이는 말 정리", "review the copy on the billing page") → `ui` mode
 </Use_When>
 
 <Do_Not_Use_When>
@@ -90,7 +91,7 @@ the mode: global options may appear before or after it.
 | `rewrite` (default) | Detect + rewrite + final anti-AI audit pass |
 | `light` | Minimal edit — remove obvious AI tells while preserving most wording |
 | `strong` | Heavier edit — rebuild sentence flow while preserving every factual claim |
-| `ui` | UI-string mode (Korean or English) — check meaning against behavior, then fix form in labels, descriptions, options, buttons, menus, and CLI help and status lines. Separate pipeline with a JSON contract. See `## UI String Mode`. |
+| `ui` | UI-string mode (Korean or English) — check meaning against behavior, then fix form in labels, descriptions, options, buttons, menus, and CLI help and status lines. Separate pipeline: a JSON contract for string arrays, a report for files or a screen. See `## UI String Mode`. |
 | `voice <file>` | Voice calibration — use `<file>` as style sample, then process the rest |
 | `--lang en` / `--lang ko` | Force language (auto-detected otherwise); accepted anywhere before the target |
 
@@ -101,13 +102,15 @@ If `$ARGUMENTS` is empty, ask the user to paste text or specify a file.
 Parse left to right using these rules:
 
 1. Consume at most one mode: `audit`, `rewrite`, `light`, `strong`, `ui`, or `voice`.
-   `ui audit` is the one legal two-token combination and means detect-only: still
-   JSON output, with `after` equal to `before` on every item. `ui` takes neither an
+   `ui audit` is the one legal two-token combination and means detect-only: the
+   output keeps the shape its input calls for (JSON array, or the report for files
+   or a screen), with `after` equal to `before` on every item. `ui` takes neither an
    intensity nor `voice`; when either appears beside it, ask which one was meant
    instead of dropping one.
    If no mode token is present, read the input shape before defaulting: an array of
    short strings keyed by dotted identifiers (`settings.*.label`) enters `ui` (see
-   `## UI String Mode`), and ambiguous prose-vs-UI input is asked about once.
+   `## UI String Mode`), so does a request that names a screen, a feature, or UI
+   source files in a codebase, and ambiguous prose-vs-UI input is asked about once.
    Everything else uses `rewrite` with `medium` intensity.
 2. Consume `--lang en|ko` wherever it appears before `--`. Reject any other
    language value instead of silently auto-detecting.
@@ -134,6 +137,7 @@ Accept any of these input shapes:
 | File path | Read the file, humanize its prose, and return the result. Do not edit the file unless the user explicitly asks. |
 | `voice <file> <text or file>` | Read the voice sample first, then process the target text. |
 | Mixed instructions + prose | Treat quoted blocks, fenced blocks, or obvious paragraphs as the target. Treat the rest as instructions. |
+| A screen, a feature, or UI source files in a codebase | `ui` mode. Extract every user-visible string in that area before judging any; see `## UI String Mode`. |
 
 If a file contains code plus prose, only humanize prose comments/docs that the user asked to change. Never rewrite code identifiers, commands, JSON keys, API names, paths, flags, citations, version numbers, or quoted user-facing strings unless the user explicitly includes them in scope.
 
@@ -243,9 +247,9 @@ budget and that meaning was checked. Never insert that note into the edited body
 
 App, web, and CLI UI strings are not prose. Run this pipeline **instead of** `## Core Process` — the prose guardrails do not merely fail to help here, they block correct edits.
 
-**Load `references/ui-meaning.md` first, then the language file: `references/ui-strings-ko.md` for Korean, `references/ui-strings-en.md` for English.** `ui-meaning.md` picks the target language and holds the M (meaning) rules and the `context` evidence field; each language file holds its form rules, per-`type` table, and glossary; `ui-strings-ko.md` defines the shared JSON contract. Do not work from memory.
+**Load `references/ui-meaning.md` first, then the language file: `references/ui-strings-ko.md` for Korean, `references/ui-strings-en.md` for English.** `ui-meaning.md` picks the target language and holds the M (meaning) rules, the `context` evidence field, the codebase-input procedure, the term inventory, and the report format; each language file holds its form rules, per-`type` table, and glossary; `ui-strings-ko.md` defines the shared JSON contract. Do not work from memory.
 
-Enter this mode when the user names `ui`, or when the input is an array of short UI strings keyed by dotted identifiers (`settings.*.label`) even without the token. If the input is ambiguous prose-vs-UI, ask once rather than guessing the pipeline.
+Enter this mode when the user names `ui`. Without the token, enter it when the input is an array of short UI strings keyed by dotted identifiers (`settings.*.label`), or when the request names a screen, a feature, or UI source files in a codebase. If the input is ambiguous prose-vs-UI, ask once rather than guessing the pipeline.
 
 This mode suspends the change-rate guardrails, Step 4 voice injection, the genre matrix, auto-downshift, and KO-5/KO-31/KO-32; `ui-meaning.md` explains why for each.
 
@@ -253,14 +257,14 @@ Meaning preservation is **not** suspended. It is the only guardrail left, so hol
 
 ### Steps
 
-1. **Normalize input** — build the JSON array defined in `references/ui-strings-ko.md`. If the input is a source file (`Localizable.strings`, `ko.json`, `en.json`, `messages.ts`, or CLI help and message definitions), extract strings into that array and record what each control does in `context`. Never write to the file unless the user explicitly asks.
-2. **Load the glossary** — read `.xm/ui-glossary.json` if present; it overrides the default glossary. If absent, apply the default glossary only, and set `flag: true` on project-specific implementation terms you cannot confidently replace.
-3. **Group by screen** — items sharing a `key` prefix minus the last segment form one group. Judge label/description overlap and mixed endings inside a group, never globally.
+1. **Normalize input** — build the JSON array defined in `references/ui-strings-ko.md`. If the input is a source file (`Localizable.strings`, `ko.json`, `en.json`, `messages.ts`, or CLI help and message definitions) or a screen in a codebase, extract every user-visible string into that array with its `loc` and what its control does (`context`), following `## Input from a codebase` in `ui-meaning.md`. Do not pick suspects out of a context-free list of strings. Never write to a file unless the user explicitly asks; when they do, follow `## Applying to files` in `ui-meaning.md`.
+2. **Load the glossary and build the term inventory** — read `.xm/ui-glossary.json` if present; it overrides the default glossary. Then list, across the whole input, every concept that appears under two or more names, and settle one name per concept (`## Term inventory` in `ui-meaning.md`). Set `flag: true` on project-specific implementation terms you cannot confidently replace.
+3. **Group by screen** — items sharing a `key` prefix minus the last segment, or a `group` value, form one group. Judge label/description overlap and mixed endings inside a group, never globally. Terminology is the exception: Step 2 judges it across the whole input.
 4. **Check meaning** — run the `ui-meaning.md` procedure before any form rule. Without behavior evidence, a suspected mismatch is `flag: true`, never a rewrite.
-5. **Apply rules** — S1/E1 on every hit, S2/E2 only when the pattern repeats within a group.
+5. **Apply rules** — S1/E1 on every hit, S2/E2 only when the pattern repeats within a group. After a form rule changes a string, re-check M-5: no rule licenses dropping a label's object, joining unrelated facts, or adding advice.
    Under `ui audit`, stop at detection: record each hit in `rules` and explain it in
    `note`, but leave `after` byte-identical to `before` on every item.
-6. **Self-verify** against the checklists in `ui-meaning.md` and the language file, then emit the JSON array alone — no preamble, no code fence, no trailing commentary.
+6. **Self-verify** against the checklists in `ui-meaning.md` and the language file, then emit by input shape. A string array in: the JSON array alone — no preamble, no code fence, no trailing commentary. Files or a screen in: the report defined in `ui-meaning.md`, which opens by stating that no file was changed and how many strings were judged.
 
 ## Core Process
 
@@ -359,7 +363,7 @@ lower intensity or tell the user.
 | `audit` | Findings table only — pattern #, severity, span, suggested fix direction |
 | `rewrite` | Rewritten text + (developer mode only) collapsible findings summary at bottom |
 | `voice` | Rewritten text in user's voice + 2-line note explaining what voice features were matched |
-| `ui` | JSON array only, per the contract in `references/ui-strings-ko.md` (both languages). No findings table, no surrounding prose. |
+| `ui` | String array in: JSON array only, per the contract in `references/ui-strings-ko.md` (both languages), with no findings table and no surrounding prose. Files or a screen in: the report defined in `references/ui-meaning.md`. |
 
 For Korean output, follow the user's existing register (반말/존댓말). Default to existing register; if mixed, keep the dominant register.
 
@@ -398,6 +402,10 @@ Skipping any of these excuses is a sign you are partially applying the skill. Re
 | "The label is short, so folding a bit of the description in is friendlier." | That is S1-1 inverted. The label names the state; the description explains it. Merging them breaks both and duplicates text on screen. |
 | "I don't know this term, but context suggests X." | Set `flag: true` and leave `after` equal to `before`. A confidently wrong string ships to every user; an unedited one only stays awkward. |
 | "The ending is fixed, so the label is done." | A well-formed label can still name the wrong thing: `단일 에이전트로 비교` promised a comparison the run-mode option never ran. Run the meaning pass before form rules. |
+| "I listed the screen's strings and only a few looked wrong." | A flat list shows spacing and symbols. Two names for one thing and a label that contradicts its handler only show next to the code. Judge every string in its region and report the count per source. |
+| "This term is not in the glossary, so naming is out of scope." | The glossary only seeds the term inventory. One thing under two names is the most common defect in copy written straight for a screen. Build the inventory from the input. |
+| "The rule says two sentences, so I folded the third one in." | A count never outranks meaning. Joining unrelated facts with a connective, or adding a verb so they fit, changes what the string says. Keep three sentences and note it. |
+| "The user approved one change, so I can apply the rest while I am in the file." | Apply only what the report showed. A rename that was never proposed is a new proposal, however small. |
 
 ## Red Flags (Stop and Re-check)
 
@@ -416,7 +424,9 @@ Stop and re-read the source if you notice:
 - Change rate hit 50% in ordinary rewriting — DO NOT output. Restart with `light`
   or tell the user the source may already be natural. For an explicit Korean
   expansion request, apply its separate meaning check and disclosure instead.
-- (`ui`) You are about to wrap the JSON array in prose or a code fence — the output must be the bare array.
+- (`ui`, array input) You are about to wrap the JSON array in prose or a code fence — the output must be the bare array.
+- (`ui`, file or screen input) You are about to answer with a bare JSON array, or without saying that no file was changed — use the report in `ui-meaning.md`.
+- (`ui`) Most of your edits are spacing or spelling (`O-1`), or an edited item has an empty `rules` array — you skimmed. Go back to the term inventory and the meaning pass.
 - (`ui`, Korean) A `toggle_label` you wrote ends in a verb or `~기` — that is S1-1, undo.
 - (`ui`) You removed or restored a promised action without behavior evidence — STOP, flag it instead.
 - (`ui`) You changed a placeholder, shortcut, number, or env var inside a string — STOP, restore it byte-for-byte.
@@ -438,7 +448,7 @@ Before returning output, internally confirm:
   or above that length's warn threshold but below its hard stop with the fact
   inventory re-verified, OR explicit Korean sentence expansion checked and
   disclosed, OR aborted per Change Rate Guardrails.
-- [ ] (`ui` mode) `references/ui-meaning.md` and the language file were loaded, both closing checklists run per item, and the output is a bare JSON array. Change-rate items above do not apply.
+- [ ] (`ui` mode) `references/ui-meaning.md` and the language file were loaded, both closing checklists run per item, the term inventory covered the whole input, and the output fits the input shape (bare JSON array for an array, the report for files or a screen). Change-rate items above do not apply.
 
 ## Output Templates
 
@@ -484,6 +494,6 @@ Before returning output, internally confirm:
 - `references/patterns-ko.md` — Korean AI-slop pattern catalog (KO-1 ~ KO-40)
 - `references/genre-rules.md` — Per-genre allowance matrix (column/report/blog/formal/marketing/README) and threshold adjustments
 - `references/voice-calibration.md` — How to analyze a writing sample and match it
-- `references/ui-meaning.md` — `ui` meaning pass for both languages (target language, `context` evidence, M rules, suspended prose rules)
-- `references/ui-strings-ko.md` — Korean UI-string rules for `ui` mode (S1/S2 patterns, per-`type` form table, glossary, JSON contract)
+- `references/ui-meaning.md` — `ui` meaning pass for both languages (target language, `context` evidence, codebase input, term inventory, M rules, report and apply steps, suspended prose rules)
+- `references/ui-strings-ko.md` — Korean UI-string rules for `ui` mode (S1/S2/O patterns, per-`type` form table, glossary, JSON contract)
 - `references/ui-strings-en.md` — English UI-string rules for `ui` mode (E1/E2 patterns, per-`type` form table, glossary)

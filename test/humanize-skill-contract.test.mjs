@@ -1,5 +1,5 @@
 import { describe, expect, test } from 'bun:test';
-import { readFileSync } from 'node:fs';
+import { existsSync, readFileSync } from 'node:fs';
 import { dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 
@@ -56,6 +56,48 @@ describe('humanize skill execution contract', () => {
       expect(readFileSync(join(REPO, 'xm', ref), 'utf8')).toBe(readFileSync(join(REPO, 'x-humanize', ref), 'utf8'));
     }
   });
+
+  test('ui mode takes a screen in a codebase and answers with a report', () => {
+    const wrapper = readFileSync(join(REPO, 'x-humanize', 'commands', 'humanize.md'), 'utf8');
+    expect(wrapper).toContain('is `ui` mode even without the token');
+    expect(wrapper).toContain('a report that opens by stating that no file was changed');
+    expect(wrapper).toContain('apply only the edits you already showed');
+    expect(readFileSync(join(REPO, 'xm', 'commands', 'humanize.md'), 'utf8')).toBe(wrapper);
+
+    expect(source).toContain('2. **Load the glossary and build the term inventory**');
+    expect(source).toContain('Do not pick suspects out of a context-free list of strings.');
+    expect(source).toContain('re-check M-5');
+    expect(source).toContain('then emit by input shape');
+
+    const ref = (name) => readFileSync(join(REPO, 'x-humanize', 'skills', 'humanize', 'references', name), 'utf8');
+    const meaning = ref('ui-meaning.md');
+    for (const heading of ['## Input from a codebase', '## Term inventory', '## Report for file or screen input', '## Applying to files']) {
+      expect(meaning).toContain(heading);
+    }
+    expect(meaning).toContain('| M-6 |');
+    expect(meaning.indexOf('## Term inventory')).toBeLessThan(meaning.indexOf('## M rules — meaning'));
+
+    const ko = ref('ui-strings-ko.md');
+    const en = ref('ui-strings-en.md');
+    expect(ko).toContain('| O-1 |');
+    for (const file of [ko, en]) {
+      expect(file).toContain('`G-P`');
+      expect(file).toContain('O-1');
+      for (const type of ['table_header', 'tab', 'badge', 'tooltip', 'legend', 'placeholder', 'notification']) {
+        expect(file).toContain(`| \`${type}\` |`);
+      }
+    }
+  });
+
+  test('tooltip periods follow the other tooltips on the screen', () => {
+    const ref = (name) => readFileSync(join(REPO, 'x-humanize', 'skills', 'humanize', 'references', name), 'utf8');
+    expect(ref('ui-strings-ko.md')).toMatch(/\| `tooltip` \|.*같은 화면의 `tooltip`끼리만 맞춘다\. 모두 같으면 고치지 않고/);
+    expect(ref('ui-strings-en.md')).toMatch(/\| `tooltip` \|.*Match only the other tooltips on the same screen\. Leave them when they agree/);
+  });
+
+  test('skill stays within the 500-line budget', () => {
+    expect(source.trimEnd().split('\n').length).toBeLessThanOrEqual(500);
+  });
 });
 
 describe('ui string regression cases', () => {
@@ -69,8 +111,22 @@ describe('ui string regression cases', () => {
       expect(c.must.length).toBeGreaterThan(0);
       expect(c.must_not.length).toBeGreaterThan(0);
       expect(c).not.toHaveProperty('expected');
-      for (const item of c.input) expect(typeof item[c.lang]).toBe('string');
+      if (c.input_files) {
+        expect(typeof c.request).toBe('string');
+        for (const file of c.input_files) expect(existsSync(join(REPO, file))).toBe(true);
+      } else {
+        for (const item of c.input) expect(typeof item[c.lang]).toBe('string');
+      }
     }
+  });
+
+  test('cover failures seen on a screen written directly in Korean', () => {
+    const ids = cases.map((c) => c.id);
+    expect(ids).toEqual(expect.arrayContaining([
+      'ko-term-two-names', 'ko-action-state-name', 'ko-three-sentence-why', 'ko-label-keeps-object',
+      'ko-native-verb-button', 'ko-internal-name-flag', 'ko-spacing-coded', 'ko-area-input',
+      'ko-tooltip-period-kept',
+    ]));
   });
 
   test('cover both languages, a missing-evidence flag, and unchanged strings', () => {

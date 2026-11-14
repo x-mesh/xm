@@ -1,0 +1,28 @@
+<!-- Sample screen for the humanize ui `ko-area-input` case. Not a real app. -->
+<section class="card" aria-label="경보 목록">
+  <h4>경보 <i class="bi bi-info-circle" title="규칙에 걸린 이벤트를 모아 보여 줍니다."></i></h4>
+  <div class="toolbar">
+    <button type="button" data-view="open">처리 대기 <span data-count="open"></span></button>
+    <button type="button" data-view="done">처리함 <span data-count="done"></span></button>
+    <input type="search" placeholder="이름·주소 검색" aria-label="검색">
+  </div>
+  <table>
+    <thead><tr><th>알림</th><th>상태</th><th>마지막 발생</th><th></th></tr></thead>
+    <tbody id="rows"></tbody>
+  </table>
+  <p class="text-muted" id="empty" hidden>아직 알림이 없습니다. 수집기가 돌면 채워집니다.</p>
+  <button type="button" id="clear">모두 삭제</button>
+</section>
+<script>
+  const STATUS = { open: '열림', done: '처리함' };
+
+  document.getElementById('clear').addEventListener('click', async () => {
+    if (!confirm('처리한 경보를 모두 보관함으로 옮길까요?')) return;
+    await fetch('/api/alerts/archive', { method: 'POST' });
+  });
+
+  function row(a) {
+    return `<tr><td>${a.title}</td><td>${STATUS[a.status]}</td><td>${a.last_seen}</td>
+      <td><button type="button" data-act="done">처리함</button></td></tr>`;
+  }
+</script>

@@ -1287,6 +1287,7 @@ Detect AI-writing patterns and rewrite generated text into natural human prose. 
 /xm:humanize <text>                # Default: medium intensity rewrite
 /xm:humanize strong <text>         # Rebuild prose aggressively, preserve facts
 /xm:humanize ui <strings>          # Korean or English UI and CLI strings — meaning check, then form; JSON array in and out
+/xm:humanize ui <screen or file>   # The same check for a screen in the codebase — all strings, one name per concept, a report before any edit
 /xm:humanize voice <file> <text>   # Match voice of sample file
 /xm:humanize --lang ko <text>      # Force Korean output
 ```

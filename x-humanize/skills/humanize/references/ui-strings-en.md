@@ -19,7 +19,15 @@ Input and output follow the JSON contract in `ui-strings-ko.md`, with `en` as th
 edited field. `type` and `context` are optional; when `type` is missing, infer it
 from the `key` and say so in `note`. Use E codes from this file and M codes from
 `ui-meaning.md` in `rules`. Group items by `key` prefix minus the last segment, as
-the Korean file defines, and judge E1-2 and E1-4 inside a group.
+the Korean file defines, and judge E1-2 and E1-4 inside a group. Judge terminology
+across the whole input (`Term inventory` in `ui-meaning.md`).
+
+`loc` and `group` are optional and come with file or screen input. Do not invent
+a `key` the source lacks. Every edited item cites at least one code: E codes, M
+codes, `G-P` for a name chosen in the term inventory, and `O-1` for spelling,
+spacing, and punctuation that do not change meaning. List `O-1` edits last, and
+group a repeated deviation into one row with a count. For file or screen input,
+answer with the report defined in `ui-meaning.md` instead of the array.
 
 ## Principles
 
@@ -51,8 +59,16 @@ the Korean file defines, and judge E1-2 and E1-4 inside a group.
 | `cli_help` | Follow the tool's existing style. Default: lowercase verb phrase (`show current status`) | One line, ≤ 50 chars | No |
 | `cli_progress` | `<Verb>ing <object>…` (`Syncing with remote…`) | One line | No |
 | `cli_done` | `<Past participle> <object>` or `<Object> <past participle>`, optionally with a value (`Saved {path}`) | One line | No |
+| `table_header` | Name of the value the column holds. Noun phrase | — | No |
+| `tab` | Name of what the tab collects. Noun phrase | — | No |
+| `badge` | State name. One form for all states shown in the same place (`Pending`, `Done`, `On hold`) | — | No |
+| `tooltip` | Complete sentence. Do not repeat words already on screen | ≤ 2 sentences | Match only the other tooltips on the same screen. Leave them when they agree. Follow the majority when they differ |
+| `legend` | What the mark stands for. Noun phrase, one notation per legend | — | No |
+| `placeholder` | Name or example of what to type. Noun phrase | — | No |
+| `notification` | Read outside the app. Say what happened and how many first; use the screen's terms | — | Yes for sentences |
 
-Length limits are targets. Do not cut meaning to meet one; record the overrun in `note`.
+Length and sentence limits are targets. Do not cut meaning or join unrelated facts
+to meet one; record the overrun in `note`.
 
 A dropdown description states what the setting decides, not what one option does.
 
@@ -70,6 +86,11 @@ A dropdown description states what the setting decides, not what one option does
 | E1-8 | Generic button where the action is specific | `OK` on a delete confirmation | `Delete` |
 | E1-9 | Dropdown description covers only one option | `Opens new tabs next to the current tab` | Describe the setting |
 | E1-10 | Three dots instead of an ellipsis in progress or menu items | `Loading...` | `Loading…` |
+
+E1-2 keeps the word that tells a label apart from its siblings, even when the
+description repeats it. E1-3 also covers names only the team knows, such as an
+incident nickname or an internal code name; flag them when the replacement is
+unknown.
 
 ## E2 — fix when repeated in a group
 
@@ -94,7 +115,9 @@ A dropdown description states what the setting decides, not what one option does
 ## Glossary
 
 Read `.xm/ui-glossary.json` first; an entry's `en` value overrides the defaults.
-Pick one word per concept and keep it across screens.
+Pick one word per concept and keep it across screens. This table is only a
+start: build the term inventory from the input, and record a name chosen there
+as `G-P`.
 
 | Code | Concept | Use | Note |
 |------|---------|-----|------|
@@ -125,4 +148,6 @@ Pick one word per concept and keep it across screens.
 - [ ] Buttons name the action; status lines contain no `successfully`.
 - [ ] One casing convention per group.
 - [ ] Already-clear strings are unchanged with empty `rules`.
-- [ ] The output is one bare JSON array with no prose or code fence.
+- [ ] Every edited item cites a code, and no label lost the word that tells it apart.
+- [ ] Array input: the output is one bare JSON array with no prose or code fence.
+  File or screen input: the report, opening with the statement that no file was changed.

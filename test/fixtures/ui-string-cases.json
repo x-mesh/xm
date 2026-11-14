@@ -1,6 +1,6 @@
 {
   "version": 1,
-  "purpose": "Manual-execution cases for humanize ui mode. Judge each output against must and must_not, not against one reference string. candidates lists outputs already judged, including rejected ones that look plausible. Behavior context for the astar cases comes from astar web/src/App.tsx (first writing pass in .astar-data/toss-copy-changes.json versus the current source). These cases are not an automated quality gate.",
+  "purpose": "Manual-execution cases for humanize ui mode. Judge each output against must and must_not, not against one reference string. candidates lists outputs already judged, including rejected ones that look plausible. Behavior context for the astar cases comes from astar web/src/App.tsx (first writing pass in .astar-data/toss-copy-changes.json versus the current source). The ko-term-two-names through ko-area-input cases record failures seen when ui mode reviewed a dashboard written directly in Korean, with the strings generalized; ko-area-input takes a request and source files under test/fixtures/ui-area-sample/ instead of an input array. These cases are not an automated quality gate.",
   "cases": [
     {
       "id": "astar-request-label",
@@ -160,6 +160,172 @@
       "candidates": {
         "accepted": ["Try again", "Saved settings"],
         "rejected": []
+      }
+    },
+    {
+      "id": "ko-term-two-names",
+      "skill": "humanize",
+      "mode": "ui",
+      "lang": "ko",
+      "input": [
+        { "key": "security.header.tip", "ko": "Audit 이벤트를 규칙과 맞춰 본 결과입니다.", "type": "tooltip", "context": "Tooltip on the page title. The page reads the audit log; other strings on this screen call that same log 감사 기록." },
+        { "key": "security.detail.evidence", "ko": "감사 기록 보기", "type": "button", "context": "Opens the audit log entries around the selected item." },
+        { "key": "security.status.empty", "ko": "아직 탐지 기록이 없습니다. Audit 수집이 끝나면 함께 실행됩니다.", "type": "empty_state", "context": "Shown before the first detection run. Detection starts when audit log collection finishes." }
+      ],
+      "must": ["Reports that one concept, the audit log, appears under two names: Audit and 감사 기록.", "Either uses one name in all three strings, or flags the items and asks which name to keep.", "Every edited item cites a rule code."],
+      "must_not": ["Leaves both names in after without a flag.", "Fixes only spacing or endings and reports no naming conflict."],
+      "candidates": {
+        "accepted": ["감사 기록을 규칙과 맞춰 본 결과입니다."],
+        "rejected": [
+          { "text": "Audit 이벤트를 규칙에 맞춰 본 결과입니다.", "reason": "Polishes a particle and leaves the two names in place." }
+        ]
+      }
+    },
+    {
+      "id": "ko-action-state-name",
+      "skill": "humanize",
+      "mode": "ui",
+      "lang": "ko",
+      "input": [
+        { "key": "queue.detail.ack", "ko": "확인함", "type": "button", "context": "Clicking sets the selected item's status to acknowledged." },
+        { "key": "queue.status.acknowledged", "ko": "확인함", "type": "badge", "context": "Status name shown on items that were already acknowledged." }
+      ],
+      "must": ["The button names the action and the badge keeps the state name.", "Records M-6 on the button."],
+      "must_not": ["Leaves the button and the state with the same name and no flag.", "Renames the state instead of the button.", "Turns the button into a sentence or a ~하기 form."],
+      "candidates": {
+        "accepted": ["확인"],
+        "rejected": [
+          { "text": "확인함으로 표시하기", "reason": "Verb ending in a button slot (S1-10), and longer than the action needs." }
+        ]
+      }
+    },
+    {
+      "id": "ko-three-sentence-why",
+      "skill": "humanize",
+      "mode": "ui",
+      "lang": "ko",
+      "input": [
+        { "key": "rules.run-command.why", "ko": "Run Command는 서버 안에서 명령을 실행합니다. 지난 1년 동안 4건뿐이었습니다. 실패한 시도도 신호입니다.", "type": "desc", "context": "Explanation shown under the heading that says why an item was raised. Three independent facts: what the feature does, how rare it was, and that failed attempts count too." }
+      ],
+      "must": ["Keeps the three facts as separate statements.", "If the string stays over the two-sentence target, note says so."],
+      "must_not": ["Joins unrelated facts with -고, -며, or a comma to reach two sentences.", "Adds advice, a cause, or a verb the source does not state.", "Drops one of the three facts."],
+      "candidates": {
+        "accepted": ["Run Command는 서버 안에서 명령을 실행합니다. 지난 1년 동안 4건뿐이었습니다. 실패한 시도도 신호입니다."],
+        "rejected": [
+          { "text": "Run Command는 서버 안에서 명령을 실행합니다. 지난 1년 동안 4건뿐이었고, 실패한 시도도 신호입니다.", "reason": "Joins two unrelated facts with -고 only to meet the sentence count." }
+        ]
+      }
+    },
+    {
+      "id": "ko-label-keeps-object",
+      "skill": "humanize",
+      "mode": "ui",
+      "lang": "ko",
+      "input": [
+        { "key": "settings.create_delete_window.label", "ko": "자격 증명 생성 후 삭제", "type": "select_label", "context": "Label of a numeric input, unit minutes. Sibling labels in the same list name other thresholds, such as 시간당 공인 IP 수 and 휴면 기준." },
+        { "key": "settings.create_delete_window.desc", "ko": "만든 지 이 시간 안에 지우면 흔적 지우기로 봅니다.", "type": "desc" }
+      ],
+      "must": ["The label still says 자격 증명.", "If the label changes, it names the value the field takes: a time window."],
+      "must_not": ["Drops 자격 증명 because the description or the rule name implies it.", "Turns the label into a sentence."],
+      "candidates": {
+        "accepted": ["자격 증명 생성 후 삭제", "자격 증명 생성 후 삭제 간격"],
+        "rejected": [
+          { "text": "생성 후 삭제 간격", "reason": "Drops the object that tells this label apart from its siblings (M-5)." }
+        ]
+      }
+    },
+    {
+      "id": "ko-native-verb-button",
+      "skill": "humanize",
+      "mode": "ui",
+      "lang": "ko",
+      "input": [
+        { "key": "fixlist.row.remove", "ko": "목록에서 빼기", "type": "button", "context": "Removes a manually added task from the list after a confirmation." },
+        { "key": "fixlist.row.remove.confirm", "ko": "이 조치를 목록에서 뺄까요? 항목은 그대로 둡니다.", "type": "dialog_body", "context": "Confirmation opened by that button." }
+      ],
+      "must": ["Both strings stay unchanged with empty rules, or both use the same verb."],
+      "must_not": ["Applies S1-10 to 빼기 and replaces it with a Sino-Korean noun such as 제외.", "Leaves the button and its confirmation using different words for the same action."],
+      "candidates": {
+        "accepted": ["목록에서 빼기"],
+        "rejected": [
+          { "text": "목록에서 제외", "reason": "빼기 is a native verb with no ~하다 form to strip, and the confirmation still says 뺄까요." }
+        ]
+      }
+    },
+    {
+      "id": "ko-internal-name-flag",
+      "skill": "humanize",
+      "mode": "ui",
+      "lang": "ko",
+      "input": [
+        { "key": "rules.volume-clone.why", "ko": "사람이 볼륨을 복제했습니다. B사건 공격자는 복제한 볼륨을 다른 인스턴스에 붙여 데이터를 읽었습니다.", "type": "desc", "context": "Rule explanation shown to every operator. B사건 is the team's nickname for a past incident; no screen defines it." }
+      ],
+      "must": ["flag is true and note asks what readers should be told in place of B사건.", "note names the problem as a team-only name (S1-3).", "after equals before."],
+      "must_not": ["Leaves the internal name unflagged.", "Invents a description of the incident."],
+      "candidates": {
+        "accepted": [],
+        "rejected": [
+          { "text": "사람이 볼륨을 복제했습니다. 지난해 침해 사고의 공격자는 복제한 볼륨을 다른 인스턴스에 붙여 데이터를 읽었습니다.", "reason": "Invents when the incident happened and what it was." }
+        ]
+      }
+    },
+    {
+      "id": "ko-spacing-coded",
+      "skill": "humanize",
+      "mode": "ui",
+      "lang": "ko",
+      "input": [
+        { "key": "suppress.note", "ko": "여기 있는 규칙에 맞는 새 항목은 Slack 으로 보내지 않습니다.", "type": "desc", "context": "Note above the suppression rule list." },
+        { "key": "suppress.col.created", "ko": "만든 시각", "type": "table_header" }
+      ],
+      "must": ["The first string only attaches the particle (Slack으로) and records O-1.", "The second string is unchanged with empty rules."],
+      "must_not": ["Has an edited item whose rules array is empty.", "Rewrites the sentence beyond the spacing fix."],
+      "candidates": {
+        "accepted": ["여기 있는 규칙에 맞는 새 항목은 Slack으로 보내지 않습니다."],
+        "rejected": []
+      }
+    },
+    {
+      "id": "ko-area-input",
+      "skill": "humanize",
+      "mode": "ui",
+      "lang": "ko",
+      "request": "알림 화면에 쓰이는 한국어 개선",
+      "input_files": ["test/fixtures/ui-area-sample/alerts.html", "test/fixtures/ui-area-sample/alert_rules.py"],
+      "must": [
+        "Opens by stating that no file was changed.",
+        "Reports how many strings were judged per source file.",
+        "Reports that 경보 and 알림 name the same thing, and that the view 처리 대기 and the status 열림 name the same state.",
+        "Reports that the 모두 삭제 button archives instead of deleting (M-2), citing the handler.",
+        "Reports that the 처리함 button and the 처리함 status share a name (M-6).",
+        "Each proposed edit carries a file and line."
+      ],
+      "must_not": [
+        "Returns only a bare JSON array.",
+        "Modifies either file.",
+        "Lists only the 메신저 로 spacing fix or other O-1 edits.",
+        "Invents dotted keys for strings that have none."
+      ],
+      "candidates": { "accepted": [], "rejected": [] }
+    },
+    {
+      "id": "ko-tooltip-period-kept",
+      "skill": "humanize",
+      "mode": "ui",
+      "lang": "ko",
+      "input": [
+        { "key": "backup.list.sizeTip", "ko": "압축하기 전 크기입니다", "type": "tooltip", "context": "Tooltip on the 크기 column header. The column shows the size before compression." },
+        { "key": "backup.list.keepTip", "ko": "이 날짜가 지나면 백업이 지워집니다", "type": "tooltip", "context": "Tooltip on the 보관 기한 column header. Backups are deleted after this date." },
+        { "key": "backup.list.ownerTip", "ko": "백업을 시작한 사람입니다", "type": "tooltip", "context": "Tooltip on the 만든 사람 column header. The column shows who started the backup." },
+        { "key": "backup.list.loadError", "ko": "백업 목록을 불러오지 못했습니다. 잠시 뒤에 다시 시도하세요.", "type": "error", "context": "Shown in place of the table when the list request fails." }
+      ],
+      "must": ["No tooltip ends with a period in after, because the three tooltips on this screen already agree.", "The error keeps both of its periods."],
+      "must_not": ["Adds a period to a tooltip.", "Removes the error's periods to match the tooltips.", "Reports the tooltips' missing periods as a finding or a flag."],
+      "candidates": {
+        "accepted": ["압축하기 전 크기입니다"],
+        "rejected": [
+          { "text": "압축하기 전 크기입니다.", "reason": "The tooltips on this screen already share one convention, so the period is an edit the screen does not need." }
+        ]
       }
     }
   ]

@@ -1284,6 +1284,7 @@ AI 글쓰기 패턴을 감지해 자연스러운 한국어/영어 문체로 재�
 /xm:humanize <텍스트>               # 기본: medium 강도 재작성
 /xm:humanize strong <텍스트>        # 문장 전면 재구성, 사실은 보존
 /xm:humanize ui <문자열>            # 한국어·영문 UI·CLI 문자열 — 의미 확인 후 형식 정리, JSON 배열 입출력
+/xm:humanize ui <화면·파일>         # 코드베이스의 화면 문구 — 전체 문자열 검토, 용어 통일, 반영 전 보고
 /xm:humanize voice <파일> <텍스트>  # 샘플 파일 문체에 맞춰 재작성
 /xm:humanize --lang ko <텍스트>     # 한국어 출력 강제
 ```
