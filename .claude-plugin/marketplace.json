@@ -10,7 +10,7 @@
     {
       "name": "build",
       "description": "Repository-grounded planning with lean native execution; legacy phase, worktree, and gate workflows remain explicit opt-ins",
-      "version": "3.25.2",
+      "version": "3.25.3",
       "author": {
         "name": "x-mesh"
       },
@@ -277,7 +277,7 @@
     {
       "name": "remote",
       "description": "Linux-first Discord control plane for x-kit-managed Claude and Codex sessions",
-      "version": "0.1.0",
+      "version": "0.1.1",
       "author": {
         "name": "x-mesh"
       },
@@ -295,7 +295,7 @@
     {
       "name": "xm",
       "description": "All-in-one bundle: build + op + agent + solver + eval + humble + cross-plugin quality pipeline",
-      "version": "2.50.4",
+      "version": "2.50.5",
       "author": {
         "name": "x-mesh"
       },
