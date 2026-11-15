@@ -112,6 +112,15 @@ function mapFileToPlugin(filepath) {
   return null;
 }
 
+// Every Claude Code plugin marketplace has a marketplace.json, so that file alone does not
+// identify this repository. The xm marketplace is the one that lists the xm bundle.
+function listsXmBundle(cwd) {
+  const path = join(cwd, '.claude-plugin', 'marketplace.json');
+  if (!existsSync(path)) return false;
+  const { plugins } = readJSON(path);
+  return Array.isArray(plugins) && plugins.some((p) => p.name === 'xm' && p.source === './xm');
+}
+
 function detectProjectType(cwd) {
   if (existsSync(join(cwd, '.claude-plugin', 'marketplace.json'))) return 'xm-marketplace';
   if (existsSync(join(cwd, 'Cargo.toml'))) return 'rust';
@@ -597,11 +606,11 @@ export function cmdReleaseCommit(args) {
   for (const dir of PLUGIN_DIRS) {
     try { execSync(`git add ${JSON.stringify(dir)}`, { stdio: 'pipe' }); } catch {}
   }
-  // The marketplace repo ships its tests and release scripts with a release. A new file there
+  // The xm marketplace ships its tests and release scripts with a release. A new file there
   // is untracked, so `git add -u` skipped it and the release commit left it out without a word.
-  // Marketplace layout only: other projects reach this command through xm:ship, which stages
+  // This repository only: other projects reach this command through xm:ship, which stages
   // its planned files itself, so their untracked work must stay out.
-  if (detectProjectType(cwd) === 'xm-marketplace') {
+  if (listsXmBundle(cwd)) {
     for (const dir of ['scripts', 'test']) {
       if (existsSync(join(cwd, dir))) execSync(`git add ${dir}`, { stdio: 'inherit' });
     }

@@ -6,8 +6,8 @@
  * the release commit left it out without a word. The list that named `scripts/`
  * and `test/` was declared and never used.
  *
- * The staging applies to the xm-marketplace layout only. Other projects reach
- * this command through xm:ship, which stages its planned files itself.
+ * The staging applies to the xm marketplace only. Other projects reach this
+ * command through xm:ship, which stages its planned files itself.
  */
 
 import { test, expect, beforeEach, afterEach } from 'bun:test';
@@ -75,6 +75,23 @@ test('a marketplace release commit carries new files under test/ and scripts/', 
   expect(files).not.toContain('test/run.log');
   expect(files).not.toContain('notes.txt');
   expect(untracked()).toEqual(['notes.txt']);
+});
+
+// A marketplace.json alone does not make a repository the xm marketplace: any Claude Code
+// plugin marketplace has one. Only the repository that lists the xm bundle gets the staging.
+test('another plugin marketplace keeps its untracked files out', () => {
+  init({
+    '.claude-plugin/marketplace.json': JSON.stringify({ plugins: [{ name: 'acme', source: './plugins/acme', version: '1.0.0' }] }),
+    'package.json': JSON.stringify({ version: '1.0.0' }),
+    'test/old.test.mjs': '// old\n',
+  });
+  write('package.json', JSON.stringify({ version: '1.0.1' }));
+  write('test/wip.test.mjs', '// work in progress\n');
+  write('scripts/wip.sh', 'echo wip\n');
+
+  const files = releaseCommit();
+  expect(files).toEqual(['package.json']);
+  expect(untracked().sort()).toEqual(['scripts/wip.sh', 'test/wip.test.mjs']);
 });
 
 test('a project without the marketplace layout keeps its untracked files out', () => {
