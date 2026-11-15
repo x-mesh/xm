@@ -1753,6 +1753,29 @@ The selection chain has three levels: `model_overrides → profile → fallback`
 
 </details>
 
+<details>
+<summary>Claude Code asks <code>Use skill "xm:op"?</code> or refuses an xm skill</summary>
+
+Most xm skills list `allowed-tools`. Claude Code asks for approval when Claude starts such a skill through the Skill tool. This occurs when you type `/xm <subcommand>` and when Claude selects an xm skill for your request. A typed `/xm:<name>` command does not ask.
+
+- Manual mode and `acceptEdits` mode show the prompt for each call.
+- `dontAsk` mode refuses the call. A `claude -p` run in these three modes also refuses it.
+- The auto, plan, and `bypassPermissions` modes do not ask.
+
+To stop the prompt for all xm skills, add this rule to `~/.claude/settings.json`:
+
+```json
+{
+  "permissions": {
+    "allow": ["Skill(xm:*)"]
+  }
+}
+```
+
+The rule also approves the tools in `allowed-tools`. Most skills list only a read of their own skill directory. `/xm:remote` and `/xm:batch` list Bash. To approve one skill only, use its name, for example `Skill(xm:op)`.
+
+</details>
+
 ---
 
 ## Contributing

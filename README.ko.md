@@ -1748,6 +1748,29 @@ xm은 요청을 처리할 수 있는 가장 저렴한 모델을 자동으로 고
 
 </details>
 
+<details>
+<summary>Claude Code가 <code>Use skill "xm:op"?</code>를 묻거나 xm 스킬을 거부함</summary>
+
+xm 스킬 대부분은 `allowed-tools`를 선언합니다. Claude가 그런 스킬을 Skill 도구로 시작하면 Claude Code가 승인을 요청합니다. `/xm <subcommand>`를 입력했을 때와 Claude가 요청에 맞는 xm 스킬을 스스로 골랐을 때 일어납니다. 직접 입력한 `/xm:<name>` 명령은 묻지 않습니다.
+
+- 수동 모드와 `acceptEdits` 모드는 호출할 때마다 승인 창을 띄웁니다.
+- `dontAsk` 모드는 호출을 거부합니다. 이 세 모드로 실행한 `claude -p`도 거부합니다.
+- auto, plan, `bypassPermissions` 모드는 묻지 않습니다.
+
+모든 xm 스킬에서 승인 창을 없애려면 `~/.claude/settings.json`에 이 규칙을 추가합니다:
+
+```json
+{
+  "permissions": {
+    "allow": ["Skill(xm:*)"]
+  }
+}
+```
+
+이 규칙은 `allowed-tools`에 적힌 도구도 함께 승인합니다. 대부분의 스킬은 자기 스킬 디렉터리 읽기만 적고, `/xm:remote`와 `/xm:batch`는 Bash를 적습니다. 스킬 하나만 승인하려면 `Skill(xm:op)`처럼 그 이름을 씁니다.
+
+</details>
+
 ---
 
 ## 기여하기
