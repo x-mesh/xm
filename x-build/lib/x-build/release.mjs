@@ -579,19 +579,7 @@ export function cmdReleaseCommit(args) {
     exitFail(1);
   }
 
-  // Stage all relevant files
-  const patterns = [
-    '.claude-plugin/',
-    'package.json',
-    ...PLUGIN_DIRS.map(d => `${d}/.claude-plugin/`),
-    ...PLUGIN_DIRS.map(d => `${d}/lib/`),
-    ...PLUGIN_DIRS.map(d => `${d}/skills/`),
-    ...PLUGIN_DIRS.map(d => `${d}/public/`),
-    'xm/lib/',
-    'xm/agent-catalog/',
-    'scripts/',
-    'test/',
-  ];
+  const cwd = process.cwd();
 
   // Add all tracked changes
   try {
@@ -608,6 +596,15 @@ export function cmdReleaseCommit(args) {
   // bundle copy does (the x-panel incident: only x-panel/lib was tracked, def/commands/skills lost).
   for (const dir of PLUGIN_DIRS) {
     try { execSync(`git add ${JSON.stringify(dir)}`, { stdio: 'pipe' }); } catch {}
+  }
+  // The marketplace repo ships its tests and release scripts with a release. A new file there
+  // is untracked, so `git add -u` skipped it and the release commit left it out without a word.
+  // Marketplace layout only: other projects reach this command through xm:ship, which stages
+  // its planned files itself, so their untracked work must stay out.
+  if (detectProjectType(cwd) === 'xm-marketplace') {
+    for (const dir of ['scripts', 'test']) {
+      if (existsSync(join(cwd, dir))) execSync(`git add ${dir}`, { stdio: 'inherit' });
+    }
   }
 
   // Commit — use -F <file> to preserve real newlines (JSON.stringify -m escapes \n as literal)
