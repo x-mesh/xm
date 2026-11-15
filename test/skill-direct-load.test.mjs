@@ -54,14 +54,22 @@ describe('plugin skills load directly', () => {
 
   // The plugin directory is outside the working directory, so the default
   // permission mode denies a read of references/ unless the skill approves it.
-  // xm:write is exempt: its PR and issue modes read no sibling file, and the
-  // rule would make every run that Claude starts ask for approval.
   test('a skill that ships other Markdown files pre-approves reading its own directory', () => {
-    for (const { where, name, dir, frontmatter } of all) {
-      if (!shipsOtherMarkdown(dir) || name === 'write') continue;
+    for (const { where, dir, frontmatter } of all) {
+      if (!shipsOtherMarkdown(dir)) continue;
       const approved = frontmatter.includes(READ_OWN_DIR) || /^\s+- Read$/m.test(frontmatter);
       expect(approved, `${where} needs allowed-tools: ${READ_OWN_DIR}`).toBe(true);
     }
+  });
+
+  // ship, wt and batch start xm:write through the Skill tool, and a skill that
+  // lists allowed-tools needs approval there. So write keeps its README rules
+  // in SKILL.md instead of a sibling file that would need the read rule.
+  test('xm:write lists no allowed-tools and ships no sibling Markdown', () => {
+    const write = all.find((s) => s.root === 'xm' && s.name === 'write');
+    expect(write.frontmatter).not.toContain('allowed-tools');
+    expect(shipsOtherMarkdown(write.dir)).toBe(false);
+    expect(write.body).toContain('\n## README mode\n');
   });
 
   // A direct load replaces $0, $1, ... with positional arguments ("$0.42"

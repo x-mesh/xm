@@ -163,7 +163,7 @@ check — especially when the skill mutates anything.
 Claude Code loads `skills/<name>/SKILL.md` itself for `/<plugin>:<name>`. Do not add `commands/<name>.md` beside a skill: the command wins the name, and a Skill call for that name returns the command again, so SKILL.md never loads. `test/skill-direct-load.test.mjs` enforces the rules below.
 
 - **Frontmatter is live.** `model:` switches the model for the rest of the turn, and `allowed-tools` pre-approves the listed tools for that turn. A skill that lists `allowed-tools` needs approval when Claude starts it through the Skill tool.
-- **Sibling files need a read rule.** The plugin directory is outside the working directory, so the default permission mode denies a read of `references/`. A skill that ships other Markdown files adds `Read(/${CLAUDE_SKILL_DIR}/**)` to `allowed-tools`.
+- **Sibling files need a read rule.** The plugin directory is outside the working directory, so the default permission mode denies a read of `references/`. A skill that ships other Markdown files adds `Read(/${CLAUDE_SKILL_DIR}/**)` to `allowed-tools`. A skill that other skills start through the Skill tool keeps its rules in SKILL.md when they fit the length budget, as `xm:write` does, because any `allowed-tools` entry makes each such start ask for approval.
 - **Placeholders are replaced.** `$ARGUMENTS` becomes the user's text, and `$0`, `$1`, … become positional arguments. Never write `$<digit>` (a dollar amount, a shell parameter) in SKILL.md, and never put `"$ARGUMENTS"` in a shell snippet. When the body has no placeholder, Claude Code appends `ARGUMENTS: <text>`.
 
 ### CLI Invocation Pattern (required when SKILL.md exposes a shell CLI)
