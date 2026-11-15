@@ -8,6 +8,14 @@ const REPO = join(import.meta.dirname, '..');
 const SCRIPT = join(REPO, 'xm', 'scripts', 'install.sh');
 const VERSION = JSON.parse(readFileSync(join(REPO, 'package.json'), 'utf8')).version;
 
+// install.sh plans over the repo marketplace as well as the clone, so a registry that
+// lacks one of these names turns that plugin into an install and the run changes something.
+const MARKET = Object.fromEntries(
+  JSON.parse(readFileSync(join(REPO, '.claude-plugin', 'marketplace.json'), 'utf8')).plugins.map((p) => [p.name, p.version]),
+);
+// xm is left out: its registry version decides whether the run is an update at all.
+const SUB_PLUGINS = Object.keys(MARKET).filter((name) => name !== 'xm');
+
 // `xm/scripts/xm` resolves its lib from XM_LIB before every other candidate, so a
 // developer shell exporting it (pointing at this checkout) overrides the fixture
 // HOME these tests build: `xm which` reports the repo instead of the fixture's
@@ -53,6 +61,19 @@ function seedPluginState(home, { market, registry }) {
   const regDir = join(home, '.claude', 'plugins');
   mkdirSync(regDir, { recursive: true });
   writeFileSync(join(regDir, 'installed_plugins.json'), JSON.stringify({ version: 2, plugins }));
+}
+
+// A manifest or a registry record can carry no version. The registry record keeps its
+// installPath: without the files on disk the plan installs the plugin instead.
+function dropVersion(home, { market = [], registry = [] }) {
+  const marketPath = join(home, '.claude', 'plugins', 'marketplaces', 'xm', '.claude-plugin', 'marketplace.json');
+  const clone = JSON.parse(readFileSync(marketPath, 'utf8'));
+  for (const plugin of clone.plugins) if (market.includes(plugin.name)) delete plugin.version;
+  writeFileSync(marketPath, JSON.stringify(clone));
+  const regPath = join(home, '.claude', 'plugins', 'installed_plugins.json');
+  const reg = JSON.parse(readFileSync(regPath, 'utf8'));
+  for (const name of registry) delete reg.plugins[`${name}@xm`][0].version;
+  writeFileSync(regPath, JSON.stringify(reg));
 }
 
 // install.sh now checks the registry after `claude plugin update/install`, so the
@@ -331,5 +352,59 @@ describe('xm install.sh', () => {
     expect(result.stderr).toContain('No xm plugin list was available');
     expect(result.status).toBe(1);
     expect(readFileSync(calls, 'utf8')).not.toMatch(/claude plugin (install|update) /);
+  }, 30_000);
+
+  // The next two runs are not updates: xm is already at the installer version, so
+  // install.sh installs what is missing and leaves a stale plugin to `xm update`.
+  test('reports "already current" when every plugin matches the marketplace', () => {
+    const { home, calls, env } = fixture({ withClaude: true });
+    seedPluginState(home, { market: MARKET, registry: MARKET });
+
+    const result = spawnSync('bash', [SCRIPT, '--yes'], { cwd: home, env, encoding: 'utf8', timeout: 60_000 });
+    if (result.status !== 0) throw new Error(`stdout:\n${result.stdout}\nstderr:\n${result.stderr}`);
+
+    expect(result.stdout).toContain(`${Object.keys(MARKET).length} plugin(s) already at the marketplace version; skipped.`);
+    expect(result.stdout).toContain('Claude plugins are already current. No restart needed.');
+    const log = readFileSync(calls, 'utf8');
+    expect(log).not.toMatch(/claude plugin (install|update) /);
+    expect(log).not.toContain('claude plugin marketplace update');
+  }, 30_000);
+
+  // Three plugins differ from the marketplace and only one has a known gap. The other two
+  // have no version on one side, and counting them would report an upgrade nobody can name.
+  test('holds a stale plugin without updating it and counts only a known version gap', () => {
+    const [stale, cloneUnversioned, registryUnversioned] = SUB_PLUGINS;
+    const { home, calls, env } = fixture({ withClaude: true });
+    seedPluginState(home, { market: MARKET, registry: { ...MARKET, [stale]: '0.0.1' } });
+    dropVersion(home, { market: [cloneUnversioned], registry: [registryUnversioned] });
+
+    const result = spawnSync('bash', [SCRIPT, '--yes'], { cwd: home, env, encoding: 'utf8', timeout: 60_000 });
+    if (result.status !== 0) throw new Error(`stdout:\n${result.stdout}\nstderr:\n${result.stderr}`);
+
+    expect(result.stdout).toContain(`  → ${stale} (0.0.1 installed, ${MARKET[stale]} available — run 'xm update' to upgrade)`);
+    expect(result.stdout).toContain(`  → ${cloneUnversioned} (already installed; version unknown)`);
+    expect(result.stdout).toContain(`  → ${registryUnversioned} (already installed; version unknown)`);
+    expect(result.stdout).toContain('Claude plugins unchanged; 1 plugin(s) have a newer version available.');
+    const log = readFileSync(calls, 'utf8');
+    expect(log).not.toMatch(/claude plugin (install|update) /);
+    expect(log).not.toContain('claude plugin marketplace update');
+  }, 30_000);
+
+  // An update run must still update a plugin whose version is unknown on one side, and
+  // the line it prints must not carry a blank version or an arrow with nothing after it.
+  test('updates a plugin with an unknown version and prints no blank version', () => {
+    const [cloneUnversioned, registryUnversioned] = SUB_PLUGINS;
+    const { home, calls, env } = fixture({ withClaude: true });
+    seedPluginState(home, { market: MARKET, registry: { ...MARKET, xm: '0.1.0' } });
+    dropVersion(home, { market: [cloneUnversioned], registry: [registryUnversioned] });
+
+    const result = spawnSync('bash', [SCRIPT, '--yes'], { cwd: home, env, encoding: 'utf8', timeout: 60_000 });
+    if (result.status !== 0) throw new Error(`stdout:\n${result.stdout}\nstderr:\n${result.stderr}`);
+
+    expect(result.stdout).toContain(`  → ${cloneUnversioned} (update from ${MARKET[cloneUnversioned]})`);
+    expect(result.stdout).toContain(`  → ${registryUnversioned} (update)`);
+    const log = readFileSync(calls, 'utf8');
+    expect(log).toContain(`claude plugin update ${cloneUnversioned}@xm -s user`);
+    expect(log).toContain(`claude plugin update ${registryUnversioned}@xm -s user`);
   }, 30_000);
 });
