@@ -3,6 +3,7 @@ name: probe
 description: Premise validation — challenge assumptions, kill bad ideas early, earn the right to build
 allowed-tools:
   - AskUserQuestion
+  - Read(/${CLAUDE_SKILL_DIR}/**)
 ---
 
 <Purpose>

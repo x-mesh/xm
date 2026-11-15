@@ -113,11 +113,14 @@ export function renderCodexIndex(skills) {
 /** Render one Codex-native SKILL.md. */
 export function renderCodexSkill(skill, ctx, name = skill.skillName) {
   const description = codexDescription(skill.description, `xm ${skill.skillName}`);
+  // A rule that names a Claude Code path variable (the skill-directory read
+  // pre-approval) resolves only inside Claude Code, so Codex does not get it.
+  const tools = (skill.allowedTools ?? []).filter((tool) => !tool.includes('${CLAUDE_'));
   const head = [
     '---',
     `name: ${name}`,
     `description: ${JSON.stringify(description)}`,
-    ...(skill.allowedTools?.length ? ['allowed-tools:', ...skill.allowedTools.map((tool) => '  - ' + tool)] : []),
+    ...(tools.length ? ['allowed-tools:', ...tools.map((tool) => '  - ' + tool)] : []),
     '---',
     '',
   ].join('\n');

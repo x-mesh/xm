@@ -1,6 +1,7 @@
 ---
 name: agent
 description: Agent primitives and autonomous behaviors — fan-out, delegate, broadcast, research, solve, consensus, swarm for Claude Code native multi-agent orchestration
+allowed-tools: Read(/${CLAUDE_SKILL_DIR}/**)
 ---
 
 <Purpose>
@@ -61,7 +62,6 @@ Developer mode: terse, lead with the result, no 권고형 결말 pile-up ("~해�
 Easy/normal mode: accessible Korean — polite guidance (~해 보세요); keep commands/flags/proper-nouns in English, write domain terms as Korean(original) on first use; universal rules still apply.
 
 ## Arguments
-
 User provided: $ARGUMENTS
 
 ## Routing

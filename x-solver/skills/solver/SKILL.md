@@ -3,6 +3,7 @@ name: solver
 description: Structured problem solving and bug diagnosis — iterate (reproduce → diagnose → hypothesize → falsify → fix → prove), decompose, or constrain; classify routes between them
 allowed-tools:
   - AskUserQuestion
+  - Read(/${CLAUDE_SKILL_DIR}/**)
 ---
 
 <Purpose>

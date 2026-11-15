@@ -58,11 +58,9 @@ describe('humanize skill execution contract', () => {
   });
 
   test('ui mode takes a screen in a codebase and answers with a report', () => {
-    const wrapper = readFileSync(join(REPO, 'x-humanize', 'commands', 'humanize.md'), 'utf8');
-    expect(wrapper).toContain('is `ui` mode even without the token');
-    expect(wrapper).toContain('a report that opens by stating that no file was changed');
-    expect(wrapper).toContain('apply only the edits you already showed');
-    expect(readFileSync(join(REPO, 'xm', 'commands', 'humanize.md'), 'utf8')).toBe(wrapper);
+    expect(source).toContain('Without the token, enter it when');
+    expect(source).toContain('or when the request names a screen, a feature, or UI source files in a codebase');
+    expect(source).toContain('without saying that no file was changed');
 
     expect(source).toContain('2. **Load the glossary and build the term inventory**');
     expect(source).toContain('Do not pick suspects out of a context-free list of strings.');
@@ -74,6 +72,7 @@ describe('humanize skill execution contract', () => {
     for (const heading of ['## Input from a codebase', '## Term inventory', '## Report for file or screen input', '## Applying to files']) {
       expect(meaning).toContain(heading);
     }
+    expect(meaning).toContain('Apply the edits the report showed, as shown.');
     expect(meaning).toContain('| M-6 |');
     expect(meaning.indexOf('## Term inventory')).toBeLessThan(meaning.indexOf('## M rules — meaning'));
 

@@ -77,8 +77,8 @@ function readStdin() {
 function findSourcePath(rel, projectRoot) {
   // xm/commands/<name>.md — mirrored from x-<name>/commands/<name>.md by
   // sync-bundle.sh. Only plugin-sourced commands are protected; xm-native
-  // commands (handoff/handon/init/kit/ship/sync/xm) have no x-<name> source,
-  // so the existence check below leaves them directly editable.
+  // commands (init/xm/xm-plan) have no x-<name> source, so the existence
+  // check below leaves them directly editable.
   // xm/commands/<basename>.md — sync-bundle.sh mirrors all x-*/commands/*.md
   // wholesale. Protect the bundle copy whenever any x-<plugin>/commands/<basename>.md
   // source exists (filename need not equal the plugin name, covering future cases).

@@ -1,6 +1,7 @@
 ---
 name: kit
 description: x-mesh toolkit — list available tools and their status
+allowed-tools: Read(/${CLAUDE_SKILL_DIR}/**)
 ---
 
 <Purpose>

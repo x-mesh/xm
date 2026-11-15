@@ -271,7 +271,7 @@ Bump type rules:
 | Bug fix, internal refactor | patch |
 | New command/feature/export | minor |
 | Breaking change (removed export) | major |
-| Explicit in `$ARGUMENTS` | use that |
+| Explicit in the user's arguments | use that |
 
 ---
 

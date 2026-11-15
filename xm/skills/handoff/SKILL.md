@@ -85,20 +85,20 @@ Build the CLI command:
 > **Fallback** (only when `xm` is not in PATH):
 > ```bash
 > XMB_CLI=$(ls -d ~/.claude/plugins/cache/xm/{build,xm}/*/lib/x-build-cli.mjs 2>/dev/null | sort -V | tail -1)
-> node "$XMB_CLI" handoff --full --sync --narrative-json '<JSON>' "$ARGUMENTS"
+> node "$XMB_CLI" handoff --full --sync --narrative-json '<JSON>' '<why_stopped>'
 > ```
 
 ```bash
 xm build handoff --full --sync \
   --narrative-json '{"intent":"...","open_questions":[...],"rejected_alternatives":[...],"next_session_should_know":[...],"memory_refs":[{"id":"837fbc8a-9834-4a4a-8506-c6998ba62e65","reason":"latest remote handoff"}],"session_log":{"rejected":[...],"open_forks":[...],"constraints_prefs":[...],"attempts":[...]}}' \
-  "$ARGUMENTS"
+  '<why_stopped>'
 ```
 
 `session_log` is optional — omit the key entirely for a trivial session. When present, the CLI persists it into SESSION-STATE.json; `handon --json` strips it to a count so it never bloats a restore. A rich HANDOFF.summary.md can be materialized from the canonical JSON with `xm recall handoff-md`.
 
 `--sync` pushes only `.xm/build/SESSION-STATE.json` to the x-sync server after the save (a partial push: it deletes nothing remotely), so another machine's `/xm:handon` can restore it. The CLI prints exactly one `🔄 sync:` line: `pushed`, `not configured`, `unavailable (x-sync not installed)`, or `FAILED (<error>)`. A failure never fails the handoff. Always pass the flag; plain CLI runs stay offline on purpose.
 
-`$ARGUMENTS` is used as the `why_stopped` reason. If empty, auto-generates from the last commit message.
+`<why_stopped>` is the text the user passed to this skill, used as the `why_stopped` reason. Pass it as one single-quoted argument and escape any single quote inside as `'\''`; never paste it unquoted. If the user passed nothing, pass `''` and the CLI generates the reason from the last commit message.
 
 **JSON escaping**: pass the narrative as a single-quoted shell argument so double-quoted JSON strings inside don't conflict with the shell. Escape any literal single quotes inside string values as `'\''`.
 

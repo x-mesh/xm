@@ -2,6 +2,7 @@
 name: trace
 description: Agent execution tracing — timeline, token/cost tracking, replay, and diff for multi-agent observability
 model: sonnet
+allowed-tools: Read(/${CLAUDE_SKILL_DIR}/**)
 ---
 
 <Purpose>
@@ -176,7 +177,7 @@ The ledger is honest about its blind spots: it only knows about activity that ra
 | Mutating `xm <plugin> <cmd>` (e.g. `xm build tasks update`) | ✅ as `dispatcher` | The dispatcher's EXIT trap records after every mutating command. |
 | Explicit `xm trace record <tool>` | ✅ as `<tool>` | Direct ledger write — e.g. x-review's mandatory record contract. |
 | Read-only / meta `xm` commands (`help`, `version`, `last`, `status`, `trace`, `dashboard`, `init`, `update`, `doctor`, `which`) | ❌ | Deliberately excluded — no mutating activity to attribute. |
-| Read-only sub-ops (`… list` / `… get` / `… show`) | ❌ | Excluded at the `$1`/`$2` verb position to avoid logging queries. |
+| Read-only sub-ops (`… list` / `… get` / `… show`) | ❌ | Excluded by the verb in the first or second argument to avoid logging queries. |
 | Direct `node x-*-cli.mjs …` (bypassing `xm`) | ❌ | Skips the dispatcher EXIT trap entirely. |
 | LLM-only skill reasoning with no CLI call (an x-op strategy, x-review's analysis) | ❌ unless it calls `xm trace record` | Nothing runs through the dispatcher. |
 | `session_start` / `session_end` in `.xm/traces/` | ✅ (traces) | Written by the trace-session hook; `doctor --rebuild` can reconstruct `last.json` from the git-bearing ones. |
@@ -309,8 +310,8 @@ Budget is read from `budget.max_usd` in `.xm/config.json`. No alerts if unset.
 
 Automatic cost summary on session end:
 ```
-📊 Session cost: $0.42 (input: 180K, output: 45K tokens)
-   Budget: $0.42 / $5.00 (8.4%)
+📊 Session cost: $X (input: 180K, output: 45K tokens)
+   Budget: $X / $Y (8.4%)
 ```
 
 ---

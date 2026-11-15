@@ -90,8 +90,8 @@ remove_obsolete_file() {
 # Additive is correct in exactly one situation: several sources fan into one
 # destination, so no single source can be treated as authoritative. The only
 # such case is xm/commands/, which every plugin contributes to and which also
-# holds xm-native commands (handoff, handon, init, kit, ship, sync, xm) that
-# have no x-<plugin> source at all — a removal pass there would delete them.
+# holds xm-native commands (init, xm, xm-plan) that have no x-<plugin> source
+# at all — a removal pass there would delete them.
 #
 # Everywhere else the source IS authoritative, and additive copying silently
 # ships files the plugin renamed or deleted: sync-bundle regenerates
@@ -161,9 +161,11 @@ done
 echo ""
 echo "=== Syncing plugin commands into bundle ==="
 # Every plugin's commands/*.md → xm/commands/. ADDITIVE: xm-native commands
-# (handoff/handon/init/kit/ship/sync/xm) have no x-<plugin> source and are left
-# untouched. Mirror wholesale (no hardcoded plugin list) so a new plugin's
-# command — e.g. panel.md, recall.md — ships into the bundle automatically (L8).
+# (init/xm/xm-plan) have no x-<plugin> source and are left untouched. Mirror
+# wholesale (no hardcoded plugin list) so a plugin command ships into the bundle
+# automatically (L8). No plugin has a commands/ directory at present: a command
+# named like a skill shadows that skill in Claude Code, so skills load directly
+# (test/skill-direct-load.test.mjs).
 shopt -s nullglob
 for cmddir in x-*/commands; do
   mirror_md_fanin "$cmddir" "xm/commands"

@@ -4,6 +4,7 @@ description: Structured retrospective — reflect on failures together, find roo
 model: sonnet
 allowed-tools:
   - AskUserQuestion
+  - Read(/${CLAUDE_SKILL_DIR}/**)
 ---
 
 <Purpose>

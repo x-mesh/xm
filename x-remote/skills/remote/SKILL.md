@@ -2,6 +2,7 @@
 name: remote
 description: Discord에서 Linux host의 managed Claude/Codex session을 모니터링하고 steer/interrupt/decision 입력을 전달한다
 model: sonnet
+argument-hint: gateway|host|run|sessions|steer|interrupt|resume
 allowed-tools:
   - Bash
 ---
@@ -21,6 +22,8 @@ term-mesh 없이 원격 Linux host에서 x-kit이 시작한 Claude/Codex session
 - x-remote가 직접 시작한 managed session만 제어한다. 기존 tmux/shell process는 adopt하지 않는다.
 
 ## Commands
+
+Run the `xm remote` command that matches the user's arguments.
 
 ```bash
 xm remote                         # interactive menu

@@ -95,7 +95,7 @@ the mode: global options may appear before or after it.
 | `voice <file>` | Voice calibration — use `<file>` as style sample, then process the rest |
 | `--lang en` / `--lang ko` | Force language (auto-detected otherwise); accepted anywhere before the target |
 
-If `$ARGUMENTS` is empty, ask the user to paste text or specify a file.
+If the user passed no arguments, ask the user to paste text or specify a file.
 
 ### Argument parsing contract
 

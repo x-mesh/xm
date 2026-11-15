@@ -66,4 +66,12 @@ describe('xm plan dispatch and packaging', () => {
     const plan = rendered.outputs.find((item) => item.relativePath.endsWith('plugins/xm/skills/plan/SKILL.md'));
     expect(plan.content).toContain('allowed-tools:\n  - AskUserQuestion');
   });
+  test('Codex renderer drops the Claude Code skill-directory read rule', () => {
+    const skills = scanAll({ skillsDir: join(ROOT, 'xm', 'skills'), libDir: join(ROOT, 'xm', 'lib') });
+    expect(skills.find((skill) => skill.skillName === 'op').allowedTools).toContain('Read(/${CLAUDE_SKILL_DIR}/**)');
+    const rendered = renderCodexWithDiagnostics(skills, { scope: 'local', installRoot: ROOT, pluginVersion: '0.0.0' });
+    const op = rendered.outputs.find((item) => item.relativePath.endsWith('plugins/xm/skills/op/SKILL.md'));
+    expect(op.content).toContain('allowed-tools:\n  - AskUserQuestion\n---');
+    for (const item of rendered.outputs) expect(item.content.split('\n---\n')[0], item.relativePath).not.toContain('${CLAUDE_');
+  });
 });

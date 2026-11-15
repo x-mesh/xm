@@ -3,6 +3,7 @@ name: build
 description: Repository-grounded adaptive execution with deterministic quality gates; planning and legacy orchestration are paid for only when needed
 allowed-tools:
   - AskUserQuestion
+  - Read(/${CLAUDE_SKILL_DIR}/**)
 ---
 
 # x-build — Evidence → Route → Native Execute
@@ -222,7 +223,7 @@ legacy CLI의 정확한 명령과 JSON contract가 필요할 때만 다음 문�
 
 ## Codex Runtime Mapping
 
-- `$ARGUMENTS`는 현재 skill mention 뒤의 사용자 입력입니다.
+- 사용자 입력은 현재 skill mention 뒤에 오는 텍스트입니다.
 - Default Workflow 실행은 Codex native subagent 또는 `codex exec`를 사용합니다.
 - plan은 x-plan skill을 사용하고, legacy CLI는 `xm build <command>`를 그대로 호출합니다.
 - user-owned blocker, 방향 승인과 모델 확인만 structured user-input을 사용합니다. 모델 확인은 `route confirm --host codex`로 확정하며, 사람이 답할 수 없는 비대화형 실행(`codex exec`)에서만 `--source default`를 씁니다.
