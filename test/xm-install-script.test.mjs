@@ -1,5 +1,5 @@
 import { describe, test, expect } from 'bun:test';
-import { chmodSync, existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
+import { chmodSync, cpSync, existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, rmSync, symlinkSync, writeFileSync } from 'node:fs';
 import { dirname, join } from 'node:path';
 import { tmpdir } from 'node:os';
 import { spawnSync } from 'node:child_process';
@@ -306,5 +306,30 @@ describe('xm install.sh', () => {
     expect(result.stderr).toContain('Claude plugins did not reach the marketplace version:');
     expect(result.stderr).toContain(`xm 0.1.0 (expected ${VERSION})`);
     expect(result.stdout).not.toContain('Claude plugins are ready');
+  }, 30_000);
+
+  // With no plugin named anywhere the plan has zero lines: the planner lists nothing and the
+  // fallback has no names to walk. Nothing was compared or installed, yet the script printed
+  // "already current" right after its own "could not compare" warning.
+  test('fails when neither the marketplace nor its clone names a plugin', () => {
+    const { home, calls, env } = fixture({ withClaude: true });
+    // install.sh takes its repo root from its own location, so it runs from a checkout
+    // whose marketplace.json lists no plugin. The rest of the bundle links to the real one.
+    const checkout = join(home, 'checkout');
+    mkdirSync(join(checkout, 'xm'), { recursive: true });
+    mkdirSync(join(checkout, '.claude-plugin'), { recursive: true });
+    for (const entry of readdirSync(join(REPO, 'xm'))) {
+      if (entry === 'scripts') cpSync(join(REPO, 'xm', entry), join(checkout, 'xm', entry), { recursive: true });
+      else symlinkSync(join(REPO, 'xm', entry), join(checkout, 'xm', entry));
+    }
+    writeFileSync(join(checkout, 'package.json'), JSON.stringify({ version: VERSION }));
+    writeFileSync(join(checkout, '.claude-plugin', 'marketplace.json'), JSON.stringify({ name: 'xm', plugins: [] }));
+
+    const result = spawnSync('bash', [join(checkout, 'xm', 'scripts', 'install.sh'), '--yes'], { cwd: home, env, encoding: 'utf8', timeout: 60_000 });
+
+    expect(result.stdout).not.toContain('Claude plugins are already current');
+    expect(result.stderr).toContain('No xm plugin list was available');
+    expect(result.status).toBe(1);
+    expect(readFileSync(calls, 'utf8')).not.toMatch(/claude plugin (install|update) /);
   }, 30_000);
 });

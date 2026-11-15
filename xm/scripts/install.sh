@@ -285,10 +285,12 @@ if command -v claude >/dev/null 2>&1; then
   CURRENT=0
   HELD=0
   CHANGED=0
+  PLANNED=0
   # Sequential on purpose: `claude plugin install/update` rewrites the whole
   # installed_plugins.json without a lock, so concurrent calls lose entries.
   while IFS='|' read -r action plugin from to; do
     [ -n "$plugin" ] || continue
+    PLANNED=$((PLANNED + 1))
     case "$action" in
       current)
         CURRENT=$((CURRENT + 1))
@@ -329,6 +331,14 @@ PLAN
 
   if [ "$CURRENT" -gt 0 ]; then
     info "  $CURRENT plugin(s) already at the marketplace version; skipped."
+  fi
+
+  # Zero plan lines means no plugin was named by the fetched marketplace or by the
+  # local clone, so the fallback above had nothing to walk either. Nothing was
+  # compared or installed, and "already current" below would be a false success.
+  if [ "$PLANNED" = "0" ]; then
+    CLAUDE_INCOMPLETE=1
+    error "No xm plugin list was available from the marketplace or its local clone; no plugin was installed or checked."
   fi
 
   # `claude plugin update` can exit 0 without moving a plugin, so judge the
