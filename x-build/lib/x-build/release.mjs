@@ -31,7 +31,7 @@ const PLUGIN_DIRS = [
   'x-build', 'x-agent', 'x-op', 'x-solver', 'x-review',
   'x-trace', 'x-memory', 'x-eval', 'x-probe', 'x-humble',
   'x-dashboard', 'x-humanize', 'xm', 'x-sync', 'x-ship', 'x-recall', 'x-panel',
-  'x-wt', 'x-plan',
+  'x-wt', 'x-plan', 'x-remote',
 ];
 
 // Maps source directory name → marketplace plugin name (xm namespace, no x- prefix)
@@ -41,6 +41,7 @@ const PLUGIN_NAME_MAP = {
   'x-probe': 'probe', 'x-humble': 'humble', 'x-dashboard': 'dashboard',
   'x-humanize': 'humanize', 'xm': 'xm', 'x-sync': 'sync', 'x-ship': 'ship',
   'x-recall': 'recall', 'x-panel': 'panel', 'x-wt': 'wt', 'x-plan': 'plan',
+  'x-remote': 'remote',
 };
 
 // ── Helpers ───────────────────────────────────────────────────────────
