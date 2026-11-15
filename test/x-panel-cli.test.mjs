@@ -1995,13 +1995,19 @@ If there are no real issues, return {"checked":["concrete behavior inspected"],"
   });
 
   test('panel detect --auth narrows available to authenticated providers', () => {
-    // Only claude+codex are stubbed (assumed ready); the rest aren't overridden,
-    // so --auth must still surface at least the two ready ones.
-    const r = panelRaw(['detect', '--auth', '--json']);
+    // Override every provider so no real auth-status command runs. On a machine with
+    // cursor-agent and kiro-cli installed, those commands took about 5 s together under
+    // the isolated test HOME, which is the whole test timeout.
+    // claude+codex are stubs (assumed ready), kiro is a stub marked not authenticated,
+    // agy and cursor point at a missing path (not installed).
+    const r = panelRaw(['detect', '--auth', '--json'], {
+      X_PANEL_CMD_KIRO: STUB, X_PANEL_STUB_UNREADY_KIRO: '1',
+      X_PANEL_CMD_AGY: '/x-panel-noexist-cli', X_PANEL_CMD_CURSOR: '/x-panel-noexist-cli',
+    });
     expect(r.status).toBe(0);
     const info = JSON.parse(r.stdout);
-    expect(info.available).toContain('claude');
-    expect(info.available).toContain('codex');
+    expect(info.available).toEqual(['claude', 'codex']);
+    expect(info.known).toEqual(['claude', 'codex', 'agy', 'cursor', 'kiro']);
   });
 
   const ALL_STUB = { X_PANEL_CMD_AGY: STUB, X_PANEL_CMD_CURSOR: STUB, X_PANEL_CMD_KIRO: STUB };
