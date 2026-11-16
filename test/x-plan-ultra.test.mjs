@@ -39,6 +39,40 @@ describe('ultra synthesis', () => {
     expect(out.plan.executable).toBe(false);
     expect(out.plan.disagreements).toEqual(plan.disagreements);
   });
+  const REDOS = { mode: 'nested quantifiers backtrack on a 100k-char input', mitigation: 'reject input over 10k chars', verification: 'stress test finishes under 100ms' };
+  test('carries failure modes to the merged requirement id, not the candidate id', () => {
+    const parser = candidate('G', 'Parse user input', 'Task B');
+    parser.requirements[0].id = 'R5';
+    parser.tasks[0].requirement_refs = ['R5'];
+    parser.failure_modes = [{ requirement_ref: 'R5', ...REDOS }];
+    const out = synthesizePlanCandidates([{ source: 'm1', ok: true, plan: candidate('G', 'Render the summary', 'Task A') }, { source: 'm2', ok: true, plan: parser }]);
+    expect(out.ok, JSON.stringify(out.errors)).toBe(true);
+    expect(out.plan.requirements.find((item) => item.text === 'Parse user input').id).toBe('R2');
+    expect(out.plan.failure_modes).toEqual([{ requirement_ref: 'R2', ...REDOS }]);
+    expect(out.warnings.map((item) => item.code)).not.toContain('plan.failure_modes_missing');
+  });
+  test('keeps one copy of a failure mode that two candidates both enumerate', () => {
+    const plans = ['Task A', 'Task B'].map((task) => ({ ...candidate('G', 'Parse user input', task), failure_modes: [{ requirement_ref: 'R1', ...REDOS }] }));
+    const out = synthesizePlanCandidates(plans.map((plan, index) => ({ source: 'm' + index, ok: true, plan })));
+    expect(out.plan.failure_modes).toEqual([{ requirement_ref: 'R1', ...REDOS }]);
+  });
+  test('an enumerated failure mode wins over another candidate waiving the same requirement', () => {
+    const waived = { ...candidate('G', 'Parse user input', 'Task A'), failure_modes: [{ requirement_ref: 'R1', mode: 'none — fixed enum input', mitigation: '', verification: '' }] };
+    const defended = { ...candidate('G', 'Parse user input', 'Task B'), failure_modes: [{ requirement_ref: 'R1', ...REDOS }] };
+    const out = synthesizePlanCandidates([{ source: 'm1', ok: true, plan: waived }, { source: 'm2', ok: true, plan: defended }]);
+    expect(out.ok).toBe(true);
+    expect(out.plan.failure_modes).toEqual([{ requirement_ref: 'R1', ...REDOS }]);
+    const recorded = out.plan.disagreements.find((item) => item.topic === 'failure_mode:R1');
+    expect(recorded.positions).toEqual(['none — fixed enum input', REDOS.mode]);
+    expect(recorded.resolution).not.toBe('unresolved');
+    expect(out.plan.executable).toBe(true);
+  });
+  test('a waiver that no candidate contradicts is kept', () => {
+    const waived = { ...candidate('G', 'Parse user input', 'Task A'), failure_modes: [{ requirement_ref: 'R1', mode: 'none — fixed enum input', mitigation: '', verification: '' }] };
+    const out = synthesizePlanCandidates([{ source: 'm1', ok: true, plan: waived }, { source: 'm2', ok: true, plan: candidate('G', 'Parse user input', 'Task B') }]);
+    expect(out.plan.failure_modes).toEqual([{ requirement_ref: 'R1', mode: 'none — fixed enum input', mitigation: '', verification: '' }]);
+    expect(out.plan.disagreements.some((item) => item.topic.startsWith('failure_mode:'))).toBe(false);
+  });
   test('fails when no candidate validates', () => expect(synthesizePlanCandidates([{ source: 'x', ok: false }]).error).toBe('no_valid_candidates'));
   test('assigns roles stably and runs an offline backend', async () => {
     expect(assignUltraRoles(['a', 'b', 'c', 'd']).map((x) => x.role)).toEqual(['architect', 'implementer', 'critic', 'architect']);

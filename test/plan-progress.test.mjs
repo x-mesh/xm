@@ -1,5 +1,6 @@
 import { describe, expect, test } from 'bun:test';
 import { spawnSync } from 'node:child_process';
+import { createHash } from 'node:crypto';
 import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { tmpdir } from 'node:os';
@@ -102,6 +103,35 @@ describe('xm build progress', () => {
       writeFileSync(join(cwd, 'src', 'a.txt'), 'changed\n');
       expect(statuses(cwd).A).toBe('changed_after_verification');
       expect(tasksMd(cwd)).toContain('- [ ] A Implement API');
+    } finally { rmSync(cwd, { recursive: true, force: true }); }
+  });
+
+  test('a task verify command runs before the plan-wide commands and decides the task', () => {
+    const plan = envelope();
+    plan.tasks[0].verify_commands = ['test -f src/a.marker'];
+    const cwd = setup(plan);
+    try {
+      const started = progress(cwd, 'start', 'A');
+      expect(JSON.parse(started.stdout).verify_commands).toEqual(['test -f src/a.marker', 'true']);
+      writeFileSync(join(cwd, 'src', 'a.txt'), 'a\n');
+      const failed = progress(cwd, 'verify', 'A');
+      expect(failed.code).toBe(2);
+      expect(JSON.parse(failed.stdout)).toMatchObject({ status: 'failed', failed_command: 'test -f src/a.marker' });
+      writeFileSync(join(cwd, 'src', 'a.marker'), 'ok\n');
+      expect(progress(cwd, 'verify', 'A').code).toBe(0);
+      expect(tasksMd(cwd)).toContain('  - Verify: test -f src/a.marker');
+      // B declares none, so it still verifies against the plan-wide commands alone.
+      expect(JSON.parse(progress(cwd, 'start', 'B').stdout).verify_commands).toEqual(['true']);
+    } finally { rmSync(cwd, { recursive: true, force: true }); }
+  });
+
+  test('a task without verify commands keeps the hash it had before the field existed', () => {
+    const cwd = setup();
+    try {
+      expect(progress(cwd, 'start', 'A').code).toBe(0);
+      const stored = JSON.parse(readFileSync(join(cwd, '.xm', 'plan', RUN, 'progress.json'), 'utf8')).tasks.A.task_hash;
+      const before = { id: 'A', title: 'Implement API', depends_on: [], requirement_refs: ['R1'], expected_files: ['src/a.txt'], done_criteria: ['A exists'] };
+      expect(stored).toBe(createHash('sha256').update(JSON.stringify(before)).digest('hex'));
     } finally { rmSync(cwd, { recursive: true, force: true }); }
   });
 

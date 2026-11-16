@@ -717,7 +717,9 @@ describe('adaptive runtime routing', () => {
       module.recordAdaptiveDecision(decision);
       module.startAdaptiveRun({
         decision_id: decision.decision_id, cwd, expected_files: ['src/value.mjs'],
-        gate_commands: ['test=node --check src/value.mjs', 'boundary=touch gate-side-effect.txt'],
+        // Writes only once the change is in: route start refuses a gate that writes during the
+        // baseline run, so the side effect has to first appear at verify for verify to see it.
+        gate_commands: ['test=node --check src/value.mjs', 'boundary=if grep -q "value = 2" src/value.mjs; then touch gate-side-effect.txt; fi'],
       });
       writeFileSync(join(cwd, 'src', 'value.mjs'), 'export const value = 2;\n');
       const receipt = module.verifyAdaptiveRun({ decision_id: decision.decision_id });

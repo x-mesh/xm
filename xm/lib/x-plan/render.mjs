@@ -14,6 +14,7 @@ export function renderPlan(plan, { artifactPath = null } = {}) {
     sections.push('### Alternatives', list(plan.decision.alternatives.map((item) => item.name + ': ' + item.rejected_because)));
   }
   sections.push('## Requirements', list(plan.requirements.map((item) => '[' + item.id + '] (' + item.priority + ') ' + item.text)));
+  if (plan.out_of_scope?.length) sections.push('## Out of scope', list(plan.out_of_scope));
   if (plan.assumptions.length) {
     sections.push('## Assumptions', list(plan.assumptions.map((item) => '[' + item.id + '] ' + item.text + ' (' + item.confidence + ')' + (item.evidence ? ' — ' + item.evidence : ''))));
   }
@@ -28,6 +29,7 @@ export function renderPlan(plan, { artifactPath = null } = {}) {
       if (task.depends_on.length) details.push('  - Depends on: ' + task.depends_on.join(', '));
       if (task.expected_files.length) details.push('  - Files: ' + task.expected_files.join(', '));
       details.push('  - Done when: ' + task.done_criteria.join('; '));
+      if (task.verify_commands?.length) details.push('  - Verify: ' + task.verify_commands.join('; '));
       sections.push(details.join('\n'));
     }
   }
@@ -48,7 +50,18 @@ export function renderPlan(plan, { artifactPath = null } = {}) {
   return sections.join('\n\n') + '\n';
 }
 
+function warningLines(warnings) {
+  return (warnings || []).map((entry) => '- [' + entry.code + '] ' + entry.path + ': ' + entry.message);
+}
+
+export function renderWarnings(warnings) {
+  const lines = warningLines(warnings);
+  return lines.length ? '\n## Warnings\n\n' + lines.join('\n') + '\n' : '';
+}
+
 export function renderValidation(result) {
-  if (result.valid) return 'PlanEnvelope is valid. Executable: ' + (result.value.executable ? 'yes' : 'no') + '\n';
-  return ['PlanEnvelope is invalid.', ...result.errors.map((entry) => '- [' + entry.code + '] ' + entry.path + ': ' + entry.message)].join('\n') + '\n';
+  const lines = warningLines(result.warnings);
+  const warnings = lines.length ? 'Warnings:\n' + lines.join('\n') + '\n' : '';
+  if (result.valid) return 'PlanEnvelope is valid. Executable: ' + (result.value.executable ? 'yes' : 'no') + '\n' + warnings;
+  return ['PlanEnvelope is invalid.', ...result.errors.map((entry) => '- [' + entry.code + '] ' + entry.path + ': ' + entry.message)].join('\n') + '\n' + warnings;
 }

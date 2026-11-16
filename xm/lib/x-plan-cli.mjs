@@ -7,7 +7,7 @@ import { join, resolve } from 'node:path';
 import { isMainModule } from './is-main-module.mjs';
 import { savePlanArtifact } from './x-plan/artifact.mjs';
 import { createPlanEnvelope, parsePlanEnvelope, validatePlanEnvelope } from './x-plan/core.mjs';
-import { renderPlan, renderValidation } from './x-plan/render.mjs';
+import { renderPlan, renderValidation, renderWarnings } from './x-plan/render.mjs';
 import { runUltraPlan } from './x-plan/ultra.mjs';
 import { recommendPlanMode } from './x-plan/selection.mjs';
 
@@ -88,7 +88,7 @@ function emitPlan(plan, validation, flags, extra = {}) {
       candidates: extra.candidates || [], sessionId: flags.session,
     });
     if (flags.json) output({ ...(artifact?.plan || plan), artifact_path: artifact?.relativePath || null, validation_result: validation }, flags.pretty);
-    else process.stdout.write(renderPlan(artifact?.plan || plan, { artifactPath: artifact?.relativePath || null }));
+    else process.stdout.write(renderPlan(artifact?.plan || plan, { artifactPath: artifact?.relativePath || null }) + renderWarnings(validation.warnings));
     return true;
   } catch (error) {
     reportError(flags, 'plan.persist', error.message);
@@ -142,7 +142,7 @@ export async function main(argv = process.argv.slice(2), stdin = null) {
       else reportError(flags, 'plan.ultra', ultra.error || 'ultra planning failed');
       return 1;
     }
-    if (!emitPlan({ ...ultra.plan, provenance: { ...ultra.plan.provenance, candidates: ultra.candidates } }, { valid: true, errors: [], warnings: [] }, flags, { candidates: ultra.rawCandidates })) return 1;
+    if (!emitPlan({ ...ultra.plan, provenance: { ...ultra.plan.provenance, candidates: ultra.candidates } }, { valid: true, errors: [], warnings: ultra.warnings || [] }, flags, { candidates: ultra.rawCandidates })) return 1;
     return 0;
   }
   if (flags.mode === 'standard') {

@@ -119,6 +119,7 @@ function renderTasks(session, summary) {
     if (task.depends_on.length) lines.push('  - Depends on: ' + task.depends_on.join(', '));
     if (task.expected_files.length) lines.push('  - Files: ' + task.expected_files.join(', '));
     lines.push('  - Done when: ' + task.done_criteria.join('; '));
+    if (task.verify_commands?.length) lines.push('  - Verify: ' + task.verify_commands.join('; '));
   }
   return lines.join('\n') + '\n';
 }
@@ -143,6 +144,12 @@ function requireExecutable(session) {
   if (!session.plan.validation.commands.length) fail('plan has no validation.commands to verify against');
 }
 
+// The task's own commands run first: they observe this task's criteria, while the plan-wide
+// commands only show that nothing else broke.
+function verifyCommands(session, task) {
+  return [...(task.verify_commands || []), ...session.plan.validation.commands];
+}
+
 function cmdStart(args, json) {
   return loadSession(args).then((session) => {
     requireExecutable(session);
@@ -157,7 +164,7 @@ function cmdStart(args, json) {
       return next;
     });
     writeTasks(session);
-    const commands = session.plan.validation.commands;
+    const commands = verifyCommands(session, task);
     if (json) console.log(JSON.stringify({ status: 'started', plan_id: session.runId, task: task.id, verify_commands: commands }, null, 2));
     else {
       console.log('Started ' + task.id + ' ' + task.title);
@@ -181,7 +188,7 @@ async function cmdVerify(args, json) {
   const current = hashFiles(session.root, task.expected_files);
   if (!task.expected_files.some((file) => current[file] !== record.baseline_files[file])) fail('no expected file changed since start of ' + task.id);
 
-  const commands = session.plan.validation.commands;
+  const commands = verifyCommands(session, task);
   for (const command of commands) {
     const result = runCommand(session.root, command);
     if (result.status !== 0 || result.error) {
