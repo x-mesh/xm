@@ -60,9 +60,8 @@ export function renderWarnings(warnings) {
 }
 
 export function renderValidation(result) {
-  if (result.valid) {
-    const lines = warningLines(result.warnings);
-    return 'PlanEnvelope is valid. Executable: ' + (result.value.executable ? 'yes' : 'no') + '\n' + (lines.length ? 'Warnings:\n' + lines.join('\n') + '\n' : '');
-  }
-  return ['PlanEnvelope is invalid.', ...result.errors.map((entry) => '- [' + entry.code + '] ' + entry.path + ': ' + entry.message)].join('\n') + '\n';
+  const lines = warningLines(result.warnings);
+  const warnings = lines.length ? 'Warnings:\n' + lines.join('\n') + '\n' : '';
+  if (result.valid) return 'PlanEnvelope is valid. Executable: ' + (result.value.executable ? 'yes' : 'no') + '\n' + warnings;
+  return ['PlanEnvelope is invalid.', ...result.errors.map((entry) => '- [' + entry.code + '] ' + entry.path + ': ' + entry.message)].join('\n') + '\n' + warnings;
 }

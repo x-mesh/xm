@@ -5,7 +5,7 @@
  * both times, and a test added by the change cannot fail before it exists.
  */
 import { afterAll, beforeEach, describe, expect, test } from 'bun:test';
-import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 
@@ -119,6 +119,53 @@ describe('route start baseline gate run', () => {
       expect(receipt.passed).toBe(true);
       expect(receipt.gates.map((gate) => gate.passed_at_baseline)).toEqual([null, null]);
       expect(receipt.gates_passing_before_change).toEqual([]);
+    } finally { rmSync(cwd, { recursive: true, force: true }); }
+  });
+
+  // A gate that rewrites an expected file would otherwise let a run that changed nothing pass
+  // verify, and one that writes an undeclared file would fail it for work nobody did.
+  test.each([
+    ['rewrites an expected file', "test=node -e \"require('fs').writeFileSync('src/value.mjs', 'export const value = 9;\\n')\"", 'src/value.mjs'],
+    ['writes an undeclared file', 'test=echo x > coverage.txt', 'coverage.txt'],
+  ])('start refuses, without a lease, when the baseline run %s', async (_label, gate, file) => {
+    const cwd = fixtureRepo();
+    try {
+      const module = await import('../x-build/lib/x-build/adaptive-routing.mjs');
+      const decision = module.decideAdaptiveRoute(eligible);
+      module.recordAdaptiveDecision(decision);
+      expect(() => module.startAdaptiveRun({ decision_id: decision.decision_id, cwd, expected_files: ['src/value.mjs'], gate_commands: [gate, 'boundary=true'] }))
+        .toThrow(`baseline gate run changed the working tree: ${file}`);
+      expect(existsSync(leaseFile(decision.decision_id))).toBe(false);
+    } finally { rmSync(cwd, { recursive: true, force: true }); }
+  });
+
+  test('start refuses when the baseline run changes a file that was already dirty', async () => {
+    const cwd = fixtureRepo();
+    try {
+      writeFileSync(join(cwd, 'notes.txt'), 'draft\n');
+      const module = await import('../x-build/lib/x-build/adaptive-routing.mjs');
+      const decision = module.decideAdaptiveRoute(eligible);
+      module.recordAdaptiveDecision(decision);
+      expect(() => module.startAdaptiveRun({ decision_id: decision.decision_id, cwd, expected_files: ['src/value.mjs'], gate_commands: ['test=echo more >> notes.txt', 'boundary=true'], allow_dirty: true }))
+        .toThrow('baseline gate run changed the working tree: notes.txt');
+    } finally { rmSync(cwd, { recursive: true, force: true }); }
+  });
+
+  test('the CLI passes --timeout-ms to the baseline gate run', async () => {
+    const cwd = fixtureRepo();
+    try {
+      const module = await import('../x-build/lib/x-build/adaptive-routing.mjs');
+      const cli = join(import.meta.dir, '..', 'x-build', 'lib', 'x-build-cli.mjs');
+      const start = (timeout) => {
+        const decision = module.decideAdaptiveRoute(eligible);
+        module.recordAdaptiveDecision(decision);
+        const args = ['node', cli, 'route', 'start', '--decision-id', decision.decision_id, '--expected-files', 'src/value.mjs', '--gate-cmd', 'test=sleep 1', '--gate-cmd', 'boundary=true', ...(timeout ? ['--timeout-ms', timeout] : [])];
+        const result = Bun.spawnSync(args, { cwd, env: { ...process.env, X_BUILD_ROOT: root }, stdout: 'pipe', stderr: 'pipe' });
+        expect(result.exitCode, new TextDecoder().decode(result.stderr)).toBe(0);
+        return byGate(JSON.parse(new TextDecoder().decode(result.stdout)).baseline_gates).test.passed;
+      };
+      expect(start('100')).toBe(false);
+      expect(start(null)).toBe(true);
     } finally { rmSync(cwd, { recursive: true, force: true }); }
   });
 

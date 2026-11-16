@@ -619,6 +619,18 @@ export function startAdaptiveRun(input) {
   const baselineGates = fallback
     ? previousLease.baseline_gates
     : requiredGates.map((gate) => ({ gate, passed: gatePassed(runGate(cwd, gateCommands[gate], input.timeout_ms)) }));
+  // A gate that writes into the tree would turn the baseline into work nobody did: a rewritten
+  // expected file lets an empty run pass verify, and a new file fails it. Refuse before any lease
+  // exists and leave the files as they are, so the user can see what the gate wrote.
+  if (!fallback) {
+    const changed = new Set(gitStatus(cwd).filter((file) => !baselineDirty.includes(file)));
+    for (const [file, hash] of Object.entries({ ...baselineDirtyHashes, ...baselineHashes })) {
+      if (sha256File(resolve(cwd, file)) !== hash) changed.add(file);
+    }
+    if (changed.size) {
+      throw new Error(`baseline gate run changed the working tree: ${[...changed].sort().join(', ')}; a gate must not write files in the repository, so restore them and start again`);
+    }
+  }
   const lease = {
     schema: 1,
     decision_id: decision.decision_id,

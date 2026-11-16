@@ -112,6 +112,15 @@ describe('validator warnings on text output', () => {
     expect(result.stdout).toContain('[plan.failure_modes_missing]');
   });
 
+  test('--validate prints them for an invalid plan too, after the errors', () => {
+    const result = run(['--validate'], JSON.stringify({ ...risky(), out_of_scope: 'CSV export' }));
+    expect(result.status).toBe(1);
+    expect(result.stdout).toContain('PlanEnvelope is invalid.');
+    expect(result.stdout).toContain('[plan.field_type] out_of_scope');
+    expect(result.stdout).toContain('Warnings:\n- [plan.failure_modes_missing]');
+    expect(result.stdout.indexOf('Warnings:')).toBeGreaterThan(result.stdout.indexOf('[plan.field_type]'));
+  });
+
   test('--persist prints them after the readable plan', () => {
     const dir = mkdtempSync(join(tmpdir(), 'x-plan-warnings-'));
     try {
