@@ -24,6 +24,7 @@ export function synthesizePlanCandidates(candidates, metadata = {}) {
   }
   if (!valid.length) return { ok: false, error: 'no_valid_candidates', candidates: provenance, plan: null };
   const requirements = [], tasks = [], assumptions = [], unresolved = new Set(), disagreements = [], validationRefs = new Set();
+  const failureModes = [], failureModeKeys = new Set();
   const disagreementKeys = new Set();
   const addDisagreement = (item) => {
     const normalized = { ...item, positions: [...item.positions] };
@@ -68,9 +69,25 @@ export function synthesizePlanCandidates(candidates, metadata = {}) {
     }
     for (const assumption of candidate.plan.assumptions) assumptions.push({ ...assumption, id: `A${assumptions.length + 1}` });
     candidate.plan.validation.requirement_refs.map((ref) => reqMap.get(ref)).filter(Boolean).forEach((ref) => validationRefs.add(ref));
+    // A candidate numbers its own requirements, so its reference is remapped to the merged id.
+    for (const mode of candidate.plan.failure_modes) {
+      const entry = { ...mode, requirement_ref: reqMap.get(mode.requirement_ref) || '' };
+      const key = JSON.stringify(entry);
+      if (!failureModeKeys.has(key)) { failureModeKeys.add(key); failureModes.push(entry); }
+    }
     candidate.plan.disagreements.forEach(addDisagreement);
     candidate.plan.unresolved_questions.forEach((item) => unresolved.add(item));
   }
+  // One candidate may waive a requirement ("none — ...") that another defends. Both in one plan
+  // would contradict each other, so the defended reading stays and the waiver is recorded.
+  const isWaiver = (item) => /^none\b/i.test(item.mode);
+  const mergedFailureModes = failureModes.filter((item) => {
+    if (!isWaiver(item)) return true;
+    const defended = failureModes.filter((other) => !isWaiver(other) && other.requirement_ref === item.requirement_ref);
+    if (!defended.length) return true;
+    addDisagreement({ topic: `failure_mode:${item.requirement_ref}`, positions: [item.mode, ...defended.map((other) => other.mode)], resolution: 'kept the enumerated failure mode', confidence: 'medium' });
+    return false;
+  });
   const goals = [...new Set(valid.map((item) => item.plan.goal).filter(Boolean))];
   if (goals.length > 1) addDisagreement({ topic: 'goal', positions: goals, resolution: 'unresolved', confidence: 'low' });
   const decisions = [...new Set(valid.map((item) => item.plan.decision.selected).filter(Boolean))];
@@ -78,7 +95,7 @@ export function synthesizePlanCandidates(candidates, metadata = {}) {
   const plan = normalizePlanEnvelope({
     schema_version: 1, status: unresolved.size || disagreements.some((d) => d.resolution === 'unresolved') ? 'incomplete' : 'complete',
     executable: unresolved.size === 0 && !disagreements.some((d) => d.resolution === 'unresolved') && unverifiedAssumptions({ assumptions }).length === 0,
-    goal: goals[0], requirements, assumptions, out_of_scope: [...new Set(valid.flatMap((item) => item.plan.out_of_scope || []))], decision: { selected: decisions.length === 1 ? decisions[0] : '', alternatives: [] }, tasks,
+    goal: goals[0], requirements, assumptions, failure_modes: mergedFailureModes, out_of_scope: [...new Set(valid.flatMap((item) => item.plan.out_of_scope || []))], decision: { selected: decisions.length === 1 ? decisions[0] : '', alternatives: [] }, tasks,
     steps: topoSteps(tasks),
     validation: { commands: [...new Set(valid.flatMap((item) => item.plan.validation.commands))], requirement_refs: [...validationRefs].sort() }, disagreements, unresolved_questions: [...unresolved],
     provenance: { mode: 'ultra', models: valid.map((item) => item.source), roles: valid.map((item) => item.role), candidate_count: candidates.length, valid_candidate_count: valid.length, ...metadata },

@@ -64,6 +64,59 @@ describe('PlanEnvelope failure modes', () => {
     expect(result.warnings.filter((item) => item.message.includes('R2'))).toEqual([]);
   });
 
+  const flagsR1 = (text) => validatePlanEnvelope(envelope({
+    requirements: [{ id: 'R1', text, priority: 'must' }, { id: 'R2', text: 'Render the summary line', priority: 'must' }],
+  })).warnings.some((item) => item.code === 'plan.failure_modes_missing' && item.message.includes('R1'));
+
+  test.each([
+    'Lock the session file',
+    'Prevent a deadlock between workers',
+    'Unlock the account after ten minutes',
+    'Add OAuth login',
+    'Authorize the admin role',
+    'Check authorization on every request',
+    'Open a WebSocket to the relay',
+    'Enqueue the export job',
+    'Validate user_input before saving',
+    'Invalidate session_cache on logout',
+    'Guard fileLock against reentry',
+    'Call readInput for each line',
+    'Return 401 for unauthorized requests',
+    'Reject unauthenticated requests',
+    'Reject unencrypted connections',
+    'Requeue failed jobs',
+    'Serve uncached responses',
+    'Store sessions in memcached',
+    'Replace the spinlock',
+    'Start a livestream',
+    'Reparse the config',
+    'Guard blockLock against reentry',
+    '사용자 입력을 파싱한다',
+    '인증 흐름을 추가한다',
+  ])('treats "%s" as a risk-domain requirement', (text) => {
+    expect(flagsR1(text)).toBe(true);
+  });
+
+  // Each of these contains a risk stem inside an unrelated word.
+  test.each([
+    'Unblock the release pipeline',
+    'Remove the roadblock',
+    'Use the mainstream option',
+    'Follow the downstream service',
+    'Flag a mismatching header',
+    'Show the author name',
+    'Keep author_name in the header',
+    'Improve the authoring flow',
+    'List all authors',
+    'Add a co-author trailer',
+    'Use sparse checkout',
+    'Follow the upstream branch',
+    'Update the lockfile',
+    'Read the wall clock',
+  ])('does not treat "%s" as a risk-domain requirement', (text) => {
+    expect(flagsR1(text)).toBe(false);
+  });
+
   test('enumeration with a prescription clears the warning', () => {
     const result = validatePlanEnvelope(envelope({ failure_modes: [REDOS] }));
     expect(result.valid).toBe(true);

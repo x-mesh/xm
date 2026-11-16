@@ -1,4 +1,4 @@
-import { ASSUMPTION_CONFIDENCE, PLAN_SCHEMA_VERSION, PLAN_STATUSES, REQUIRED_PLAN_FIELDS, REQUIREMENT_PRIORITIES, RISK_DOMAIN_RE, SAFE_ID_RE, UNVERIFIED_CONFIDENCE } from './schema.mjs';
+import { ASSUMPTION_CONFIDENCE, PLAN_SCHEMA_VERSION, PLAN_STATUSES, REQUIRED_PLAN_FIELDS, REQUIREMENT_PRIORITIES, SAFE_ID_RE, UNVERIFIED_CONFIDENCE, mentionsRiskDomain } from './schema.mjs';
 import { normalizePlanEnvelope } from './normalize.mjs';
 
 /** Assumptions of a normalized plan that nobody checked against a source. */
@@ -126,7 +126,7 @@ export function validatePlanEnvelope(input) {
   if (requestedExecutable) {
     const enumerated = new Set(value.failure_modes.map((item) => item.requirement_ref).filter(Boolean));
     for (const requirement of value.requirements) {
-      if (enumerated.has(requirement.id) || !RISK_DOMAIN_RE.test(requirement.text)) continue;
+      if (enumerated.has(requirement.id) || !mentionsRiskDomain(requirement.text)) continue;
       warnings.push(issue('plan.failure_modes_missing', 'failure_modes', `risk-domain requirement ${requirement.id} has no enumerated failure mode; add one or state "none — <justification>"`));
     }
   }
