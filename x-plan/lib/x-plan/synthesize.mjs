@@ -1,5 +1,5 @@
 import { normalizePlanEnvelope } from './normalize.mjs';
-import { validatePlanEnvelope } from './validate.mjs';
+import { unverifiedAssumptions, validatePlanEnvelope } from './validate.mjs';
 
 function slug(value) { return String(value || '').toLowerCase().replace(/[^a-z0-9]+/g, '-').replace(/^-|-$/g, '') || 'candidate'; }
 function topoSteps(tasks) {
@@ -59,6 +59,8 @@ export function synthesizePlanCandidates(candidates, metadata = {}) {
         existing.depends_on = [...new Set([...existing.depends_on, ...task.depends_on.map((dep) => taskMap.get(dep)).filter((dep) => dep && dep !== existing.id)])].sort();
         existing.done_criteria = [...new Set([...existing.done_criteria, ...task.done_criteria])];
         existing.expected_files = [...new Set([...existing.expected_files, ...task.expected_files])].sort();
+        const verifyCommands = [...new Set([...(existing.verify_commands || []), ...(task.verify_commands || [])])];
+        if (verifyCommands.length) existing.verify_commands = verifyCommands;
         addDisagreement({ topic: `task:${task.title}`, positions: [taskTitle.get(key).source, candidate.source], resolution: 'merged equivalent task', confidence: 'medium' }); continue;
       }
       const id = taskMap.get(task.id); taskTitle.set(key, { id, source: candidate.source });
@@ -75,12 +77,12 @@ export function synthesizePlanCandidates(candidates, metadata = {}) {
   if (decisions.length > 1) addDisagreement({ topic: 'decision.selected', positions: decisions, resolution: 'unresolved', confidence: 'low' });
   const plan = normalizePlanEnvelope({
     schema_version: 1, status: unresolved.size || disagreements.some((d) => d.resolution === 'unresolved') ? 'incomplete' : 'complete',
-    executable: unresolved.size === 0 && !disagreements.some((d) => d.resolution === 'unresolved'),
-    goal: goals[0], requirements, assumptions, decision: { selected: decisions.length === 1 ? decisions[0] : '', alternatives: [] }, tasks,
+    executable: unresolved.size === 0 && !disagreements.some((d) => d.resolution === 'unresolved') && unverifiedAssumptions({ assumptions }).length === 0,
+    goal: goals[0], requirements, assumptions, out_of_scope: [...new Set(valid.flatMap((item) => item.plan.out_of_scope || []))], decision: { selected: decisions.length === 1 ? decisions[0] : '', alternatives: [] }, tasks,
     steps: topoSteps(tasks),
     validation: { commands: [...new Set(valid.flatMap((item) => item.plan.validation.commands))], requirement_refs: [...validationRefs].sort() }, disagreements, unresolved_questions: [...unresolved],
     provenance: { mode: 'ultra', models: valid.map((item) => item.source), roles: valid.map((item) => item.role), candidate_count: candidates.length, valid_candidate_count: valid.length, ...metadata },
   });
   const checked = validatePlanEnvelope(plan);
-  return { ok: checked.valid, error: checked.valid ? null : 'synthesis_invalid', candidates: provenance, plan: checked.value, errors: checked.errors };
+  return { ok: checked.valid, error: checked.valid ? null : 'synthesis_invalid', candidates: provenance, plan: checked.value, errors: checked.errors, warnings: checked.warnings };
 }

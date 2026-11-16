@@ -575,6 +575,14 @@ export function recordAdaptiveOutcome(input) {
   return appendAdaptiveEvent(event);
 }
 
+function runGate(cwd, command, timeoutMs) {
+  return spawnSync(process.env.SHELL || '/bin/sh', ['-lc', command], {
+    cwd, encoding: 'utf8', timeout: Number(timeoutMs || 120000), maxBuffer: 4 * 1024 * 1024,
+  });
+}
+
+function gatePassed(result) { return result.status === 0 && !result.error; }
+
 export function startAdaptiveRun(input) {
   const cwd = realpathSync(resolve(input.cwd || process.cwd()));
   const ledger = input.events || readAdaptiveRoutingEvents();
@@ -601,17 +609,28 @@ export function startAdaptiveRun(input) {
   if (baselineDirty.length && (fallback || input.allow_dirty !== true)) {
     throw new Error(`working tree must be clean before route start: ${baselineDirty.join(', ')}`);
   }
+  const baselineHead = gitHead(cwd);
+  const baselineDirtyHashes = hashMap(cwd, baselineDirty);
+  const baselineHashes = hashMap(cwd, expectedFiles);
+  // Each gate runs once on the untouched tree so the receipt can name the gates that already
+  // passed and so did not observe the change. This happens before started_at is stamped: the
+  // route comparison reads the duration, and the baseline pass is not part of the work. A
+  // fallback restarts from the same tree, so it reuses the stored results.
+  const baselineGates = fallback
+    ? previousLease.baseline_gates
+    : requiredGates.map((gate) => ({ gate, passed: gatePassed(runGate(cwd, gateCommands[gate], input.timeout_ms)) }));
   const lease = {
     schema: 1,
     decision_id: decision.decision_id,
     task_class: decision.task_class,
     selected_route: decision.selected_route,
     cwd,
-    baseline_head: gitHead(cwd),
+    baseline_head: baselineHead,
     baseline_dirty: baselineDirty,
-    baseline_dirty_hashes: hashMap(cwd, baselineDirty),
+    baseline_dirty_hashes: baselineDirtyHashes,
     expected_files: expectedFiles,
-    baseline_hashes: hashMap(cwd, expectedFiles),
+    baseline_hashes: baselineHashes,
+    baseline_gates: baselineGates,
     required_gates: requiredGates,
     gate_commands: gateCommands,
     started_at: fallback ? previousLease.started_at : new Date(input.now_ms ?? Date.now()).toISOString(),
@@ -647,16 +666,17 @@ export function verifyAdaptiveRun(input) {
   if (Array.isArray(input.expected_files) && input.expected_files.length > 0) {
     throw new Error('expected files are fixed at route start; abandon the lease and start again with the full declaration');
   }
+  // A lease written before baseline runs existed has no results, which reads as unknown (null).
+  const baseline = new Map((lease.baseline_gates || []).map((row) => [row.gate, row.passed]));
   const gates = [];
   for (const gate of lease.required_gates) {
     const command = lease.gate_commands[gate];
-    const result = spawnSync(process.env.SHELL || '/bin/sh', ['-lc', command], {
-      cwd: lease.cwd, encoding: 'utf8', timeout: Number(input.timeout_ms || 120000), maxBuffer: 4 * 1024 * 1024,
-    });
+    const result = runGate(lease.cwd, command, input.timeout_ms);
     gates.push({
       gate, command_sha256: createHash('sha256').update(command).digest('hex'),
-      passed: result.status === 0 && !result.error, exit_code: result.status, signal: result.signal || null,
+      passed: gatePassed(result), exit_code: result.status, signal: result.signal || null,
       error_code: result.error?.code || null,
+      passed_at_baseline: baseline.has(gate) ? baseline.get(gate) : null,
     });
   }
   for (const file of lease.expected_files) safeRelativeFile(lease.cwd, file);
@@ -675,6 +695,9 @@ export function verifyAdaptiveRun(input) {
     baseline_head: lease.baseline_head, head_changed: headChanged, expected_files: lease.expected_files, changed_files: changedFiles,
     unexpected_files: unexpectedFiles, unexpected_hashes: hashMap(lease.cwd, unexpectedFiles), baseline_dirty_changed: baselineDirtyChanged,
     changed_expected_files: changedExpectedFiles, final_hashes: finalHashes, gates, passed,
+    // Reported, never part of `passed`: a refactor's gates pass both times, and a test the
+    // change adds cannot fail before it exists.
+    gates_passing_before_change: gates.filter((gate) => gate.passed && gate.passed_at_baseline === true).map((gate) => gate.gate),
     verified_at: new Date(input.now_ms ?? Date.now()).toISOString(),
   };
   writeLocalJSON(receiptPath(lease.decision_id), receipt);
@@ -870,7 +893,7 @@ const ROUTE_HELP = {
   decide: '--kind <kind> --scope bounded|broad --independent|--shared --files a,b --risk low|medium|high --failure-modes <n> --gates test,boundary,... [--class <id>] [--public-contract] [--external-dependency] [--data-migration] [--security-sensitive] [--json]',
   confirm: '--decision-id <id> --host claude|codex --session-model <id> [--plan <model>] [--exec <model>] --source asked|args|default\n  <model>  haiku|sonnet|opus|fable|inherit or vendor:model[:effort]; applies to this decision only and never edits config\n  --source asked = the user answered the question, args = the user passed --plan/--exec, default = the caller cannot ask',
   models: '--host claude|codex --session-model <id> [--plan <model>] [--exec <model>]\n  Resolves the same routes as confirm without writing the ledger.',
-  start: '--decision-id <id> --expected-files a,b --gate-cmd \'<gate>=<command>\' (once per gate; chain several commands with &&) [--allow-dirty] [--fallback]\n  --allow-dirty  start with pre-existing uncommitted files (e.g. an uncommitted plan PRD); their hashes are kept in the baseline',
+  start: '--decision-id <id> --expected-files a,b --gate-cmd \'<gate>=<command>\' (once per gate; chain several commands with &&) [--allow-dirty] [--fallback] [--timeout-ms <n>]\n  --allow-dirty  start with pre-existing uncommitted files (e.g. an uncommitted plan PRD); their hashes are kept in the baseline\n  Runs each gate once before the change and stores pass or fail; route verify reports the gates that already passed.\n  --timeout-ms   per-gate limit for that baseline run (default 120000)',
   verify: '--decision-id <id> [--expected-files a,b] [--timeout-ms <n>]',
   finish: '--decision-id <id> [--cost-event-id <id>]',
   status: '[--decision-id <id>]',
@@ -957,6 +980,7 @@ export function cmdAdaptiveRoute(args) {
       const result = startAdaptiveRun({
         decision_id: take(args, 'decision-id'), expected_files: list(take(args, 'expected-files')),
         gate_commands: values(args, 'gate-cmd'), allow_dirty: has(args, 'allow-dirty'), fallback: has(args, 'fallback'),
+        timeout_ms: take(args, 'timeout-ms'),
       });
       console.log(JSON.stringify(result, null, 2));
       return result;

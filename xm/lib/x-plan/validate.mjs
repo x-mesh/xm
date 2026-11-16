@@ -1,5 +1,10 @@
-import { ASSUMPTION_CONFIDENCE, PLAN_SCHEMA_VERSION, PLAN_STATUSES, REQUIRED_PLAN_FIELDS, REQUIREMENT_PRIORITIES, RISK_DOMAIN_RE, SAFE_ID_RE } from './schema.mjs';
+import { ASSUMPTION_CONFIDENCE, PLAN_SCHEMA_VERSION, PLAN_STATUSES, REQUIRED_PLAN_FIELDS, REQUIREMENT_PRIORITIES, RISK_DOMAIN_RE, SAFE_ID_RE, UNVERIFIED_CONFIDENCE } from './schema.mjs';
 import { normalizePlanEnvelope } from './normalize.mjs';
+
+/** Assumptions of a normalized plan that nobody checked against a source. */
+export function unverifiedAssumptions(plan) {
+  return plan.assumptions.filter((item) => UNVERIFIED_CONFIDENCE.includes(item.confidence) && !item.evidence);
+}
 
 function issue(code, path, message) { return { code, path, message }; }
 function object(value) { return value !== null && typeof value === 'object' && !Array.isArray(value); }
@@ -16,7 +21,7 @@ export function validatePlanEnvelope(input) {
   const errors = [], warnings = [];
   if (!input || typeof input !== 'object' || Array.isArray(input)) return { valid: false, errors: [issue('plan.type', '$', 'plan must be an object')], warnings, value: null };
   for (const field of REQUIRED_PLAN_FIELDS) if (!(field in input)) errors.push(issue('plan.missing_field', field, `missing required field ${field}`));
-  for (const field of ['requirements', 'assumptions', 'tasks', 'steps', 'disagreements', 'unresolved_questions', 'failure_modes']) {
+  for (const field of ['requirements', 'assumptions', 'tasks', 'steps', 'disagreements', 'unresolved_questions', 'failure_modes', 'out_of_scope']) {
     if (field in input && !Array.isArray(input[field])) errors.push(issue('plan.field_type', field, `${field} must be an array`));
   }
   for (const field of ['decision', 'validation', 'provenance']) {
@@ -89,7 +94,7 @@ export function validatePlanEnvelope(input) {
     for (const ref of task.requirement_refs) if (!reqIds.has(ref)) errors.push(issue('task.unknown_requirement', `tasks[${index}].requirement_refs`, `unknown requirement ${ref}`));
   });
   if (Array.isArray(input.tasks)) input.tasks.forEach((task, index) => {
-    for (const field of ['depends_on', 'requirement_refs', 'expected_files', 'done_criteria']) {
+    for (const field of ['depends_on', 'requirement_refs', 'expected_files', 'done_criteria', 'verify_commands']) {
       if (task && field in task && (!Array.isArray(task[field]) || task[field].some((item) => typeof item !== 'string'))) errors.push(issue('task.field_type', `tasks[${index}].${field}`, `${field} must be a string array`));
     }
   });
@@ -125,6 +130,10 @@ export function validatePlanEnvelope(input) {
       warnings.push(issue('plan.failure_modes_missing', 'failure_modes', `risk-domain requirement ${requirement.id} has no enumerated failure mode; add one or state "none — <justification>"`));
     }
   }
-  if (!value.unresolved_questions.length && !hasUnresolvedDisagreement && !value.executable) warnings.push(issue('plan.not_executable', 'executable', 'plan has no unresolved questions or disagreements but is not executable'));
+  const unverified = unverifiedAssumptions(value);
+  for (const item of unverified) {
+    warnings.push(issue('assumption.unverified', 'assumptions', `assumption ${item.id || '(no id)'} has ${item.confidence} confidence and no evidence; verify it against a source, or ask it as a question`));
+  }
+  if (!value.unresolved_questions.length && !hasUnresolvedDisagreement && !unverified.length && !value.executable) warnings.push(issue('plan.not_executable', 'executable', 'plan has no unresolved questions or disagreements but is not executable'));
   return { valid: errors.length === 0, errors, warnings, value };
 }

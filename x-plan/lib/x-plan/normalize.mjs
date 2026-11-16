@@ -13,17 +13,24 @@ export function normalizePlanEnvelope(input = {}) {
   const assumptions = (Array.isArray(value.assumptions) ? value.assumptions : []).map((item) => ({
     id: text(item?.id), text: text(item?.text), confidence: text(item?.confidence) || 'unknown', evidence: item?.evidence == null ? null : text(item.evidence),
   })).sort(byId);
-  const tasks = (Array.isArray(value.tasks) ? value.tasks : []).map((item) => ({
-    id: text(item?.id), title: text(item?.title), depends_on: strings(item?.depends_on).sort(),
-    requirement_refs: strings(item?.requirement_refs).sort(), expected_files: strings(item?.expected_files).sort(),
-    done_criteria: strings(item?.done_criteria),
-  })).sort(byId);
+  const tasks = (Array.isArray(value.tasks) ? value.tasks : []).map((item) => {
+    const verifyCommands = strings(item?.verify_commands);
+    return {
+      id: text(item?.id), title: text(item?.title), depends_on: strings(item?.depends_on).sort(),
+      requirement_refs: strings(item?.requirement_refs).sort(), expected_files: strings(item?.expected_files).sort(),
+      done_criteria: strings(item?.done_criteria),
+      // Emitted only when set: x-build hashes the normalized task to detect a revised plan, so
+      // an always-present key would reset the progress of every session stored before it.
+      ...(verifyCommands.length ? { verify_commands: verifyCommands } : {}),
+    };
+  }).sort(byId);
   // mode 'none — <justification>' is the explicit "no failure mode" form, so
   // silence and "nothing to defend" stay distinguishable.
   const failureModes = (Array.isArray(value.failure_modes) ? value.failure_modes : []).map((item) => ({
     requirement_ref: text(item?.requirement_ref), mode: text(item?.mode),
     mitigation: text(item?.mitigation), verification: text(item?.verification),
   }));
+  const outOfScope = strings(value.out_of_scope);
   const validation = value.validation && typeof value.validation === 'object' && !Array.isArray(value.validation) ? value.validation : {};
   return {
     schema_version: Number(value.schema_version ?? PLAN_SCHEMA_VERSION),
@@ -34,6 +41,9 @@ export function normalizePlanEnvelope(input = {}) {
     tasks, steps: (Array.isArray(value.steps) ? value.steps : []).map(strings),
     validation: { commands: strings(validation.commands), requirement_refs: strings(validation.requirement_refs).sort() },
     failure_modes: failureModes,
+    // Emitted only when set: x-build batch receipts store a hash of the normalized envelope,
+    // so an always-present key would invalidate every receipt written before it.
+    ...(outOfScope.length ? { out_of_scope: outOfScope } : {}),
     disagreements: (Array.isArray(value.disagreements) ? value.disagreements : []).map((item) => ({ topic: text(item?.topic), positions: strings(item?.positions), resolution: text(item?.resolution), confidence: text(item?.confidence) || 'unknown' })),
     unresolved_questions: unresolved,
     provenance: value.provenance && typeof value.provenance === 'object' && !Array.isArray(value.provenance) ? { ...value.provenance } : {},

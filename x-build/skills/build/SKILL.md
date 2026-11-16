@@ -62,6 +62,8 @@ xm build route finish --decision-id <id> --json
 
 `--gate-cmd`는 gate마다 한 번만 받습니다. 같은 gate에 명령이 여러 개면 `--gate-cmd 'boundary=ruff check ... && black --check ...'`처럼 `&&`로 묶습니다. 같은 gate를 두 번 넘기면 `duplicate gate command`로 거부됩니다. `route start`는 작업 트리가 깨끗해야 시작합니다. 계획 단계에서 만든 PRD처럼 커밋하지 않은 선행 파일이 있으면 먼저 커밋하거나 `--allow-dirty`를 붙입니다. `--allow-dirty`는 그 파일들의 hash를 baseline에 기록합니다. 하위 명령의 옵션은 `xm build route <verb> --help`로 확인합니다.
 
+`route start` runs each gate once on the untouched tree and stores pass or fail, so it takes as long as one gate pass. The `route verify` receipt then lists `gates_passing_before_change`: the gates that passed before the change and still pass. For a `bugfix` or `feature`, such a gate did not observe the change. Name those gates in the final report and do not cite them as evidence that the change works. For a `refactor` the list is expected to hold every gate. The list never fails a run.
+
 Direct verification 실패 시 작업 트리를 baseline으로 복원하거나 clean worktree를 준비한 다음 `route start --decision-id <id> --fallback`을 실행합니다. fallback이 끝나면 같은 `verify → finish`를 사용하며 outcome은 자동으로 `escalated`가 됩니다. 비용은 같은 `decision_id`에 결합되고 `cost_source=actual`인 x-build cost event를 `finish`가 자동 합산하며, 없으면 null로 남깁니다. `route record`는 기존 호출자 호환과 수동 복구용이며 기본 workflow에서는 사용하지 않습니다.
 
 planned route의 `verify`가 gate는 모두 통과했는데 선언하지 않은 파일이 바뀌어서만 실패했고, 그 변경이 gate 통과에 필요하다면 되돌리지 말고 `xm build route close --decision-id <id>`로 닫습니다. close는 사유와 파일 목록만 남기고 outcome을 기록하지 않으므로 accepted로 세지 않고 task class를 quality failure로 표시하지도 않습니다. 되돌려도 gate가 통과하는 변경이면 되돌린 뒤 다시 `verify`합니다.
@@ -156,6 +158,7 @@ fallback은 다음 조건을 모두 만족할 때만 추가합니다.
 - agent batch 전에 실제 사용할 model과 task 수를 한 줄로 알립니다.
 - direct route와 planned route의 Execute는 `route confirm` 출력의 `model_routes.execute`를 사용합니다. Claude는 `model_routes.execute.model_by_vendor.claude`를 사용합니다.
 - task prompt에 Execution Principles와 task-specific done criteria를 포함합니다.
+- When the plan lists `out_of_scope`, put the list in every task prompt and tell the executor not to implement those items. Add a task's `verify_commands` to its prompt as the commands that decide whether the task is done.
 - 순차 실행이 기본입니다. 병렬 실행은 예상 수정 파일, 공유 상태, dependency와 검증 환경이 모두 독립적이고 측정 가능한 시간 이득이 예상될 때만 허용합니다.
 - 병렬화를 위해 task를 억지로 분해하거나 worktree를 만들지 않습니다.
 - agent의 완료 주장을 그대로 신뢰하지 않고 변경 파일과 기존 검증 결과를 확인합니다.
@@ -168,7 +171,7 @@ fallback은 다음 조건을 모두 만족할 때만 추가합니다.
 When executing an executable x-plan session (`.xm/plan/<run-id>/`):
 
 - Before each task, run `xm build progress start --plan <run-id> --task <id>`.
-- After the task, run `xm build progress verify --plan <run-id> --task <id>`. It runs the plan's `validation.commands` and checks off the task only if they pass.
+- After the task, run `xm build progress verify --plan <run-id> --task <id>`. It runs the task's `verify_commands`, when the plan gives any, and then the plan's `validation.commands`. It checks off the task only if every command passes.
 - Treat a verify failure (exit code 2) as the task not done. Fix the work and verify again.
 - Never edit `tasks.md` or `progress.json` by hand. Both are generated.
 - At the end, run `xm build progress show --plan <run-id>` and report it to the user.

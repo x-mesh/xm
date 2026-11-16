@@ -3,7 +3,7 @@ import { existsSync, mkdirSync, readFileSync, renameSync, unlinkSync, writeFileS
 import { basename, dirname, join, relative, resolve } from 'node:path';
 import { normalizePlanEnvelope } from './normalize.mjs';
 import { renderPlan } from './render.mjs';
-import { validatePlanEnvelope } from './validate.mjs';
+import { unverifiedAssumptions, validatePlanEnvelope } from './validate.mjs';
 
 function repositoryRoot(cwd) {
   if (existsSync(join(cwd, '.xm'))) return cwd;
@@ -112,6 +112,8 @@ function saveSession(plan, root, options) {
     if (!critiquePassed) readinessErrors.push('critique must pass');
     if (plan.tasks.some((task) => task.expected_files.length === 0)) readinessErrors.push('every task needs expected_files');
     if (plan.validation.commands.length === 0) readinessErrors.push('validation commands are required');
+    const unverified = unverifiedAssumptions(plan);
+    if (unverified.length) readinessErrors.push('assumptions need evidence or a question: ' + unverified.map((item) => item.id).join(', '));
     if (readinessErrors.length) throw new Error('executable session is not ready: ' + readinessErrors.join('; '));
   }
   const phaseIndex = ['inspect', 'clarify', 'draft', 'critique', 'finalize'].indexOf(phase);

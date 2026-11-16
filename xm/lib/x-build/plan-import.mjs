@@ -41,6 +41,12 @@ function stressCriteria(plan, task) {
     .map((item) => '스트레스: ' + item.mode + (item.mitigation ? ' → ' + item.mitigation : ''));
 }
 
+// The imported task record has no field for a task's own verify commands, so they reach the
+// executor the same way: as done criteria.
+function verifyCriteria(task) {
+  return (task.verify_commands || []).map((command) => '검증 명령: ' + command);
+}
+
 function compileTasks(plan) {
   const idMap = new Map(plan.tasks.map((task, index) => [task.id, 't' + (index + 1)]));
   const now = new Date().toISOString();
@@ -49,7 +55,7 @@ function compileTasks(plan) {
     name: task.title + (task.requirement_refs.length ? ' ' + task.requirement_refs.map((ref) => '[' + ref + ']').join(' ') : ''),
     description: 'Imported from native PlanEnvelope task ' + task.id + '.',
     depends_on: task.depends_on.map((id) => idMap.get(id)), size: taskSize(task), role: null, strategy: null, rubric: null, team: null, score: null,
-    done_criteria: [...task.done_criteria, ...stressCriteria(plan, task)], expected_files: task.expected_files.map(safeRelativePath), interface_contract: null,
+    done_criteria: [...task.done_criteria, ...stressCriteria(plan, task), ...verifyCriteria(task)], expected_files: task.expected_files.map(safeRelativePath), interface_contract: null,
     review_group: 'build', status: TASK_STATES.PENDING, created_at: now,
   }));
 }
@@ -82,8 +88,13 @@ function failureModeSection(plan) {
   })];
 }
 
+function outOfScopeSection(plan) {
+  if (!plan.out_of_scope?.length) return [];
+  return ['', '## 6. Out of Scope', ...plan.out_of_scope.map((item) => '- ' + item)];
+}
+
 function deltaPrd(plan) {
-  return ['<!-- prd-tier: delta -->', '# PRD: ' + plan.goal, '', '## Goal', plan.goal, '', '## Success Criteria', ...plan.requirements.map((item) => '- [ ] [' + item.id + '] ' + item.text), '', '## Decision Plan', '- Selected approach: imported native PlanEnvelope.', ...failureModeSection(plan), '', '## 12. Acceptance Criteria', ...plan.requirements.map((item) => '- [ ] ' + item.text + ' [' + item.id + ']'), '', '## Validation', ...plan.validation.commands.map((command) => '- ' + command), ''].join('\n');
+  return ['<!-- prd-tier: delta -->', '# PRD: ' + plan.goal, '', '## Goal', plan.goal, '', '## Success Criteria', ...plan.requirements.map((item) => '- [ ] [' + item.id + '] ' + item.text), '', '## Decision Plan', '- Selected approach: imported native PlanEnvelope.', ...outOfScopeSection(plan), ...failureModeSection(plan), '', '## 12. Acceptance Criteria', ...plan.requirements.map((item) => '- [ ] ' + item.text + ' [' + item.id + ']'), '', '## Validation', ...plan.validation.commands.map((command) => '- ' + command), ''].join('\n');
 }
 
 function parallelismForSteps(tasks, steps) {
