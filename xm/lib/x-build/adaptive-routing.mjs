@@ -628,7 +628,7 @@ export function startAdaptiveRun(input) {
       if (sha256File(resolve(cwd, file)) !== hash) changed.add(file);
     }
     if (changed.size) {
-      throw new Error(`baseline gate run changed the working tree: ${[...changed].sort().join(', ')}; a gate must not write files in the repository, so restore them and start again`);
+      throw new Error(`baseline gate run changed the working tree: ${[...changed].sort().join(', ')}; a gate must not change files git status reports, so restore them, point its output at an ignored path, and start again`);
     }
   }
   const lease = {

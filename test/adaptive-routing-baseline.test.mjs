@@ -139,6 +139,17 @@ describe('route start baseline gate run', () => {
     } finally { rmSync(cwd, { recursive: true, force: true }); }
   });
 
+  test('start accepts a baseline run that writes only to an ignored path', async () => {
+    const cwd = fixtureRepo();
+    try {
+      writeFileSync(join(cwd, '.gitignore'), 'coverage/\n');
+      git(cwd, ['add', '.gitignore']);
+      git(cwd, ['commit', '-qm', 'ignore coverage']);
+      const { lease } = await started(cwd, ['test=mkdir -p coverage && echo x > coverage/out.txt', 'boundary=true']);
+      expect(byGate(lease.baseline_gates).test.passed).toBe(true);
+    } finally { rmSync(cwd, { recursive: true, force: true }); }
+  });
+
   test('start refuses when the baseline run changes a file that was already dirty', async () => {
     const cwd = fixtureRepo();
     try {
