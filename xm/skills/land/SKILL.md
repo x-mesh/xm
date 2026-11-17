@@ -53,9 +53,15 @@ Drive ONE open PR to merge inside the current session. The reviewer (an external
 
 ### Step 1 — Orient
 
-1. Run `GK_AGENT=1 git-kit context --include=remotes` and `gh pr view <pr> --json number,url,state,headRefName,headRefOid`.
+1. Run `GK_AGENT=1 git-kit context --include=remotes` and `gh pr view <pr> --json number,url,state,headRefName,headRefOid,isCrossRepository`.
 2. If the PR is not open, report it and stop.
-3. If the working tree has unrelated changes, tell the user and commit only the files each fix touches (Step 5).
+3. **Checkout gate.** Steps 5 commits and pushes the branch checked out here, so it must be the PR's head. Continue only when all hold:
+   - `git branch --show-current` equals `headRefName`.
+   - `isCrossRepository` is `false`.
+   - `git rev-parse HEAD` equals `headRefOid`. If HEAD differs, the local branch has commits the PR does not have, or lacks commits it has: report both SHAs and stop.
+
+   Otherwise report the current branch and the PR head and stop. Never switch branches or push from another checkout on your own. Waiting and merging (Steps 2 and 8) act on the PR alone, so `--merge here` with `--review none` may skip this gate.
+4. If the working tree has unrelated changes, tell the user and commit only the files each fix touches (Step 5).
 
 ### Step 2 — Wait for the review (`--review reviewer`)
 
@@ -73,6 +79,9 @@ xm pr land <pr> --wait --timeout 900 --require-check <name> --dry-run --json
 | `failed` | Go to Step 3. A review may exist and carry items to fix. |
 | `pending` after timeout | Report that the review is still running with the timeout used. Stop. Never merge. |
 | `missing` after timeout | Report "no reviewer check appeared" (user-facing: "reviewer 체크가 나타나지 않았습니다") with the timeout used. Stop. Nothing is merged. |
+| `pending` or `missing` before the timeout | Another check failed, and `--wait` stops as soon as any check fails. Read `checks.failed`. If this PR's change caused the failure, fix it as one fix push (Step 5) and return to Step 2. Otherwise report the failed checks and stop. Never merge. |
+
+Tell the two `pending`/`missing` cases apart by elapsed time: the command ran for less than the timeout, and `checks.status` is `failed`.
 
 ### Step 3 — Read the review
 

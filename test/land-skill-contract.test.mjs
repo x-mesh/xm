@@ -85,6 +85,22 @@ describe('land skill contract', () => {
     expect(SKILL).toContain('JSON `state`');
   });
 
+  // Review item L1 on #104: a fix committed in the wrong checkout lands on a branch the user did not name.
+  test('fixes only when the checkout is the PR head branch at the PR head commit', () => {
+    expect(SKILL).toContain('**Checkout gate.**');
+    expect(SKILL).toContain('`git branch --show-current` equals `headRefName`');
+    expect(SKILL).toContain('`isCrossRepository` is `false`');
+    expect(SKILL).toContain('`git rev-parse HEAD` equals `headRefOid`');
+    expect(SKILL).toContain('Never switch branches or push from another checkout on your own');
+  });
+
+  // Review item L2 on #104: --wait stops when any check fails, before the required check settles.
+  test('handles a required check that is still pending or missing when another check failed', () => {
+    expect(SKILL).toContain('| `pending` or `missing` before the timeout |');
+    expect(SKILL).toContain('`--wait` stops as soon as any check fails');
+    expect(SKILL).toMatch(/Read `checks\.failed`/);
+  });
+
   test('has at least five rationalization rows', () => {
     const section = SKILL.split('## Common Rationalizations')[1].split('\n## ')[0];
     const rows = section.split('\n').filter((l) => l.startsWith('| "'));
