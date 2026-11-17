@@ -38,6 +38,7 @@ bare goal이나 `build me` 요청에는 다음 순서만 사용합니다.
 7. 변경 때문에 실패할 수 있는 가장 가까운 기존 검증만 선택합니다. test, lint, build, review를 고정 checklist로 모두 실행하지 않습니다.
 8. direct 결과가 결정적 quality gate에 실패하면 변경된 상태를 planning context로 재사용하지 않고 clean state에서 planned route로 한 번만 escalation합니다. escalation 사실과 두 경로의 비용·시간 차이를 관측 가능하게 남깁니다.
 9. 확인된 결과, 실행하지 못한 검증과 남은 제한만 보고합니다.
+10. After `route finish`, continue to the finish stage the user chose in step 5 (see Finish stage below): stop, open a PR, or land it.
 
 ### Runtime route contract
 
@@ -100,6 +101,27 @@ xm build route confirm --decision-id <id> --host claude|codex --session-model <�
 - 최종 보고에 `route finish` 결과의 `model_confirmation_source`를 밝힙니다.
 
 confirm 출력의 `model_routes.plan`과 `model_routes.execute`가 이번 실행의 model contract입니다. Claude는 각 단계에서 `model_by_vendor.claude`를 사용합니다. Codex는 각 단계에서 `model_by_vendor.codex`의 model과 effort를 사용합니다. 값이 `inherit`이면 host의 model 인자를 생략합니다. 다른 tier나 현재 세션 model로 대체하지 않습니다. `model_routes.plan.execution`이 `inline`이면 계획 모델이 현재 세션과 같은 tier이므로 planner agent 없이 현재 세션에서 계획합니다. `model_routes.execute.execution`은 항상 `agent`입니다. 세션과 같은 모델이어도 executor agent로 실행해야 root가 그 변경을 독립적으로 확인할 수 있습니다.
+
+### Finish stage
+
+Ask how far this run goes in the same AskUserQuestion call as the model questions, as its own question (header `끝낼 단계`). The answer is consent for every GitHub write it names, so later steps do not ask again. Options, in this order:
+
+- `PR까지 (Recommended)` → `pr`: commit, push, and open a PR. Do not merge.
+- `구현만` → `impl`: no commit, push, PR, or merge. This is the behaviour before this stage existed.
+- `land까지 (reviewer 없으면 멈춤)` → `land` with `--on-missing stop`: open a PR and merge it through `/xm:land`.
+- `land까지 (reviewer 없으면 이 세션이 리뷰)` → `land` with `--on-missing here`: as above, but review in this session when no reviewer check appears.
+
+Do not ask when the user passed `--finish impl|pr|land` (with `land`, `--on-missing stop|here`, default `stop`), or chose a stage earlier in this session with "이번 세션 동안 유지". If the call would hold more than four questions (plan model, executor model, session keep, direction approval), ask the finish stage in a second AskUserQuestion right after the first. When AskUserQuestion is unavailable, use `impl`.
+
+The stage runs after `route finish`, never before: `route finish` refuses the record when HEAD or an expected file changed after the receipt.
+
+1. **Branch.** If the current branch is the base branch (`develop`, `main`, or the base `git-kit context` reports), create a branch first with `GK_AGENT=1 git-kit switch -c <type>/<slug>`, where `<type>` follows the repository's branch history (`feat`, `fix`, `docs`, ...). Uncommitted changes move with the switch.
+2. **Commit** the run's files: the expected files of the route lease and of the plan tasks, plus files their generators rewrote (for example bundle copies). Use `GK_AGENT=1 git-kit commit -m "<message>" -- <files>` and branch on the JSON `state`. Never stage files outside the run; list any other change and leave it.
+3. **PR.** Start `Skill: xm:write` with `pr --base <base> --publish-approved`, where `<base>` is the branch the run started from. xm:write still shows the text and pushes the branch.
+4. **Land** (`land` only). Start `Skill: xm:land` with `<pr> --on-missing stop|here` from the answer. Its stops (blocking acceptance, fix limits, churn) still ask the user.
+5. **Report** the PR URL, and for `land` the merge commit or the stop reason.
+
+A failed step stops the chain: report the step, its output, and what is left undone. Never retry a push or a merge around a failure.
 
 ## Execution Principles
 

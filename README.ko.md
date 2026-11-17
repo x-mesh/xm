@@ -476,6 +476,8 @@ x-build는 x-plan을 감싸는 lean 실행 workflow입니다. 저장소 근거�
 
 x-build는 계획이나 실행을 시작하기 전에 모델을 한 번 확인합니다. 설정된 planner·executor model을 보여 주고 한 번 묻습니다. direct route에서는 executor model만 묻습니다. `--plan <model>`과 `--exec <model>`을 주면 묻지 않습니다. 이 선택은 이번 실행에만 적용되고 config를 바꾸지 않습니다. `xm build route confirm`이 선택을 기록하고, `route start`는 기록이 없는 decision을 거부합니다. Claude Code에서는 세션 모델이 planner model과 같은 tier이면 planner agent를 띄우지 않고 현재 세션에서 계획합니다. Codex에서는 세션의 model과 effort가 planner spec과 모두 같아야 합니다. 실행은 항상 executor agent가 맡아, root 세션이 변경을 독립적으로 확인할 수 있게 합니다. Codex 비대화형 실행처럼 답할 사람이 없으면 설정된 모델을 그대로 쓰고 `source=default`로 기록하며, `route finish`가 이 source를 보여 줍니다. `/xm:plan`을 직접 실행해도 같은 방식으로 planner model을 묻고, `--plan-model <model>`을 주면 묻지 않습니다.
 
+같은 질문에서 실행을 어디까지 할지도 묻습니다. 구현만, PR까지, `/xm:land`로 머지까지 중에서 고릅니다. 머지까지를 고르면 reviewer 체크가 나타나지 않을 때 멈출지, 세션에서 리뷰할지도 함께 고릅니다. `--finish impl|pr|land`와(`land`일 때) `--on-missing stop|here`를 주면 묻지 않습니다. x-build는 `route finish` 뒤에 실행한 파일을 기능 브랜치에 커밋하고, `xm:write`로 PR을 열고, 머지까지를 골랐다면 `/xm:land`를 시작합니다. 한 단계가 실패하면 그 뒤 단계는 실행하지 않습니다.
+
 `route start → verify → finish`는 결정과 baseline commit, 예상 파일, CLI가 실행한 gate, byte hash, 실제 시간과 비용 event를 묶습니다. Direct 검증 실패는 clean planned fallback으로 한 번만 재개합니다. Receipt가 없거나 오래된 상태는 fail-closed로 처리합니다. planned 실행이 모든 gate를 통과했지만 gate에 필요한 선언 밖 파일을 바꿨다면 `xm build route close --decision-id <id>`로 lease를 닫습니다. 이때 사유와 파일 목록만 남기고 outcome은 기록하지 않습니다. `--gate-cmd`는 gate마다 한 번만 넘기고, 한 gate에 명령이 여러 개면 `&&`로 묶습니다. `route start`는 작업 트리가 깨끗해야 시작합니다. 계획 PRD처럼 커밋하지 않은 파일이 있는 채로 시작하려면 `--allow-dirty`를 붙입니다. 그러면 baseline에 그 파일들의 hash가 기록됩니다. `route start`는 변경 전에 gate를 한 번씩 실행해 통과 여부도 기록합니다. `route verify`의 receipt는 변경 전에도 통과했고 지금도 통과하는 gate를 `gates_passing_before_change`로 알려 줍니다. 이 gate들은 이번 변경을 관측하지 못한 것입니다. 이 목록 때문에 실행이 실패하지는 않습니다. 변경 전 실행에서 gate가 `git status`에 나타나는 파일을 바꾸면 `route start`는 lease를 만들지 않고, 바뀐 파일을 알려 주며 실패합니다. ignored 경로에 쓰는 것은 괜찮습니다. `xm build route <verb> --help`는 명령을 실행하지 않고 그 하위 명령의 옵션만 보여 줍니다.
 
 ```bash
@@ -796,6 +798,7 @@ PR이 이미 머지됐으면 머지를 건너뛰고, `--yes`를 준 경우에만
 - `--review reviewer|here|none`: 리뷰 출처입니다. 기본값 `reviewer`는 외부 리뷰어이고, `here`는 이 세션에서 `xm:review`를 실행하며, `none`은 리뷰 게이트를 건너뜁니다.
 - `--merge here|none`: 마지막 단계입니다. 기본값은 `here`이고, `none`은 리뷰가 깨끗해지면 멈춥니다.
 - `--check <name>`: 필수 체크 이름입니다. 기본값은 `reviewer`입니다.
+- `--on-missing stop|here`: 체크가 끝내 나타나지 않을 때의 동작입니다. 기본값은 `stop`이고, `here`는 세션에서 리뷰합니다.
 
 수정 push는 최대 두 번입니다. 차단 항목을 받아들일 때는 항상 사용자에게 먼저 묻습니다.
 
