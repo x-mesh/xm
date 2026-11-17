@@ -41,6 +41,7 @@ hand-maintained count went 181 lines stale (x-build was recorded as 411 while it
 | 260 | `x-sync/skills/sync/SKILL.md` | ✅ OK |
 | 240 | `xm/skills/handon/SKILL.md` | ✅ OK |
 | 230 | `xm/skills/kit/SKILL.md` | ✅ OK |
+| 207 | `xm/skills/land/SKILL.md` | ✅ OK |
 | 194 | `x-panel/skills/panel/SKILL.md` | ✅ OK |
 | 190 | `xm/skills/inbox/SKILL.md` | ✅ OK |
 | 152 | `xm/skills/toss/SKILL.md` | ✅ OK |

@@ -140,7 +140,7 @@ describe('routing templates', () => {
   // routing them would only lengthen the global instructions. A new skill must
   // be routed or listed here, which forces the decision.
   const NOT_ROUTED = [
-    'batch', 'build', 'dashboard', 'gate', 'handoff', 'handon', 'humanize', 'inbox', 'kit', 'later',
+    'batch', 'build', 'dashboard', 'gate', 'handoff', 'handon', 'humanize', 'inbox', 'kit', 'land', 'later',
     'local-fix', 'mutate', 'panel', 'plan', 'relay', 'remote', 'ship', 'sync', 'toss', 'trace', 'wt',
   ];
 

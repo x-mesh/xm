@@ -351,6 +351,105 @@ describe('xm pr land', () => {
     expect(calls(fixture).some((call) => call.tool === 'gk')).toBe(false);
   });
 
+  describe('--require-check', () => {
+    const pass = (name, description = '') => ({ name, state: 'SUCCESS', bucket: 'pass', description });
+    const pending = (name) => ({ name, state: 'IN_PROGRESS', bucket: 'pending', description: '' });
+    const ghChecks = (fixture) => calls(fixture).filter((call) => call.tool === 'gh' && call.argv[1] === 'checks');
+
+    test('a missing required check blocks at once, even with --allow-no-checks', () => {
+      for (const extra of [[], ['--allow-no-checks']]) {
+        const fixture = setup();
+        const result = land(fixture, ['7', '--yes', '--require-check', 'reviewer', ...extra]);
+        expect(result.code).toBe(2);
+        expect(result.output.status).toBe('blocked');
+        expect(result.output.blocker).toBe('required check reviewer is missing');
+        expect(result.output.required_checks).toEqual([{ name: 'reviewer', status: 'missing', description: '' }]);
+        expect(merges(fixture)).toEqual([]);
+      }
+      const none = setup({ checks: [null] });
+      const result = land(none, ['7', '--yes', '--allow-no-checks', '--require-check', 'reviewer']);
+      expect(result.output.blocker).toBe('required check reviewer is missing');
+      expect(merges(none)).toEqual([]);
+    });
+
+    test('a passing required check merges and reports its description', () => {
+      const fixture = setup({ checks: [[pass('test'), pass('reviewer', 'LGTM, no findings')]] });
+      const result = land(fixture, ['7', '--yes', '--require-check', 'reviewer']);
+      expect(result.code).toBe(0);
+      expect(result.output.status).toBe('merged');
+      expect(result.output.required_checks).toEqual([{ name: 'reviewer', status: 'passed', description: 'LGTM, no findings' }]);
+      expect(ghChecks(fixture)[0].argv).toContain('name,state,bucket,description');
+    });
+
+    test('--wait polls while the required check is missing or pending, then merges', () => {
+      const fixture = setup({ checks: [[pass('test')], [pass('test'), pending('reviewer')], [pass('test'), pass('reviewer')]] });
+      const result = land(fixture, ['7', '--yes', '--wait', '--require-check', 'reviewer']);
+      expect(result.output.status).toBe('merged');
+      expect(ghChecks(fixture).length).toBe(3);
+    });
+
+    test('--wait ends at the timeout with the PR open when the required check never appears', () => {
+      const fixture = setup({ checks: [[pass('test')]] });
+      const result = land(fixture, ['7', '--yes', '--wait', '--timeout', '0', '--require-check', 'reviewer']);
+      expect(result.code).toBe(2);
+      expect(result.output.status).toBe('blocked');
+      expect(result.output.blocker).toBe('required check reviewer is missing');
+      expect(merges(fixture)).toEqual([]);
+    });
+
+    test('a similar name does not satisfy the requirement, and matching is case-sensitive', () => {
+      for (const name of ['reviewer-lint', 'Reviewer']) {
+        const fixture = setup({ checks: [[pass('test'), pass(name)]] });
+        const result = land(fixture, ['7', '--yes', '--require-check', 'reviewer']);
+        expect(result.output.blocker).toBe('required check reviewer is missing');
+        expect(merges(fixture)).toEqual([]);
+      }
+    });
+
+    test('duplicate rows must all pass: a fail or cancel row blocks', () => {
+      for (const bucket of ['fail', 'cancel']) {
+        const fixture = setup({ checks: [[pass('reviewer'), { name: 'reviewer', state: 'X', bucket, description: 'rejected' }]] });
+        const result = land(fixture, ['7', '--yes', '--require-check', 'reviewer']);
+        expect(result.output.status).toBe('blocked');
+        expect(result.output.required_checks).toEqual([{ name: 'reviewer', status: 'failed', description: 'rejected' }]);
+        expect(merges(fixture)).toEqual([]);
+      }
+    });
+
+    test('the flag is repeatable and every named check is required', () => {
+      const fixture = setup({ checks: [[pass('a')]] });
+      const blocked = land(fixture, ['7', '--yes', '--require-check', 'a', '--require-check', 'b']);
+      expect(blocked.output.blocker).toBe('required check b is missing');
+      expect(blocked.output.required_checks.map((check) => check.status)).toEqual(['passed', 'missing']);
+
+      const both = setup({ checks: [[pass('a'), pass('b')]] });
+      expect(land(both, ['7', '--yes', '--require-check', 'a', '--require-check=b']).output.status).toBe('merged');
+    });
+
+    test('a missing value is a usage error', () => {
+      for (const args of [['--require-check'], ['--require-check', '--wait'], ['--require-check=']]) {
+        const fixture = setup();
+        const result = land(fixture, ['7', ...args]);
+        expect(result.code).toBe(2);
+        expect(result.output.errors[0]).toBe('--require-check needs a check name');
+        expect(calls(fixture)).toEqual([]);
+      }
+    });
+
+    test('the value is never read as the PR target', () => {
+      const fixture = setup({ checks: [[pass('reviewer')]] });
+      const result = land(fixture, ['--require-check', 'reviewer', '--dry-run']);
+      expect(result.output.status).toBe('dry-run');
+      const view = calls(fixture).find((call) => call.tool === 'gh' && call.argv[1] === 'view');
+      expect(view.argv[2]).toBe('--json');
+    });
+
+    test('without the flag the output has no required_checks', () => {
+      const result = land(setup(), ['7', '--dry-run']);
+      expect(result.output).not.toHaveProperty('required_checks');
+    });
+  });
+
   test('the xm dispatcher routes `xm pr land`', () => {
     const fixture = setup();
     const result = land(fixture, ['7', '--dry-run'], XM);
