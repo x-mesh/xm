@@ -1,5 +1,5 @@
 {
-  "generatedAt": 1794841943434,
+  "generatedAt": 1794877707259,
   "version": 3,
   "skills": [
     {
@@ -133,6 +133,17 @@
       "assetsSha256": "be51b114efa345ede058cf592d559777787b4fa7b88e93723859dc0345c319ca",
       "assetFiles": 6,
       "assetBytes": 38719
+    },
+    {
+      "plugin": "land",
+      "sha256": "ba7ced5265b19865714f62767127fa45ae881cbe98608a39c7eecbc04bc2cf9c",
+      "bytes": 12945,
+      "referencesSha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+      "referenceFiles": 0,
+      "referenceBytes": 0,
+      "assetsSha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+      "assetFiles": 0,
+      "assetBytes": 0
     },
     {
       "plugin": "later",

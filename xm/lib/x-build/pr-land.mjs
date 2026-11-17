@@ -2,7 +2,7 @@ import { existsSync, readdirSync, readFileSync } from 'node:fs';
 import { spawnSync } from 'node:child_process';
 import { join } from 'node:path';
 
-const USAGE = 'Usage: xm pr land [<number|url|branch>] [--wait] [--timeout <sec>] [--allow-no-checks] [--require-review] [--cleanup] [--dry-run|--yes] [--json]';
+const USAGE = 'Usage: xm pr land [<number|url|branch>] [--wait] [--timeout <sec>] [--allow-no-checks] [--require-check <name>]... [--require-review] [--cleanup] [--dry-run|--yes] [--json]';
 const VIEW_FIELDS = 'number,url,state,isDraft,baseRefName,headRefName,headRefOid,isCrossRepository,mergeable,mergeStateStatus,mergeCommit,mergedAt';
 const MERGEABLE_STATES = ['CLEAN', 'HAS_HOOKS', 'UNSTABLE'];
 const DEFAULT_TIMEOUT_SEC = 1800;
@@ -16,6 +16,19 @@ function option(args, name) {
   const index = args.indexOf(name);
   if (index < 0) return null;
   return index + 1 < args.length ? args[index + 1] : '';
+}
+
+// Collects every `--require-check <name>`; null when a name is missing or looks like another flag.
+function requireCheckNames(args) {
+  const names = [];
+  for (let index = 0; index < args.length; index += 1) {
+    const arg = args[index];
+    if (arg.startsWith('--require-check=')) names.push(arg.slice('--require-check='.length));
+    else if (arg === '--require-check') { names.push(args[index + 1] ?? ''); index += 1; }
+    else continue;
+    if (!names.at(-1) || names.at(-1).startsWith('--')) return null;
+  }
+  return names;
 }
 
 function positionalArgs(args, valueOptions = []) {
@@ -71,7 +84,7 @@ function viewPr(gh, target, cwd) {
 // gh exits non-zero while checks are pending or failing, and errors with
 // "no checks reported" when a branch has none, so the exit code alone says nothing.
 function readChecks(gh, target, cwd) {
-  const result = run(gh, ['pr', 'checks', target, '--json', 'name,state,bucket'], cwd);
+  const result = run(gh, ['pr', 'checks', target, '--json', 'name,state,bucket,description'], cwd);
   const rows = parseJSON(result.stdout);
   if (Array.isArray(rows)) return { ok: true, rows };
   if (/no checks reported/i.test(result.stderr)) return { ok: true, rows: [] };
@@ -84,6 +97,19 @@ function summarizeChecks(rows) {
   // No rows is its own state: right after a push, CI may not have registered its checks yet.
   const status = !rows.length ? 'none' : failed.length ? 'failed' : pending.length ? 'pending' : 'passed';
   return { status, total: rows.length, failed, pending };
+}
+
+// Exact, case-sensitive name match: `reviewer-lint` must not satisfy `reviewer`.
+// A missing row counts as not-yet-passed so a late-registering check keeps --wait polling.
+function summarizeRequired(rows, names) {
+  return names.map((name) => {
+    const matched = rows.filter((row) => row.name === name);
+    const status = !matched.length ? 'missing'
+      : matched.some((row) => row.bucket !== 'pass' && row.bucket !== 'pending') ? 'failed'
+      : matched.some((row) => row.bucket === 'pending') ? 'pending'
+      : 'passed';
+    return { name, status, description: matched.map((row) => row.description).filter(Boolean).join('; ') };
+  });
 }
 
 function mergeBlocker(pr) {
@@ -183,6 +209,7 @@ function afterMerge(gh, gk, pr, { cleanup, cwd }) {
 function describe(output) {
   const lines = [`PR #${output.pr.number} ${output.pr.headRefName} → ${output.pr.baseRefName}: ${output.status}`];
   if (output.checks) lines.push(`  checks: ${output.checks.status} (${output.checks.total})${output.checks.failed.length ? ' failed: ' + output.checks.failed.join(', ') : ''}${output.checks.pending.length ? ' pending: ' + output.checks.pending.join(', ') : ''}`);
+  if (output.required_checks) lines.push(`  required checks: ${output.required_checks.map((check) => `${check.name} ${check.status}`).join(', ')}`);
   if (output.review) lines.push(`  review: ${output.review.status}${output.review.run_id ? ' (' + output.review.run_id + ')' : ''}`);
   if (output.blocker) lines.push(`  blocked: ${output.blocker}`);
   if (output.merge_argv) lines.push(`  merge: ${output.merge_argv.join(' ')}`);
@@ -203,7 +230,9 @@ function cmdLand(args) {
   const cleanup = args.includes('--cleanup');
   const allowNoChecks = args.includes('--allow-no-checks');
   if (dryRun && yes) return fail(action, '--dry-run and --yes cannot be combined', { json });
-  const positional = positionalArgs(args, ['--timeout']);
+  const required = requireCheckNames(args);
+  if (!required) return fail(action, '--require-check needs a check name', { json });
+  const positional = positionalArgs(args, ['--timeout', '--require-check']);
   if (positional.length > 1) return fail(action, USAGE, { json });
   const timeoutRaw = option(args, '--timeout');
   const timeoutSec = timeoutRaw === null ? DEFAULT_TIMEOUT_SEC : timeoutRaw.trim() === '' ? NaN : Number(timeoutRaw);
@@ -239,12 +268,16 @@ function cmdLand(args) {
 
   const deadline = Date.now() + timeoutSec * 1000;
   let checks;
+  let requiredChecks;
   for (;;) {
     const read = readChecks(gh, target, cwd);
     if (!read.ok) return fail(action, `cannot read PR checks: ${read.error}`, { json, code: 1 });
     checks = summarizeChecks(read.rows);
+    requiredChecks = summarizeRequired(read.rows, required);
     const mergeUnknown = pr.mergeable === 'UNKNOWN';
-    const settled = checks.status === 'failed' || ((checks.status === 'passed' || (checks.status === 'none' && allowNoChecks)) && !mergeUnknown);
+    const requiredSettled = requiredChecks.every((check) => check.status === 'passed');
+    const settled = checks.status === 'failed' || requiredChecks.some((check) => check.status === 'failed')
+      || (requiredSettled && (checks.status === 'passed' || (checks.status === 'none' && allowNoChecks)) && !mergeUnknown);
     if (!wait || settled || pr.state !== 'OPEN' || pr.isDraft || Date.now() >= deadline) break;
     sleep(pollMs);
     viewed = viewPr(gh, target, cwd);
@@ -255,9 +288,12 @@ function cmdLand(args) {
 
   const found = findReview(repoRoot(cwd), pr.headRefOid);
   const review = found ? { status: 'approved', ...found } : { status: requireReview ? 'missing' : 'not_required' };
+  const requiredBlocker = requiredChecks.filter((check) => check.status !== 'passed').map((check) => `required check ${check.name} is ${check.status}`).join('; ');
+  const extra = required.length ? { required_checks: requiredChecks } : {};
   const blocker = pr.state !== 'OPEN' ? `PR is ${pr.state}`
     : pr.isDraft ? 'PR is a draft'
     : checks.status === 'failed' ? `checks failed: ${checks.failed.join(', ')}`
+    : requiredBlocker ? requiredBlocker
     : checks.status === 'pending' ? `checks still pending: ${checks.pending.join(', ')}`
     : checks.status === 'none' && !allowNoChecks ? 'no checks reported; pass --allow-no-checks to merge a PR without checks'
     : review.status === 'missing' ? `no finished LGTM review for head ${pr.headRefOid}`
@@ -265,12 +301,12 @@ function cmdLand(args) {
   const mergeArgv = ['gh', 'pr', 'merge', target, '--merge', '--match-head-commit', pr.headRefOid];
 
   if (blocker) {
-    const output = { action, status: 'blocked', pr: prSummary(), checks, review, blocker };
+    const output = { action, status: 'blocked', pr: prSummary(), checks, ...extra, review, blocker };
     process.exitCode = 2;
     return emit(output, json, describe(output));
   }
   if (!yes) {
-    const output = { action, status: dryRun ? 'dry-run' : 'awaiting_confirmation', pr: prSummary(), checks, review, merge_argv: mergeArgv, cleanup };
+    const output = { action, status: dryRun ? 'dry-run' : 'awaiting_confirmation', pr: prSummary(), checks, ...extra, review, merge_argv: mergeArgv, cleanup };
     if (!dryRun) process.exitCode = 2;
     return emit(output, json, describe(output));
   }
@@ -278,19 +314,19 @@ function cmdLand(args) {
   const merged = run(gh, mergeArgv.slice(1), cwd);
   viewed = viewPr(gh, target, cwd);
   if (!viewed.value) {
-    const output = { action, status: 'merge_unknown', pr: prSummary(), checks, review, blocker: `merge result cannot be confirmed: ${viewed.stderr.trim()}` };
+    const output = { action, status: 'merge_unknown', pr: prSummary(), checks, ...extra, review, blocker: `merge result cannot be confirmed: ${viewed.stderr.trim()}` };
     process.exitCode = 1;
     return emit(output, json, describe(output));
   }
   pr = viewed.value;
   if (pr.state !== 'MERGED') {
     const output = merged.ok
-      ? { action, status: 'merge_pending', pr: prSummary(), checks, review, blocker: 'gh accepted the merge but the PR is not merged yet; re-run to finish' }
-      : { action, status: 'blocked', pr: prSummary(), checks, review, blocker: `gh pr merge failed: ${merged.stderr.trim() || 'exit ' + merged.exit_code}` };
+      ? { action, status: 'merge_pending', pr: prSummary(), checks, ...extra, review, blocker: 'gh accepted the merge but the PR is not merged yet; re-run to finish' }
+      : { action, status: 'blocked', pr: prSummary(), checks, ...extra, review, blocker: `gh pr merge failed: ${merged.stderr.trim() || 'exit ' + merged.exit_code}` };
     process.exitCode = 2;
     return emit(output, json, describe(output));
   }
-  return finish({ action, status: 'merged', reused: false, pr: prSummary(), checks, review, merge_commit: pr.mergeCommit?.oid || null, after: afterMerge(gh, gk, pr, { cleanup, cwd }) });
+  return finish({ action, status: 'merged', reused: false, pr: prSummary(), checks, ...extra, review, merge_commit: pr.mergeCommit?.oid || null, after: afterMerge(gh, gk, pr, { cleanup, cwd }) });
 }
 
 export async function cmdPr(args = []) {
