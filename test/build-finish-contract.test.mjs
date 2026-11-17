@@ -52,6 +52,15 @@ describe('xm:build finish stage', () => {
     expect(BUILD).toContain('commit nothing, list those files, and ask the user');
   });
 
+  // Review item L5 on #105: on a feature branch, older commits would enter the PR, and the
+  // branch itself must not become the PR base.
+  test('asks before older commits enter the PR and never targets the current feature branch', () => {
+    expect(BUILD).toContain('`branch.<name>.gk-parent`');
+    expect(BUILD).toContain('git log --oneline <base>..HEAD');
+    expect(BUILD).toContain('list those commits and ask the user before continuing');
+    expect(BUILD).not.toContain('is the branch the run started from');
+  });
+
   test('does not commit, push, or merge for impl', () => {
     expect(BUILD).toMatch(/`impl`[^\n]*no commit, push, PR, or merge/);
   });
