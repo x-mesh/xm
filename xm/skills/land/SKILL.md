@@ -35,7 +35,7 @@ Drive ONE open PR to merge inside the current session. The reviewer (an external
 ## Arguments
 
 ```
-/xm:land [<pr>] [--review reviewer|here|none] [--merge here|none] [--check <name>]
+/xm:land [<pr>] [--review reviewer|here|none] [--merge here|none] [--check <name>] [--on-missing stop|here]
 ```
 
 | Argument | Default | Meaning |
@@ -44,6 +44,7 @@ Drive ONE open PR to merge inside the current session. The reviewer (an external
 | `--review` | `reviewer` | `reviewer`: wait for the external reviewer. `here`: run `xm:review` in this session. `none`: no review gate. |
 | `--merge` | `here` | `here`: merge with `xm pr land`. `none`: stop after the review is clean and report the PR URL. |
 | `--check` | `reviewer` | Name of the required commit status or check row |
+| `--on-missing` | `stop` | What a check still `missing` after the wait does: `stop` reports and stops, `here` reviews in this session (Step 7). xm:build passes the user's choice. |
 
 `<name>` below means the value of `--check`. `<pr>` means the resolved PR. Resolve `<owner>/<repo>` with `gh repo view --json nameWithOwner -q .nameWithOwner`.
 
@@ -79,7 +80,9 @@ xm pr land <pr> --wait --timeout 900 --require-check <name> --dry-run --json
 | `passed` | Go to Step 3 and read the review. |
 | `failed` | Go to Step 3. A review may exist and carry items to fix. |
 | `pending` after timeout | Report that the review is still running with the timeout used. Stop. Never merge. |
-| `missing` after timeout | Report "no reviewer check appeared" (user-facing: "reviewer 체크가 나타나지 않았습니다") with the timeout used. Stop. Nothing is merged. |
+| `missing` after timeout | When `--on-missing` is `stop`, report "no reviewer check appeared" (user-facing: "reviewer 체크가 나타나지 않았습니다") with the timeout used. Stop. Nothing is merged. With `--on-missing here`, report the same line, then continue as `--review here` (Step 7). |
+
+`--on-missing` applies only to `missing` after the timeout. A `failed` check, a capped or errored review, and a `pending` check never switch to a review here.
 | `pending` or `missing` before the timeout | Another check failed, and `--wait` stops as soon as any check fails. Read `checks.failed`. If this PR's change caused the failure, fix it as one fix push (Step 5) and return to Step 2. Otherwise report the failed checks and stop. Never merge. |
 
 Tell the two `pending`/`missing` cases apart by elapsed time: the command ran for less than the timeout, and `checks.status` is `failed`.

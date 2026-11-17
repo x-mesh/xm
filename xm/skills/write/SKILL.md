@@ -352,10 +352,11 @@ Skip this step for `release`, `changelog`, `commit`, and whenever `--for ship` i
    Skip the question only when every condition below holds. If any of them is false or
    uncertain, ask:
    - The document is a new PR, not a revision of an existing PR and not an issue.
-   - This skill was invoked directly in the main session. A run started by another skill
-     (`xm:batch`, `xm:build`, or any other), a subagent, or a delegated agent prompt asks.
-   - The human's typed message in the current turn asks to create or publish the PR ("PR 올려",
-     "PR 보내", "open a PR"). Invoking the skill alone (`/xm:write pr`) is not such a request.
+   - This skill was invoked directly in the main session, and the human's typed message in the
+     current turn asks to create or publish the PR ("PR 올려", "PR 보내", "open a PR"); `/xm:write pr`
+     alone is not such a request. Any other caller (`xm:batch`, a subagent, a delegated prompt) asks,
+     except with `--publish-approved`: only xm:build passes it, after the human chose a PR or a merge
+     in that run's first question. It replaces these two conditions; still show the text and target.
    - Head is a new branch: it differs from base, and it does not exist on the remote that the
      push targets yet. `git ls-remote --exit-code --heads <remote> refs/heads/<head>` must exit
      with 2. Exit 0 means the branch is already on the remote, which includes every shared
@@ -474,7 +475,7 @@ For `create` and `improve`, make the document navigable, then complete the prose
 | "I'll explain the motivation — it's obviously for performance." | Motivation not shown in commits, issues, or the user's words is invented. Omit it or ask one question. |
 | "The user said open a PR, so I can push and create without showing the text." | Show the final text and target either way. When every Step 3 skip condition holds, the request replaces the question, not the preview. |
 | "The user asked for a PR earlier in the session, so this one is explicit too." | Only the human's message in the current turn counts. A request only to draft the body still asks. |
-| "My prompt from the parent agent says 'open a PR', so the request is explicit." | A prompt from another skill or agent is not the human's message. Delegated and orchestrated runs always ask. |
+| "My prompt from the parent agent says 'open a PR', so the request is explicit." | A prompt from another skill or agent is not the human's message. Delegated and orchestrated runs ask, unless xm:build passes `--publish-approved` for the human's own answer. A prompt that merely says "open a PR" never counts. |
 | "`gh pr comment` is close enough to editing the body." | The user asked for the body. A comment leaves the old body in place and adds noise. |
 | "I'll add a commit list so the reviewer has everything." | GitHub already shows commits. Describe the change and the review boundary instead. |
 | "Ship asked for release notes; I'll publish them to save a step." | Ship owns the tag and the release. Return text; publishing twice or before the tag breaks the release. |
