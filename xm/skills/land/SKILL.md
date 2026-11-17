@@ -53,12 +53,13 @@ Drive ONE open PR to merge inside the current session. The reviewer (an external
 
 ### Step 1 — Orient
 
-1. Run `GK_AGENT=1 git-kit context --include=remotes` and `gh pr view <pr> --json number,url,state,headRefName,headRefOid,isCrossRepository`.
+1. Run `GK_AGENT=1 git-kit context --include=remotes` and `gh pr view <pr> --json number,url,state,headRefName,headRefOid,isCrossRepository,headRepository`.
 2. If the PR is not open, report it and stop.
 3. **Checkout gate.** Steps 5 commits and pushes the branch checked out here, so it must be the PR's head. Continue only when all hold:
    - `git branch --show-current` equals `headRefName`.
    - `isCrossRepository` is `false`.
    - `git rev-parse HEAD` equals `headRefOid`. If HEAD differs, the local branch has commits the PR does not have, or lacks commits it has: report both SHAs and stop.
+   - The push goes to the PR's head repository. Read the upstream with `git rev-parse --abbrev-ref --symbolic-full-name '@{upstream}'`, take its remote name (the part before the first `/`), and read that remote's URL with `git remote get-url <remote>`. The `<owner>/<repo>` in that URL (without `.git`, compared case-insensitively) must equal `headRepository.nameWithOwner`. A branch with no upstream fails this check. A clone whose `origin` is a fork of the PR's repository would push the fix to the fork and leave the PR unchanged.
 
    Otherwise report the current branch and the PR head and stop. Never switch branches or push from another checkout on your own. Waiting and merging (Steps 2 and 8) act on the PR alone, so `--merge here` with `--review none` may skip this gate.
 4. If the working tree has unrelated changes, tell the user and commit only the files each fix touches (Step 5).

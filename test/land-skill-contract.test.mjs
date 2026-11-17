@@ -94,6 +94,15 @@ describe('land skill contract', () => {
     expect(SKILL).toContain('Never switch branches or push from another checkout on your own');
   });
 
+  // Review item L4 on #104: a fork as origin passes the branch and SHA checks but pushes elsewhere.
+  test('pushes only to the remote that hosts the PR head repository', () => {
+    expect(SKILL).toContain('headRepository');
+    expect(SKILL).toContain("git rev-parse --abbrev-ref --symbolic-full-name '@{upstream}'");
+    expect(SKILL).toContain('git remote get-url <remote>');
+    expect(SKILL).toContain('must equal `headRepository.nameWithOwner`');
+    expect(SKILL).toContain('A branch with no upstream fails this check');
+  });
+
   // Review item L2 on #104: --wait stops when any check fails, before the required check settles.
   test('handles a required check that is still pending or missing when another check failed', () => {
     expect(SKILL).toContain('| `pending` or `missing` before the timeout |');

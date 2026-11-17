@@ -1,5 +1,5 @@
 {
-  "generatedAt": 1794877494392,
+  "generatedAt": 1794877707259,
   "version": 3,
   "skills": [
     {
@@ -136,8 +136,8 @@
     },
     {
       "plugin": "land",
-      "sha256": "82071b1c244dc1b29231e7282b6468381ddcc3667f367e2be9c50bc8405bb269",
-      "bytes": 12396,
+      "sha256": "ba7ced5265b19865714f62767127fa45ae881cbe98608a39c7eecbc04bc2cf9c",
+      "bytes": 12945,
       "referencesSha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
       "referenceFiles": 0,
       "referenceBytes": 0,
