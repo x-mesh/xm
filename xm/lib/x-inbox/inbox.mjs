@@ -136,6 +136,63 @@ export function materializeMemory(dir, memoryContent, opts = {}) {
   return writeLedgerIfAbsent(inboxDir, item, { cwd, beforeCommit: opts.beforePersist });
 }
 
+/**
+ * Pick the delivery memory for `tossId` out of a raw mem-mesh `search`
+ * response, so the receiving agent never decodes JSON by hand.
+ *
+ * Each search result's `content` is the toss body serialized as a string.
+ * Agents copying that out of the search response's text kept writing the
+ * outer-escaped form (`{\"id\":...}`) to disk, which then failed to parse
+ * (astar, toss-20261118-50dd3e62). Taking the whole response removes that
+ * decoding step from the agent entirely.
+ *
+ * Matches on the body's own `id`, never on ranking order: a search for a
+ * toss id can also return unrelated memories that merely mention it.
+ * Several memories with byte-identical content (a retried `add`) are one
+ * delivery; differing bodies under one toss id are refused rather than
+ * guessed between.
+ *
+ * @param {string|object|object[]} searchResponse whole envelope (`{results:[...]}`) or its `results` array
+ * @param {string} tossId
+ * @returns {{ content: string, memoryId: string|null }}
+ */
+export function selectTossMemory(searchResponse, tossId) {
+  let parsed;
+  try {
+    parsed = typeof searchResponse === 'string' ? JSON.parse(searchResponse) : searchResponse;
+  } catch {
+    throw new InboxMaterializationError('search response is not valid JSON');
+  }
+  const results = Array.isArray(parsed) ? parsed : parsed?.results;
+  if (!Array.isArray(results)) {
+    throw new InboxMaterializationError('expected mem-mesh search\'s `results` array (or the whole response)');
+  }
+
+  const matches = [];
+  for (const result of results) {
+    if (typeof result?.content !== 'string') continue;
+    let body;
+    try {
+      body = JSON.parse(result.content);
+    } catch {
+      continue;
+    }
+    if (body?.id === tossId) matches.push(result);
+  }
+  if (matches.length === 0) {
+    throw new InboxMaterializationError(
+      `no search result carries a body with id ${JSON.stringify(tossId)} (${results.length} result(s) checked)`,
+    );
+  }
+  if (new Set(matches.map((m) => m.content)).size > 1) {
+    throw new InboxMaterializationError(
+      `search results hold different bodies for ${JSON.stringify(tossId)}: memories ${matches.map((m) => m.id).join(', ')}`,
+    );
+  }
+  const [first] = matches;
+  return { content: first.content, memoryId: typeof first.id === 'string' ? first.id : null };
+}
+
 function findItemOrThrow(dir, id) {
   const items = readLedger(dir);
   const item = items.find((i) => i.id === id);

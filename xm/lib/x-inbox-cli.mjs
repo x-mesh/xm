@@ -16,6 +16,7 @@
  *   drop <id> --summary <text> [--json]
  *   record <id> [--pin-id <id>] [--memory-id <id>] [--scope outbox|inbox] [--json]
  *   materialize --content <memory-json> | --content-file <path>
+ *               | --search-file <path> --toss-id <id>
  *               [--memory-id <id>] [--pin-id <id>] [--json]
  *   reconcile --pins <pin_list-json> | --pins-file <path> [--partial] [--json]
  *
@@ -42,7 +43,7 @@ import { join } from 'node:path';
 import { toss, describeCapture } from './x-inbox/toss.mjs';
 import {
   list as listLedger, take, InboxItemNotFoundError,
-  materializeMemory, InboxMaterializationError,
+  materializeMemory, selectTossMemory, InboxMaterializationError,
   pinInventory, INVENTORY_ACTIONS,
 } from './x-inbox/inbox.mjs';
 import { recordMemMesh, LedgerItemNotFoundError, readLedger } from './x-inbox/ledger.mjs';
@@ -58,7 +59,7 @@ const KNOWN_FLAGS = new Set([
   '--command', '--output', '--output-file', '--fix', '--why', '--to-files',
   '--from-commit', '--pin-id', '--memory-id', '--scope', '--json', '--help',
   '--content', '--content-file', '--pins', '--pins-file', '--partial',
-  '--summary', '--verification', '--receipt-memory-id',
+  '--summary', '--verification', '--receipt-memory-id', '--search-file', '--toss-id',
 ]);
 
 /**
@@ -429,7 +430,7 @@ async function recordCmd(args) {
 
 function materializeUsage() {
   return 'Usage: xm inbox materialize --content <memory-json> | --content-file <path> '
-    + '[--memory-id <id>] [--pin-id <id>] [--json]\n';
+    + '| --search-file <path> --toss-id <id> [--memory-id <id>] [--pin-id <id>] [--json]\n';
 }
 
 /**
@@ -442,15 +443,51 @@ function materializeUsage() {
  * as a shell argument means re-quoting nested escapes by hand, and a single
  * slip corrupts the repro silently. Same fallback shape as toss's
  * `--output-file`: the inline flag wins when both are given.
+ *
+ * `--search-file` goes one step further: it takes mem-mesh `search`'s whole
+ * response and picks the body by `--toss-id` (`selectTossMemory()`), so the
+ * agent no longer extracts and un-escapes `content` itself. It is a separate
+ * input, so combining it with `--content`/`--content-file` is a usage error.
  */
 async function materializeCmd(args) {
   const contentFlag = getFlag(args, '--content');
   const contentFile = getFlag(args, '--content-file');
   const memoryId = getFlag(args, '--memory-id');
   const pinId = getFlag(args, '--pin-id');
+  const searchFile = getFlag(args, '--search-file');
+  const tossId = getFlag(args, '--toss-id');
   const json = hasFlag(args, '--json');
 
+  if (searchFile !== null) {
+    if (contentFlag !== null || contentFile !== null) {
+      process.stderr.write('xm inbox materialize: --search-file cannot be combined with --content or --content-file\n');
+      return 2;
+    }
+    if (typeof searchFile !== 'string' || !nonEmptyStr(tossId)) {
+      process.stderr.write('xm inbox materialize: --search-file <path> requires --toss-id <id>\n');
+      return 2;
+    }
+  }
+
   let content = typeof contentFlag === 'string' ? contentFlag : null;
+  let selectedMemoryId = null;
+  if (typeof searchFile === 'string') {
+    let raw;
+    try {
+      raw = readFileSync(searchFile, 'utf8');
+    } catch (err) {
+      process.stderr.write(`xm inbox materialize: failed to read --search-file ${searchFile}: ${err.message}\n`);
+      return 1;
+    }
+    try {
+      ({ content, memoryId: selectedMemoryId } = selectTossMemory(raw, tossId));
+    } catch (err) {
+      if (!(err instanceof InboxMaterializationError)) throw err;
+      if (json) process.stdout.write(`${JSON.stringify({ ok: false, reason: 'rejected', message: err.message }, null, 2)}\n`);
+      else process.stderr.write(`xm inbox materialize: ${err.message}\n`);
+      return 1;
+    }
+  }
   if (content === null && typeof contentFile === 'string') {
     try {
       content = readFileSync(contentFile, 'utf8');
@@ -471,7 +508,7 @@ async function materializeCmd(args) {
   try {
     const result = materializeMemory(inboxDirFor(process.cwd()), content, {
       cwd: process.cwd(),
-      ...(typeof memoryId === 'string' ? { memoryId } : {}),
+      ...(typeof memoryId === 'string' ? { memoryId } : selectedMemoryId ? { memoryId: selectedMemoryId } : {}),
       ...(typeof pinId === 'string' ? { pinId } : {}),
     });
     if (json) {
@@ -577,6 +614,7 @@ Usage:
   xm inbox drop <id> --summary <text> [--json]
   xm inbox record <id> --pin-id <id> [--memory-id <id>] [--scope outbox|inbox] [--json]
   xm inbox materialize --content <memory-json> | --content-file <path>
+                       | --search-file <path> --toss-id <id>
                        [--memory-id <id>] [--pin-id <id>] [--json]
   xm inbox reconcile --pins <pin_list-json> | --pins-file <path> [--partial] [--json]
   xm inbox receipt <status|retry|record|materialize> <toss-id> [...]

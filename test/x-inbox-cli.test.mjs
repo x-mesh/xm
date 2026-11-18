@@ -456,6 +456,80 @@ describe('xm inbox materialize — memory body to local inbox only', () => {
       rmSync(projectDir, { recursive: true, force: true });
     }
   });
+
+  test('--search-file picks the body by toss id from a raw search response, without manual decoding', () => {
+    const home = mkdtempSync(join(tmpdir(), 'x-inbox-cli-home-'));
+    const projectDir = mkdtempSync(join(tmpdir(), 'x-inbox-cli-project-'));
+    try {
+      mkdirSync(join(projectDir, '.mem-mesh'), { recursive: true });
+      writeFileSync(join(projectDir, '.mem-mesh', 'project-id'), 'receiver\n');
+      const payload = {
+        id: 'toss-20261118-50dd3e62', from_project: 'sender', to_project: 'receiver',
+        created_at: '2026-11-18T00:46:42.947Z', status: 'captured', title: '한도 수집 추가', why: '',
+        repro: { command: 'grep -rnE "oauth/usage|rateLimits/read" src', output: 'a.go:25:\turl = "https://x"\nexit=0\n', truncated: false },
+        anchors: { to_files: [] }, fix_direction: 'fix', mem_mesh: {},
+      };
+      // The exact shape mem-mesh search returns: body serialized into `content`,
+      // next to an unrelated memory that merely mentions the toss id.
+      const response = {
+        results: [
+          { id: 'mem-other', content: `note about ${payload.id}`, project_id: 'receiver' },
+          { id: 'mem-body', content: JSON.stringify(payload), project_id: 'receiver', tags: ['inbox'] },
+        ],
+        total: 2,
+      };
+      const searchPath = join(projectDir, 'search.json');
+      writeFileSync(searchPath, JSON.stringify(response));
+
+      const ok = runCli(['materialize', '--search-file', searchPath, '--toss-id', payload.id, '--pin-id', 'pin-1', '--json'], { home, cwd: projectDir });
+      expect(ok.status).toBe(0);
+      const created = JSON.parse(ok.stdout);
+      expect(created.created).toBe(true);
+      expect(created.item.repro.command).toBe(payload.repro.command);
+      expect(created.item.repro.output).toBe(payload.repro.output);
+      expect(created.item.mem_mesh).toEqual({ memory_id: 'mem-body', pin_id: 'pin-1' });
+
+      // A bare results array is accepted too, and duplicates of one body are one delivery.
+      const barePath = join(projectDir, 'bare.json');
+      writeFileSync(barePath, JSON.stringify([response.results[1], { ...response.results[1], id: 'mem-dup' }]));
+      const bare = runCli(['materialize', '--search-file', barePath, '--toss-id', payload.id, '--json'], { home, cwd: projectDir });
+      expect(bare.status).toBe(0);
+      expect(JSON.parse(bare.stdout).created).toBe(false);
+
+      const noMatch = runCli(['materialize', '--search-file', searchPath, '--toss-id', 'toss-absent', '--json'], { home, cwd: projectDir });
+      expect(noMatch.status).toBe(1);
+      expect(JSON.parse(noMatch.stdout).message).toContain('toss-absent');
+
+      const conflictPath = join(projectDir, 'conflict.json');
+      writeFileSync(conflictPath, JSON.stringify({
+        results: [
+          { id: 'mem-a', content: JSON.stringify({ ...payload, id: 'toss-x' }) },
+          { id: 'mem-b', content: JSON.stringify({ ...payload, id: 'toss-x', title: 'different' }) },
+        ],
+      }));
+      const conflict = runCli(['materialize', '--search-file', conflictPath, '--toss-id', 'toss-x', '--json'], { home, cwd: projectDir });
+      expect(conflict.status).toBe(1);
+      expect(JSON.parse(conflict.stdout).message).toContain('mem-a, mem-b');
+      expect(existsSync(join(projectDir, '.xm', 'inbox', 'toss-x.json'))).toBe(false);
+
+      const noId = runCli(['materialize', '--search-file', searchPath, '--json'], { home, cwd: projectDir });
+      expect(noId.status).toBe(2);
+      expect(noId.stderr).toContain('--toss-id');
+
+      const mixed = runCli(['materialize', '--search-file', searchPath, '--toss-id', payload.id, '--content-file', searchPath], { home, cwd: projectDir });
+      expect(mixed.status).toBe(2);
+      expect(mixed.stderr).toContain('cannot be combined');
+
+      const notJson = join(projectDir, 'escaped.txt');
+      writeFileSync(notJson, '{\\"id\\":\\"x\\"}');
+      const bad = runCli(['materialize', '--search-file', notJson, '--toss-id', payload.id, '--json'], { home, cwd: projectDir });
+      expect(bad.status).toBe(1);
+      expect(JSON.parse(bad.stdout).message).toContain('not valid JSON');
+    } finally {
+      rmSync(home, { recursive: true, force: true });
+      rmSync(projectDir, { recursive: true, force: true });
+    }
+  });
 });
 
 describe('xm inbox resolve — evidence gate and delivery-pin close', () => {
