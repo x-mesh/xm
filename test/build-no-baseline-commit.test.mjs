@@ -86,11 +86,16 @@ describe('a missing baseline commit', () => {
 
   // The rev-parse in progress has a 5 second limit. The diagnosis that follows a failure
   // had none, so a git that hangs turned an error after 5 seconds into no answer at all.
-  test('progress start still ends in an error when git does not answer', () => {
+  // The diagnosis makes two calls, and each fake git stops a different one: the first call
+  // when every call hangs, the second when only `--is-inside-work-tree` hangs.
+  test.each([
+    ['every call', '#!/bin/sh\nexec sleep 120\n'],
+    ['only the second diagnosis call', '#!/bin/sh\ncase "$*" in *--is-inside-work-tree*) exec sleep 120;; esac\nexit 1\n'],
+  ])('progress start still ends in an error when git does not answer: %s', (_label, script) => {
     const cwd = fixture('one commit');
     const bin = mkdtempSync(join(tmpdir(), 'xb-hung-git-'));
     try {
-      writeFileSync(join(bin, 'git'), '#!/bin/sh\nexec sleep 120\n');
+      writeFileSync(join(bin, 'git'), script);
       chmodSync(join(bin, 'git'), 0o755);
       const env = { ...process.env, XM_ROOT: join(cwd, '.xm'), X_BUILD_ROOT: undefined, XKIT_SERVER: undefined, PATH: bin + ':' + process.env.PATH };
       const result = spawnSync('node', [CLI, 'progress', 'start', '--plan', RUN, '--task', 'A'], { cwd, env, encoding: 'utf8', timeout: 25_000 });
