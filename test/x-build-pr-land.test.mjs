@@ -397,6 +397,93 @@ describe('xm pr land', () => {
       expect(merges(fixture)).toEqual([]);
     });
 
+    describe('--wait-required', () => {
+      const fail = (name, description = '') => ({ name, state: 'FAILURE', bucket: 'fail', description });
+      const slowCi = [
+        [pending('test')],
+        [pending('test'), pending('reviewer')],
+        [pending('test'), pass('reviewer', 'LGTM, 1 open item')],
+        [pass('test'), pass('reviewer', 'LGTM, 1 open item')],
+      ];
+
+      test('the wait ends when the required check passes, while another check is still pending', () => {
+        const fixture = setup({ checks: slowCi });
+        const result = land(fixture, ['7', '--dry-run', '--wait-required', '--require-check', 'reviewer']);
+        expect(ghChecks(fixture).length).toBe(3);
+        expect(result.code).toBe(2);
+        expect(result.output.status).toBe('blocked');
+        expect(result.output.blocker).toBe('checks still pending: test');
+        expect(result.output.required_checks).toEqual([{ name: 'reviewer', status: 'passed', description: 'LGTM, 1 open item' }]);
+        expect(result.output.checks.pending).toEqual(['test']);
+      });
+
+      test('plain --wait on the same checks keeps polling until every check has finished', () => {
+        const fixture = setup({ checks: slowCi });
+        const result = land(fixture, ['7', '--dry-run', '--wait', '--require-check', 'reviewer']);
+        expect(ghChecks(fixture).length).toBe(4);
+        expect(result.output.status).toBe('dry-run');
+      });
+
+      test('the wait ends when the required check fails', () => {
+        const fixture = setup({ checks: [[pending('test'), pending('reviewer')], [pending('test'), fail('reviewer', 'changes requested')]] });
+        const result = land(fixture, ['7', '--dry-run', '--wait-required', '--require-check', 'reviewer']);
+        expect(ghChecks(fixture).length).toBe(2);
+        expect(result.output.required_checks).toEqual([{ name: 'reviewer', status: 'failed', description: 'changes requested' }]);
+      });
+
+      test('another failed check does not end the wait before the required check has a verdict', () => {
+        const fixture = setup({ checks: [[fail('lint'), pending('reviewer')], [fail('lint'), pending('reviewer')], [fail('lint'), pass('reviewer')]] });
+        const result = land(fixture, ['7', '--dry-run', '--wait-required', '--require-check', 'reviewer']);
+        expect(ghChecks(fixture).length).toBe(3);
+        expect(result.output.blocker).toBe('checks failed: lint');
+        expect(result.output.checks.failed).toEqual(['lint']);
+        expect(result.output.required_checks[0].status).toBe('passed');
+      });
+
+      test('every required check needs a verdict before the wait ends', () => {
+        const fixture = setup({ checks: [[pass('a'), pending('b'), pending('test')], [pass('a'), pass('b'), pending('test')]] });
+        const result = land(fixture, ['7', '--dry-run', '--wait-required', '--require-check', 'a', '--require-check', 'b']);
+        expect(ghChecks(fixture).length).toBe(2);
+        expect(result.output.required_checks.map((check) => check.status)).toEqual(['passed', 'passed']);
+      });
+
+      test('it never merges while another check is pending or failed, even with --yes', () => {
+        for (const other of [pending('test'), fail('test')]) {
+          const fixture = setup({ checks: [[other, pass('reviewer')]] });
+          const result = land(fixture, ['7', '--yes', '--wait-required', '--require-check', 'reviewer']);
+          expect(result.code).toBe(2);
+          expect(result.output.status).toBe('blocked');
+          expect(merges(fixture)).toEqual([]);
+        }
+      });
+
+      test('a failed required check ends the wait and blocks the merge, even with --yes', () => {
+        const fixture = setup({ checks: [[pass('test'), pending('reviewer')], [pass('test'), fail('reviewer', 'changes requested')]] });
+        const result = land(fixture, ['7', '--yes', '--wait-required', '--require-check', 'reviewer']);
+        expect(ghChecks(fixture).length).toBe(2);
+        expect(result.code).toBe(2);
+        expect(result.output.status).toBe('blocked');
+        expect(result.output.blocker).toBe('checks failed: reviewer');
+        expect(result.output.required_checks).toEqual([{ name: 'reviewer', status: 'failed', description: 'changes requested' }]);
+        expect(merges(fixture)).toEqual([]);
+      });
+
+      test('the wait ends at the timeout when the required check never appears', () => {
+        const fixture = setup({ checks: [[pending('test')]] });
+        const result = land(fixture, ['7', '--dry-run', '--wait-required', '--timeout', '0', '--require-check', 'reviewer']);
+        expect(result.code).toBe(2);
+        expect(result.output.blocker).toBe('required check reviewer is missing');
+      });
+
+      test('it is a usage error without --require-check', () => {
+        const fixture = setup();
+        const result = land(fixture, ['7', '--dry-run', '--wait-required']);
+        expect(result.code).toBe(2);
+        expect(result.output.errors[0]).toBe('--wait-required needs --require-check');
+        expect(calls(fixture)).toEqual([]);
+      });
+    });
+
     test('a similar name does not satisfy the requirement, and matching is case-sensitive', () => {
       for (const name of ['reviewer-lint', 'Reviewer']) {
         const fixture = setup({ checks: [[pass('test'), pass(name)]] });

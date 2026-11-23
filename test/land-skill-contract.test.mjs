@@ -35,7 +35,7 @@ describe('land skill contract', () => {
   });
 
   test('waits with the dry-run command and a 900 second default', () => {
-    expect(SKILL).toContain('xm pr land <pr> --wait --timeout 900 --require-check <name> --dry-run --json');
+    expect(SKILL).toContain('xm pr land <pr> --wait-required --timeout 900 --require-check <name> --dry-run --json');
     expect(SKILL).toContain('`900` seconds is the default');
   });
 
@@ -103,11 +103,16 @@ describe('land skill contract', () => {
     expect(SKILL).toContain('A branch with no upstream fails this check');
   });
 
-  // Review item L2 on #104: --wait stops when any check fails, before the required check settles.
-  test('handles a required check that is still pending or missing when another check failed', () => {
-    expect(SKILL).toContain('| `pending` or `missing` before the timeout |');
-    expect(SKILL).toContain('`--wait` stops as soon as any check fails');
-    expect(SKILL).toMatch(/Read `checks\.failed`/);
+  // --wait-required returns on the reviewer verdict alone, so the skill must say where a failed
+  // CI check is handled: with the review items, or at the merge step when CI finishes later.
+  test('reads the review without waiting for the other checks and still handles a failed one', () => {
+    expect(SKILL).toContain('`--wait-required` returns as soon as the required check passes or fails');
+    expect(SKILL).toContain('Step 8 waits for every check before the merge');
+    expect(SKILL).toMatch(/`checks\.failed` names a check that this PR's change broke, fix it in the same fix push/);
+    expect(SKILL).toMatch(/`blocker` is `checks failed: \.\.\.` and this PR's change caused the failure, fix it as one fix push/);
+    expect(SKILL).toContain("If the failure does not come from this PR's change, report the failed checks and stop. Never merge.");
+    expect(SKILL).toContain("If this PR's change did not cause it, report the failed checks and stop.");
+    expect(SKILL).toContain('xm pr land <pr> --wait --require-check <name> --yes');
   });
 
   test('has at least five rationalization rows', () => {
