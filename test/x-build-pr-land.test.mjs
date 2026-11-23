@@ -457,6 +457,17 @@ describe('xm pr land', () => {
         }
       });
 
+      test('a failed required check ends the wait and blocks the merge, even with --yes', () => {
+        const fixture = setup({ checks: [[pass('test'), pending('reviewer')], [pass('test'), fail('reviewer', 'changes requested')]] });
+        const result = land(fixture, ['7', '--yes', '--wait-required', '--require-check', 'reviewer']);
+        expect(ghChecks(fixture).length).toBe(2);
+        expect(result.code).toBe(2);
+        expect(result.output.status).toBe('blocked');
+        expect(result.output.blocker).toBe('checks failed: reviewer');
+        expect(result.output.required_checks).toEqual([{ name: 'reviewer', status: 'failed', description: 'changes requested' }]);
+        expect(merges(fixture)).toEqual([]);
+      });
+
       test('the wait ends at the timeout when the required check never appears', () => {
         const fixture = setup({ checks: [[pending('test')]] });
         const result = land(fixture, ['7', '--dry-run', '--wait-required', '--timeout', '0', '--require-check', 'reviewer']);
