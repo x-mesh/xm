@@ -65,7 +65,7 @@ Every SKILL.md must have a `## Common Rationalizations` section.
 | x-humble | 7 | retrospective decay, pattern recognition |
 | x-probe | 7 | premise validation, inversion, self-evident trap |
 | x-review | 7 | review discipline, severity, author blind spots |
-| x-build | 7 | planning, done_criteria, scope, risk |
+| x-build | 7 | lease and gate placeholders, first commit, parallel starts, agent reports |
 | x-solver | 7 | structured decomposition, iteration, constraints |
 | x-eval | 7 | rubrics, N=1 eval, LLM-as-judge bias |
 | x-op | 7 | strategy selection, --verify, compose |

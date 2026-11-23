@@ -67,7 +67,7 @@ xm build route finish --decision-id <id> --json
 
 On the planned route, run `route start` after the plan is saved and before the first executor agent. Pass the `expected_files` of every plan task as `--expected-files`, and take each gate command from the plan's `validation.commands` and task `verify_commands`. Never pass a file that the run does not change, or a command that cannot fail (`true`, `:`, `exit 0`), to obtain a lease. When no plan command observes a required gate, stop and report that the plan does not cover that gate.
 
-Start no executor agent without a lease. When `route start` exits non-zero, or `progress start` does for a task of a tracked plan, fix the cause that the error names and run the command again, or stop and report the error to the user. Never continue untracked: a run without a lease leaves no receipt, and `route verify` and `route finish` cannot record it. The lease guard hook enforces this after a failed `route start`: it blocks each Agent call of the session until a start succeeds. `xm setup` installs the hook for every project, and `xm build hooks install` adds it to one project. Giving up the run is the user's decision: run `xm build route abandon --decision-id <id>` to release the guard only after the user says so.
+Start no executor agent without a lease. When `route start` exits non-zero, or `progress start` does for a task of a tracked plan, fix the cause that the error names and run the command again, or stop and report the error to the user. Never continue untracked: a run without a lease leaves no receipt, and `route verify` and `route finish` cannot record it. The lease guard hook enforces this for a `route start` that fails after the decision, confirmation, and lease checks: it blocks each Agent call of the session until a start succeeds. A start that fails at one of those checks (an unknown or unconfirmed decision, or a lease that already exists) leaves no record, and the guard does not block. `xm setup` installs the hook for every project, and `xm build hooks install` adds it to one project. Giving up the run is the user's decision: run `xm build route abandon --decision-id <id>` to release the guard only after the user says so.
 
 `route start` and `progress start` record HEAD as the baseline, so both need a git repository with at least one commit. Check this in step 1. When the directory has no repository or no commit, ask the user before `git init` or the first commit, in the AskUserQuestion call of the model questions. Leave `.xm/` out of that commit: xm rewrites its state on every run, so a state file that git tracks makes `route start` refuse the tree.
 
@@ -247,6 +247,18 @@ Universal (both modes):
 
 Developer mode: terse and direct — lead with the result; state findings/actions without a 권고형 결말 pile-up.
 Easy/normal mode: accessible Korean, polite guidance, and short explanations for unfamiliar terms. Keep commands, flags, paths, and proper nouns in English.
+
+## Common Rationalizations
+
+| Excuse | Reality |
+|--------|---------|
+| "`route start` failed, but the plan is clear, so I'll start the executors and record the run later." | A run without a lease leaves no receipt, and `route verify` and `route finish` cannot record it afterwards. Fix the cause that the error names and start again, or stop and report the error. |
+| "The decision needs a gate command, so `test=true` is enough to get the lease." | A command that cannot fail observes nothing, and the receipt lists it under `gates_passing_before_change`. Take each gate command from the plan's `validation.commands` and `verify_commands`. When none fits a required gate, stop and report that gap. |
+| "`--expected-files` only needs a path, so I'll pass a file that exists." | The declaration is fixed at `route start`. `route verify` fails when a file outside it changed, and when no file inside it changed. Pass the `expected_files` of every plan task. |
+| "The repository has no commit, so I'll run `git init` and commit to get past the error." | Creating a repository or a commit is the user's decision. Ask first, and leave `.xm/` out of that commit. |
+| "The tasks touch different files, so I can start them all together." | Disjoint files are not independence: tasks that share state, a compile or test unit, or a validation command break each other's checks. Run tasks in parallel only when all of those are independent, and start a task beside a task it depends on only when the plan lists that dependency in `contract_deps`. |
+| "The consumer's checks need the producer, so its executor can wait for the producer and run them." | The executor of a contract consumer is done when its files are written. The root runs `progress verify` after both agents return, the dependency first. |
+| "The agent reported that the task is done and the tests pass." | A report is not a check. `progress verify` and `route verify` run the commands and compare the files, so run them before the result counts. |
 
 ## References
 

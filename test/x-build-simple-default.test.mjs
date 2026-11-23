@@ -59,6 +59,19 @@ describe('x-build simple default workflow', () => {
     expect(taskSource).toContain('never hide failure behind broad catches, empty results, or arbitrary defaults');
   });
 
+  test('has at least five rationalization rows', () => {
+    expect(buildSkill).toContain('## Common Rationalizations');
+    const section = buildSkill.split('## Common Rationalizations')[1].split('\n## ')[0];
+    expect(section.split('\n').filter((line) => line.startsWith('| "')).length).toBeGreaterThanOrEqual(5);
+  });
+
+  // The guard records only a start that fails past the decision, confirmation, and lease
+  // checks. The skill must not read as if every failed start blocked.
+  test('states which failed route start the lease guard blocks', () => {
+    expect(buildSkill).toContain('fails after the decision, confirmation, and lease checks');
+    expect(buildSkill).toContain('leaves no record, and the guard does not block');
+  });
+
   test('uses existing validation instead of automatic meta-gates', () => {
     expect(buildSkill).toContain('test, lint, build, review를 고정 checklist로 모두 실행하지 않습니다');
     expect(buildSkill).toContain('순차 실행이 기본입니다');
