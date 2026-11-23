@@ -142,7 +142,7 @@ xm setup --notify       # 오래 걸린 Claude·Codex 작업이 끝나면 알림
 
 `~/.claude/hooks/xm-trace-session.mjs`를 복사하고 `~/.claude/settings.json`의 `PreToolUse`/`PostToolUse`에 Skill matcher를 병합합니다. 기존 훅(mem-mesh 등)은 보존되며, 수정 시 타임스탬프 백업이 생성됩니다. Claude Code 밖에서 실행해야 할 때는 bash 경로를 쓰고, 그 외에는 `/xm init`을 권장합니다.
 
-`xm setup`은 x-build lease guard도 `~/.claude/hooks/xm-build/`에 설치합니다. 한 세션에서 `xm build route start`가 실패하면, start가 성공할 때까지 그 세션의 Agent 호출을 막습니다. `xm build route abandon`으로 풀 수 있고 `XM_BUILD_HOOKS_OFF=1`로 끌 수 있습니다. `xm update`도 전역 훅을 갱신할 때 함께 설치합니다.
+`xm setup`은 x-build lease guard도 `~/.claude/hooks/xm-build/`에 설치합니다. 한 세션에서 `xm build route start`가 실패하면, start가 성공할 때까지 그 세션의 Agent 호출을 막습니다. decision, 모델 확정, lease 검사를 지난 뒤의 실패만 기록하므로, 그 검사에서 실패한 start는 막지 않습니다. `xm build route abandon`으로 풀 수 있고 `XM_BUILD_HOOKS_OFF=1`로 끌 수 있습니다. `xm update`도 전역 훅을 갱신할 때 함께 설치합니다.
 
 `--claude-md`를 주면 `~/.claude/CLAUDE.md`에 마커로 둘러싼 라우팅 블록을 추가합니다. 이 블록은 PR을 올릴 때 **xm:write**를 쓰는 것처럼 Claude가 어떤 상황에서 어떤 xm 스킬을 호출할지 정합니다. 플래그 없이 설치하면 블록을 추가하지 않습니다. 한 번 추가한 뒤에는 `xm setup`과 `xm update`가 블록을 최신 내용으로 갱신합니다. 갱신할 때 블록 안의 내용은 교체되므로, 직접 쓰는 규칙은 블록 밖에 두세요. 블록만 없애려면 블록을 지우면 되고, 이후 설치에서도 다시 추가하지 않습니다. `CLAUDE.md`를 바꿀 때마다 타임스탬프 백업을 만듭니다.
 
@@ -551,7 +551,7 @@ xm build progress show --plan <run-id>
 | **워크트리 실행** | `run --worktrees`가 병렬 안전한 태스크를 독립된 `git-kit` 워크트리로 나눠 실행. 각 태스크 patch는 머지 전 `gate-panel`(크로스 모델 패널 리뷰 게이트)을 통과해야 함 — [워크트리 파이프라인](#worktree-pipeline-ko) 참고 |
 | **그룹 단위 리뷰** | `build.review_scope`(기본 `group` / `task`)가 리뷰 그룹의 태스크를 태스크별이 아닌 리뷰 1회 실행으로 묶습니다. `build.review_mode`(기본 `manual` / `auto`)가 그룹 리뷰를 선택적(노출만, 비차단)으로 둘지 Execute→Verify 필수 경계로 둘지, `build.review_depth`(기본 `solo` / `checks-only` / `panel`)가 리뷰 중량을 결정합니다 — `solo`는 reviewer 에이전트 1명이 그룹 패치를 리뷰하고 `review-group <name> --verdict pass\|fail`로 판정을 기록하며, `checks-only`는 test/lint만으로 통과, 크로스벤더 `panel`은 명시적 `review-group <name> --depth panel [--rounds 2]`일 때만 실행됩니다. |
 | **강제 페이즈 게이트** | exit 게이트를 config-schema 기본값 위에 설정을 머지해 해석하고, 각 페이즈 `status.json`에 판정을 기록(`status --json`에 노출), 막히면 non-zero exit — "에이전트가 말로 못 넘는 게이트"가 실제로 작동(no-op 아님) |
-| **Blocking hooks** | `hooks install`이 네이티브 Claude Code 훅을 설치: review-fix 중 `triage.fix_scope.allowed_files` 밖 편집을 막는 PreToolUse **scope-guard**, 미해결 Critical/High가 있으면 턴 종료를 막는 Stop **stop-gate**, 같은 세션에서 `route start`가 실패한 뒤의 Agent 호출을 막는 PreToolUse **lease-guard**. lease-guard는 이후 start가 성공하거나 `route abandon`을 실행하면 풀림. lease-guard는 `xm setup`이 모든 프로젝트에 설치하고, `hooks install`은 한 프로젝트에 추가함. 디스크만 읽고 fail-open; `XM_BUILD_HOOKS_OFF=1`로 우회 |
+| **Blocking hooks** | `hooks install`이 네이티브 Claude Code 훅을 설치: review-fix 중 `triage.fix_scope.allowed_files` 밖 편집을 막는 PreToolUse **scope-guard**, 미해결 Critical/High가 있으면 턴 종료를 막는 Stop **stop-gate**, 같은 세션에서 기록된 `route start` 실패 뒤의 Agent 호출을 막는 PreToolUse **lease-guard**. lease-guard는 이후 start가 성공하거나 `route abandon`을 실행하면 풀림. lease-guard는 `xm setup`이 모든 프로젝트에 설치하고, `hooks install`은 한 프로젝트에 추가함. 디스크만 읽고 fail-open; `XM_BUILD_HOOKS_OFF=1`로 우회 |
 | **ROI 라우팅 신호** | `roi`가 model/role/strategy별 실측 기반 quality-per-dollar(Score/$)를 보고하고 `model_overrides` 변경을 제안 — 단 calibrated 데이터(실측 비용 **및** 점수 있는 태스크 ≥5개)에서만. 추정치로 추측하거나 config를 자동 수정하지 않음 |
 | **보정된 비용 실측** | `forecast update`가 실측 토큰 비용을 재집계해 forecast가 실측 기반으로 산정; `forecast`는 각 추정을 `estimate-only` vs `calibrated`로 라벨 |
 | **워크플로 효과 측정** | `plan --profile light\|standard\|deep`으로 빌드에 들일 절차 무게를 고르고, `effectiveness`가 그 선택이 값을 했는지 측정 — 계획 소요 시간, research 변경률, 재계획/재오픈률, verify 1회 통과율, 완료율을 빌드 단위로 귀속. 근거가 얇으면 `sufficient_sample`(빌드 ≥10)로 표시하고, 집계에서 제외된 이벤트는 조용히 버리지 않고 coverage 줄에 보고 |

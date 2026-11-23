@@ -470,7 +470,7 @@ function installLeaseGuard() {
     { matcher: 'Agent', hooks: [{ type: 'command', command: `"${NODE_BIN}" "${LEASE_GUARD_DEST}"` }] }];
   const backup = writeSettings(settings);
   log(`lease guard hook: ${LEASE_GUARD_DEST} (settings backup: ${path.basename(backup)})`);
-  log('lease guard: blocks an Agent call after `xm build route start` fails in the same session (bypass: XM_BUILD_HOOKS_OFF=1)');
+  log('lease guard: blocks an Agent call after a recorded `xm build route start` failure in the same session (bypass: XM_BUILD_HOOKS_OFF=1)');
 }
 
 // Matched by file, as withoutHookFile does: an earlier install can carry another node path.
