@@ -35,7 +35,7 @@ function run(cwd, args) {
   const result = spawnSync('node', [CLI, ...args], { cwd, env, encoding: 'utf8', timeout: 15_000 });
   return { code: result.status ?? 1, text: (result.stdout || '') + (result.stderr || '') };
 }
-// No --gate-cmd and an uncommitted .xm directory: both are errors a flag can clear.
+// No --gate-cmd: an error a flag can clear.
 function routeStart(cwd) {
   const decided = run(cwd, ['route', 'decide', '--kind', 'feature', '--scope', 'bounded', '--independent', '--files', 'src/a.txt', '--risk', 'low', '--failure-modes', '1', '--gates', 'test', '--json']);
   const id = JSON.parse(decided.text).decision_id;

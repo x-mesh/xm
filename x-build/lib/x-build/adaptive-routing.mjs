@@ -110,6 +110,13 @@ function safeRelativeFile(cwd, file) {
   return rel.split('\\').join('/');
 }
 
+// xm keeps its runtime state in a .xm/ directory: the routing ledger, leases, receipts, plan
+// progress, traces. A repository that ignores .xm/ never shows those files here. One that
+// does not ignore it refused to start because of the ledger and failed every verify on the
+// run's own lease. So an untracked file under .xm/ is left out, and both repositories give
+// the route the same view. A tracked file is still reported, as it is past an ignore rule.
+const XM_STATE_PATH = /(^|\/)\.xm\//;
+
 function gitStatus(cwd) {
   const result = spawnSync('git', ['status', '--porcelain', '-z', '--untracked-files=all'], { cwd, encoding: 'utf8' });
   if (result.status !== 0) throw new Error(`git status failed: ${(result.stderr || '').trim()}`);
@@ -118,6 +125,7 @@ function gitStatus(cwd) {
   for (let index = 0; index < fields.length; index += 1) {
     const field = fields[index];
     const status = field.slice(0, 2);
+    if (status === '??' && XM_STATE_PATH.test(field.slice(3))) continue;
     paths.push(field.slice(3));
     if (/[RC]/.test(status) && fields[index + 1]) paths.push(fields[++index]);
   }
@@ -659,7 +667,12 @@ function createStartLease(input, { cwd, decision, previousLease, fallback }) {
   if (missingCommands.length) throw new Error(`missing gate commands: ${missingCommands.join(', ')}`);
   const baselineDirty = gitStatus(cwd);
   if (baselineDirty.length && (fallback || input.allow_dirty !== true)) {
-    throw new Error(`working tree must be clean before route start: ${baselineDirty.join(', ')}`);
+    // Only a tracked file under .xm/ reaches this list. Without the reason, the message reads
+    // as if xm objected to its own state file.
+    const trackedState = baselineDirty.some((file) => XM_STATE_PATH.test(file))
+      ? '. A path under .xm/ is listed because git tracks it: commit or restore it, or stop tracking xm state with `git rm --cached`'
+      : '';
+    throw new Error(`working tree must be clean before route start: ${baselineDirty.join(', ')}${trackedState}`);
   }
   const baselineHead = gitHead(cwd);
   const baselineDirtyHashes = hashMap(cwd, baselineDirty);
