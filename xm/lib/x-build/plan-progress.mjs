@@ -104,6 +104,7 @@ function readProgress(session) {
 function deriveStatus(session, task, record) {
   if (!record) return 'pending';
   if (record.task_hash !== taskHash(task)) return 'reset';
+  if (record.state === 'deferred') return 'deferred';
   if (record.state !== 'verified') return 'in_progress';
   const current = hashFiles(session.root, Object.keys(record.verified_files || {}));
   return Object.entries(record.verified_files || {}).some(([file, hash]) => current[file] !== hash) ? 'changed_after_verification' : 'verified';
@@ -161,15 +162,24 @@ function requireExecutable(session) {
 }
 
 // A task with verify_commands is decided by them. The plan-wide commands then run only when
-// it is the last task left to verify: they can need a later task's output, and running them
-// for every task made the first task of such a plan impossible to verify. A task with no
-// command of its own is still decided by the plan-wide commands at its own position.
+// no other task is open: they can need a later task's output, and running them for every
+// task made the first task of such a plan impossible to verify. A task with no command of
+// its own is decided by the plan-wide commands at its own position. When they fail there
+// and another task is still open, it is recorded as deferred instead of failed.
 function ownCommands(task) {
   return task.verify_commands || [];
 }
 
-function verifiedForPlan(records, task) {
-  return records[task.id]?.state === 'verified' && records[task.id].task_hash === taskHash(task);
+// The state of the record for the task as the plan defines it now, or null.
+function stateForPlan(records, task) {
+  const record = records[task.id];
+  return record && record.task_hash === taskHash(task) ? record.state : null;
+}
+
+// A deferred task is not checked off, but its work is recorded: it waits for the plan-wide
+// commands, so it no longer counts as open and a consumer can go on.
+function settledForPlan(records, task) {
+  return ['verified', 'deferred'].includes(stateForPlan(records, task));
 }
 
 function cmdStart(args, json) {
@@ -224,69 +234,130 @@ async function cmdVerify(args, json) {
   const task = requireTask(session, args);
   const records = readProgress(session).tasks;
   const record = records[task.id];
-  if (!record || record.state !== 'in_progress') fail('task ' + task.id + ' has no in_progress record; run `xm build progress start` first');
+  if (!record || !['in_progress', 'deferred'].includes(record.state)) fail('task ' + task.id + ' has no in_progress record; run `xm build progress start` first');
   if (record.task_hash !== taskHash(task)) fail('plan task ' + task.id + ' changed since start; run `xm build progress start` again');
-  // A task can start beside a dependency (contract_deps), so the order is enforced here: a
-  // consumer is not checked off against a producer that has not passed its own verification.
-  // The record must be for the producer as the plan defines it now. For a contract pair the
+  // A task can start beside a dependency (contract_deps), so the order is enforced here. The
+  // record must be for the producer as the plan defines it now: for a contract pair the
   // producer's done criteria are the interface, so a producer revised after its verification
-  // has to be started and verified again first; cmdStart keeps that possible.
-  const unverified = session.plan.tasks.filter((dep) => task.depends_on.includes(dep.id)
-    && !(records[dep.id]?.state === 'verified' && records[dep.id].task_hash === taskHash(dep))).map((dep) => dep.id);
-  if (unverified.length) fail('task ' + task.id + ' depends on ' + unverified.join(', ') + ', not verified yet; verify ' + unverified.join(', ') + ' first');
+  // has to be started and verified again first; cmdStart keeps that possible. A deferred
+  // producer lets the consumer go on, but the consumer is then deferred too (see `decide`).
+  const dependencies = session.plan.tasks.filter((dep) => task.depends_on.includes(dep.id));
+  const open = dependencies.filter((dep) => !settledForPlan(records, dep)).map((dep) => dep.id);
+  if (open.length) fail('task ' + task.id + ' depends on ' + open.join(', ') + ', not verified yet; verify ' + open.join(', ') + ' first');
   const current = hashFiles(session.root, task.expected_files);
   if (!task.expected_files.some((file) => current[file] !== record.baseline_files[file])) fail('no expected file changed since start of ' + task.id);
 
   const own = ownCommands(task);
   const planCommands = session.plan.validation.commands;
-  // Runs the commands and reports the first failure. `scope` tells a command of this task from
-  // a plan-wide one, because the fix differs: the task's work, or another task or the plan.
-  const passes = (commands, scope) => {
+  const firstFailure = (commands) => {
     for (const command of commands) {
       const result = runCommand(session.root, command);
       if (result.status === 0 && !result.error) continue;
-      const exit = result.status ?? (result.error?.code || result.signal || 'unknown');
-      if (json) console.log(JSON.stringify({ status: 'failed', plan_id: session.runId, task: task.id, failed_command: command, exit_code: exit, scope }, null, 2));
-      else if (scope === 'task') console.error('verification failed for ' + task.id + ': `' + command + '` exited with ' + exit);
-      else {
-        console.error('verification failed for ' + task.id + ': plan-wide command `' + command + '` exited with ' + exit + '.'
-          + (own.length ? ' ' + task.id + ' is the last task left to verify, so the plan-wide commands run with it.'
-            : ' ' + task.id + ' has no verify_commands of its own, so the plan-wide commands decide it. If this command needs a later task, the plan has to give ' + task.id + ' its own verify_commands.'));
-      }
-      writeTasks(session);
-      exitFail(VERIFY_FAILED, 'verification failed');
-      return false;
+      return { command, exit: result.status ?? (result.error?.code || result.signal || 'unknown') };
     }
-    return true;
+    return null;
   };
-  if (!passes(own.length ? own : planCommands, own.length ? 'task' : 'plan')) return;
-  const commands = own.length ? [...own] : [...planCommands];
+  // `scope` tells a command of this task from a plan-wide one, because the fix differs: the
+  // task's own work, or another task or the plan.
+  const failed = (failure, scope, detail = '') => {
+    if (json) console.log(JSON.stringify({ status: 'failed', plan_id: session.runId, task: task.id, failed_command: failure.command, exit_code: failure.exit, scope }, null, 2));
+    else console.error('verification failed for ' + task.id + ': ' + (scope === 'plan' ? 'plan-wide command ' : '') + '`' + failure.command + '` exited with ' + failure.exit + (detail ? '. ' + detail : ''));
+    writeTasks(session);
+    exitFail(VERIFY_FAILED, 'verification failed');
+  };
+
+  let planFailure = null;
+  let planRan = false;
+  if (own.length) {
+    const failure = firstFailure(own);
+    if (failure) return failed(failure, 'task');
+  } else {
+    planFailure = firstFailure(planCommands);
+    planRan = true;
+  }
   const verifiedHead = gitHead(session.root);
-  // Whether this is the last task left is decided here, under the lock of progress.json. Two
-  // verifications that run at the same time each see the other task as not verified; deciding
-  // before the lock would let both skip the plan-wide commands and complete the plan.
-  const writeVerified = (planWideRan) => {
-    let written = false;
+  const now = () => new Date().toISOString();
+  const verifiedRecord = (previous, files, commands, extra = {}) => ({
+    ...previous, state: 'verified', verified_at: now(), verified_head: verifiedHead, verified_files: files,
+    commands, commands_hash: sha256(JSON.stringify(commands)), deferred_at: undefined, deferred_reason: undefined, ...extra,
+  });
+  // Decided under the lock of progress.json, on the records as they are then. Two verifications
+  // that run at the same time each see the other task as open; deciding before the lock would
+  // let both skip the plan-wide commands and complete the plan with those commands never run.
+  const decide = () => {
+    let outcome = null;
     modifyJSON(session.progressPath, (data) => {
-      const last = session.plan.tasks.every((other) => other.id === task.id || verifiedForPlan(data.tasks, other));
-      if (last && !planWideRan) return data;
-      data.tasks[task.id] = {
-        ...data.tasks[task.id], state: 'verified', verified_at: new Date().toISOString(), verified_head: verifiedHead,
-        verified_files: current, commands, commands_hash: sha256(JSON.stringify(commands)),
-      };
-      written = true;
+      const others = session.plan.tasks.filter((other) => other.id !== task.id);
+      const workRemains = others.some((other) => !settledForPlan(data.tasks, other));
+      if (planRan && !planFailure) {
+        // The plan-wide commands passed with every recorded task in the tree, so the tasks
+        // that waited for them are checked off with this one.
+        const promoted = others.filter((other) => stateForPlan(data.tasks, other) === 'deferred');
+        for (const other of promoted) {
+          data.tasks[other.id] = verifiedRecord(data.tasks[other.id], hashFiles(session.root, other.expected_files),
+            [...ownCommands(other), ...planCommands], { verified_with: task.id });
+        }
+        data.tasks[task.id] = verifiedRecord(data.tasks[task.id], current, [...own, ...planCommands]);
+        outcome = { state: 'verified', promoted: promoted.map((other) => other.id) };
+      } else if (planRan) {
+        // No task is left that could make the plan-wide commands pass, so this is a failure.
+        if (!workRemains) outcome = { state: 'failed' };
+        else {
+          data.tasks[task.id] = { ...data.tasks[task.id], state: 'deferred', deferred_at: now(), deferred_reason: 'plan_command_failed' };
+          outcome = { state: 'deferred', reason: 'plan_command_failed' };
+        }
+      } else if (!workRemains) {
+        outcome = { state: 'needs_plan_commands' };
+      } else {
+        // The task's own commands passed. It is checked off unless a task it depends on is
+        // still deferred: a consumer is not checked off before its producer.
+        const waiting = dependencies.filter((dep) => stateForPlan(data.tasks, dep) !== 'verified').map((dep) => dep.id);
+        if (waiting.length) {
+          data.tasks[task.id] = { ...data.tasks[task.id], state: 'deferred', deferred_at: now(), deferred_reason: 'dependency_deferred' };
+          outcome = { state: 'deferred', reason: 'dependency_deferred', waiting_for: waiting };
+        } else {
+          data.tasks[task.id] = verifiedRecord(data.tasks[task.id], current, [...own]);
+          outcome = { state: 'verified', promoted: [] };
+        }
+      }
       return data;
     });
-    return written;
+    return outcome;
   };
-  if (!writeVerified(own.length === 0)) {
-    if (!passes(planCommands, 'plan')) return;
-    commands.push(...planCommands);
-    writeVerified(true);
+  let outcome = decide();
+  if (outcome.state === 'needs_plan_commands') {
+    planFailure = firstFailure(planCommands);
+    planRan = true;
+    outcome = decide();
+  }
+  if (outcome.state === 'failed') {
+    return failed(planFailure, 'plan', 'No other task is open, so nothing later can make it pass.');
   }
   writeTasks(session);
-  if (json) console.log(JSON.stringify({ status: 'verified', plan_id: session.runId, task: task.id }, null, 2));
-  else console.log('Verified ' + task.id + ' ' + task.title);
+  if (outcome.state === 'deferred') {
+    const byPlan = outcome.reason === 'plan_command_failed';
+    if (json) {
+      console.log(JSON.stringify({
+        status: 'deferred', plan_id: session.runId, task: task.id, reason: outcome.reason,
+        ...(byPlan ? { failed_command: planFailure.command, exit_code: planFailure.exit } : { waiting_for: outcome.waiting_for }),
+      }, null, 2));
+    } else if (byPlan) {
+      console.log('Deferred ' + task.id + ' ' + task.title);
+      console.log('  plan-wide command `' + planFailure.command + '` exited with ' + planFailure.exit + ', and other tasks are still open.');
+      console.log('  ' + task.id + (own.length ? '' : ' has no verify_commands of its own, so it') + ' is checked off when the plan-wide commands pass.');
+      console.log('  If the work of ' + task.id + ' causes this failure, fix it before the next task.');
+    } else {
+      console.log('Deferred ' + task.id + ' ' + task.title);
+      console.log('  its commands pass, but it depends on ' + outcome.waiting_for.join(', ') + ', which is deferred. It is checked off when the plan-wide commands pass.');
+    }
+    return;
+  }
+  if (json) {
+    console.log(JSON.stringify({ status: 'verified', plan_id: session.runId, task: task.id, ...(outcome.promoted.length ? { promoted: outcome.promoted } : {}) }, null, 2));
+  } else {
+    console.log('Verified ' + task.id + ' ' + task.title);
+    if (outcome.promoted.length) console.log('Also checked off, deferred until the plan-wide commands passed: ' + outcome.promoted.join(', '));
+  }
 }
 
 async function cmdShow(args, json) {

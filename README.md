@@ -515,7 +515,7 @@ xm build progress verify --plan <run-id> --task T1
 xm build progress show --plan <run-id>
 ```
 
-`verify` checks a task only if one of its expected files changed after `start` and each command that it runs exits 0. A task with `verify_commands` runs them, and the plan's `validation.commands` run with the last task left to verify. A task with no `verify_commands` runs the plan's `validation.commands`. Each command has a limit of 120 seconds. A failed command exits 2 and records nothing. `.xm/plan/<run-id>/progress.json` keeps the state, and `tasks.md` in the same directory shows it as a checklist. Do not edit these two files.
+`verify` checks a task only if one of its expected files changed after `start` and each command that it runs exits 0. A task with `verify_commands` runs them, and the plan's `validation.commands` run with the last task left to verify. A task with no `verify_commands` runs the plan's `validation.commands`. If they fail while another task is still open, `verify` exits 0 and records the task as deferred. A task whose dependency is deferred is deferred too. A deferred task is not checked: it is checked when the plan's `validation.commands` pass. Each command has a limit of 120 seconds. Any other failed command exits 2 and records nothing. `.xm/plan/<run-id>/progress.json` keeps the state, and `tasks.md` in the same directory shows it as a checklist. Do not edit these two files.
 
 `xm build plan` delegates to the same x-plan entry point and is deprecated. `xm build legacy-plan` retains the former PRD/task/phase planner for explicit compatibility use.
 
