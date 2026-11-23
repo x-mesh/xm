@@ -99,6 +99,23 @@ describe('route commands and xm state under .xm/', () => {
     } finally { rmSync(cwd, { recursive: true, force: true }); }
   });
 
+  // The baseline gate run must not change the tree, but a gate that writes its output under
+  // .xm/ writes xm state, as a gate that writes to an ignored path does.
+  test('a gate that writes an untracked file under .xm/ does not make start fail', () => {
+    const cwd = repo({ ignore: false });
+    try {
+      const id = confirmedDecision(cwd);
+      const started = xm(cwd, 'route', 'start', '--decision-id', id, '--expected-files', 'src/a.txt',
+        '--gate-cmd', 'test=mkdir -p .xm && echo run > .xm/gate-output; grep -q v2 src/a.txt', '--gate-cmd', 'boundary=test -s src/a.txt', '--json');
+      expect(started.code, started.stderr).toBe(0);
+      const outside = confirmedDecision(cwd);
+      const refused = xm(cwd, 'route', 'start', '--decision-id', outside, '--expected-files', 'src/a.txt',
+        '--gate-cmd', 'test=echo run > gate-output.txt; grep -q v2 src/a.txt', '--gate-cmd', 'boundary=test -s src/a.txt', '--json');
+      expect(refused.code).toBe(1);
+      expect(refused.stderr).toContain('baseline gate run changed the working tree: gate-output.txt');
+    } finally { rmSync(cwd, { recursive: true, force: true }); }
+  });
+
   test.each([['not ignored', false], ['ignored', true]])('an untracked file outside .xm/ still blocks start and is still reported by verify: .xm/ %s', (_label, ignore) => {
     const cwd = repo({ ignore });
     try {
