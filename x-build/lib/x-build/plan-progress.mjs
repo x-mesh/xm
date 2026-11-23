@@ -266,15 +266,27 @@ async function cmdVerify(args, json) {
     exitFail(VERIFY_FAILED, 'verification failed');
   };
 
+  // A deferred task passed its own commands some time ago. Before it is checked off with this
+  // task, they run again: its files can have changed since. Commands cannot run under the
+  // lock, so the results are collected here and `decide` checks off only a task that has one.
+  const recheck = new Map();
+  const recheckDeferred = () => {
+    const snapshot = readProgress(session).tasks;
+    for (const other of session.plan.tasks) {
+      if (other.id !== task.id && stateForPlan(snapshot, other) === 'deferred') recheck.set(other.id, firstFailure(ownCommands(other)));
+    }
+  };
   let planFailure = null;
   let planRan = false;
+  const runPlanCommands = () => {
+    planFailure = firstFailure(planCommands);
+    planRan = true;
+    if (!planFailure) recheckDeferred();
+  };
   if (own.length) {
     const failure = firstFailure(own);
     if (failure) return failed(failure, 'task');
-  } else {
-    planFailure = firstFailure(planCommands);
-    planRan = true;
-  }
+  } else runPlanCommands();
   const verifiedHead = gitHead(session.root);
   const now = () => new Date().toISOString();
   const verifiedRecord = (previous, files, commands, extra = {}) => ({
@@ -299,23 +311,39 @@ async function cmdVerify(args, json) {
         // changes, because checking off one task can free the tasks that depend on it.
         const waiting = new Set([task, ...others.filter((other) => stateForPlan(data.tasks, other) === 'deferred')]);
         const promoted = [];
+        const files = new Map();
+        // Why a deferred task cannot be checked off now, or null. Its own conditions are
+        // checked again: an expected file still differs from the baseline, and its own
+        // commands passed in this run.
+        const blocked = (candidate) => {
+          if (!recheck.has(candidate.id)) return { reason: 'not_rechecked' };
+          const failure = recheck.get(candidate.id);
+          if (failure) return { reason: 'own_command_failed', failed_command: failure.command, exit_code: failure.exit };
+          if (!files.has(candidate.id)) files.set(candidate.id, hashFiles(session.root, candidate.expected_files));
+          const baseline = data.tasks[candidate.id].baseline_files || {};
+          if (!candidate.expected_files.some((file) => files.get(candidate.id)[file] !== baseline[file])) return { reason: 'no_file_change' };
+          return null;
+        };
         for (let progressed = true; progressed;) {
           progressed = false;
           for (const candidate of [...waiting]) {
-            if (notVerified(candidate).length) continue;
+            if (notVerified(candidate).length || (candidate !== task && blocked(candidate))) continue;
             data.tasks[candidate.id] = candidate === task
               ? verifiedRecord(data.tasks[task.id], current, [...own, ...planCommands])
-              : verifiedRecord(data.tasks[candidate.id], hashFiles(session.root, candidate.expected_files),
-                [...ownCommands(candidate), ...planCommands], { verified_with: task.id });
+              : verifiedRecord(data.tasks[candidate.id], files.get(candidate.id), [...ownCommands(candidate), ...planCommands], { verified_with: task.id });
             if (candidate !== task) promoted.push(candidate.id);
             waiting.delete(candidate);
             progressed = true;
           }
         }
+        const stillDeferred = [...waiting].filter((candidate) => candidate !== task).map((candidate) => {
+          const open = notVerified(candidate);
+          return { task: candidate.id, ...(blocked(candidate) || { reason: 'dependency_not_verified', waiting_for: open }) };
+        });
         if (waiting.has(task)) {
           data.tasks[task.id] = { ...data.tasks[task.id], state: 'deferred', deferred_at: now(), deferred_reason: 'dependency_not_verified' };
-          outcome = { state: 'deferred', reason: 'dependency_not_verified', waiting_for: notVerified(task), promoted };
-        } else outcome = { state: 'verified', promoted };
+          outcome = { state: 'deferred', reason: 'dependency_not_verified', waiting_for: notVerified(task), promoted, stillDeferred };
+        } else outcome = { state: 'verified', promoted, stillDeferred };
       } else if (planRan) {
         // No task is left that could make the plan-wide commands pass, so this is a failure.
         if (!workRemains) outcome = { state: 'failed' };
@@ -343,8 +371,7 @@ async function cmdVerify(args, json) {
   };
   let outcome = decide();
   if (outcome.state === 'needs_plan_commands') {
-    planFailure = firstFailure(planCommands);
-    planRan = true;
+    runPlanCommands();
     outcome = decide();
   }
   if (outcome.state === 'failed') {
@@ -358,6 +385,7 @@ async function cmdVerify(args, json) {
         status: 'deferred', plan_id: session.runId, task: task.id, reason: outcome.reason,
         ...(byPlan ? { failed_command: planFailure.command, exit_code: planFailure.exit } : { waiting_for: outcome.waiting_for }),
         ...(outcome.promoted.length ? { promoted: outcome.promoted } : {}),
+        ...(outcome.stillDeferred?.length ? { still_deferred: outcome.stillDeferred } : {}),
       }, null, 2));
     } else if (byPlan) {
       console.log('Deferred ' + task.id + ' ' + task.title);
@@ -368,15 +396,33 @@ async function cmdVerify(args, json) {
       console.log('Deferred ' + task.id + ' ' + task.title);
       console.log('  its commands pass, but it depends on ' + outcome.waiting_for.join(', ') + ', not checked off yet. It is checked off after that, when the plan-wide commands pass.');
       if (outcome.promoted.length) console.log('Checked off, deferred until the plan-wide commands passed: ' + outcome.promoted.join(', '));
+      printStillDeferred(outcome.stillDeferred);
     }
     return;
   }
   if (json) {
-    console.log(JSON.stringify({ status: 'verified', plan_id: session.runId, task: task.id, ...(outcome.promoted.length ? { promoted: outcome.promoted } : {}) }, null, 2));
+    console.log(JSON.stringify({
+      status: 'verified', plan_id: session.runId, task: task.id,
+      ...(outcome.promoted.length ? { promoted: outcome.promoted } : {}),
+      ...(outcome.stillDeferred?.length ? { still_deferred: outcome.stillDeferred } : {}),
+    }, null, 2));
   } else {
     console.log('Verified ' + task.id + ' ' + task.title);
     if (outcome.promoted.length) console.log('Also checked off, deferred until the plan-wide commands passed: ' + outcome.promoted.join(', '));
+    printStillDeferred(outcome.stillDeferred);
   }
+}
+
+// A deferred task that the plan-wide commands could not release, with the reason, so the
+// caller knows which task to fix and verify again.
+function printStillDeferred(entries = []) {
+  const why = {
+    own_command_failed: (entry) => 'its command `' + entry.failed_command + '` exited with ' + entry.exit_code,
+    no_file_change: () => 'none of its expected files differs from the start',
+    dependency_not_verified: (entry) => 'it depends on ' + entry.waiting_for.join(', ') + ', not checked off',
+    not_rechecked: () => 'it was deferred while this verification ran',
+  };
+  for (const entry of entries) console.log('Still deferred: ' + entry.task + ' (' + why[entry.reason](entry) + '). Fix it and verify it again.');
 }
 
 async function cmdShow(args, json) {

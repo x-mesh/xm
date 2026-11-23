@@ -443,6 +443,60 @@ describe('xm build progress', () => {
     } finally { rmSync(cwd, { recursive: true, force: true }); }
   });
 
+  // A deferred task passed its own checks some time ago. When the plan-wide commands pass, it
+  // is checked off only if those checks still hold: its own commands run again, and an expected
+  // file still differs from the start.
+  test.each([
+    ['its own command fails now', (cwd) => { writeFileSync(join(cwd, 'src', 'b.txt'), 'broken\n'); }, { reason: 'own_command_failed', failed_command: 'grep -q ^b$ src/b.txt' }],
+    ['its file is back to the start', (cwd) => { rmSync(join(cwd, 'src', 'b.txt')); }, { reason: 'own_command_failed' }],
+  ])('a deferred task is not checked off when %s', (_label, disturb, expected) => {
+    const plan = envelope({ validation: { commands: ['test -f src/c.txt'], requirement_refs: ['R1'] }, steps: [['A'], ['B'], ['C']] });
+    plan.tasks[1].verify_commands = ['grep -q ^b$ src/b.txt'];
+    plan.tasks.push({ id: 'C', title: 'Implement demo', depends_on: [], requirement_refs: ['R1'], expected_files: ['src/c.txt'], done_criteria: ['C exists'] });
+    const cwd = setup(plan);
+    try {
+      expect(JSON.parse(verifyA(cwd).stdout)).toMatchObject({ status: 'deferred' });
+      expect(progress(cwd, 'start', 'B').code).toBe(0);
+      writeFileSync(join(cwd, 'src', 'b.txt'), 'b\n');
+      expect(JSON.parse(progress(cwd, 'verify', 'B').stdout)).toMatchObject({ status: 'deferred', reason: 'dependency_not_verified' });
+      disturb(cwd);
+      expect(progress(cwd, 'start', 'C').code).toBe(0);
+      writeFileSync(join(cwd, 'src', 'c.txt'), 'c\n');
+      const third = progress(cwd, 'verify', 'C');
+      expect(third.code, third.stderr + third.stdout).toBe(0);
+      const verified = JSON.parse(third.stdout);
+      expect(verified).toMatchObject({ status: 'verified', promoted: ['A'] });
+      expect(verified.still_deferred).toEqual([expect.objectContaining({ task: 'B', ...expected })]);
+      expect(statuses(cwd)).toEqual({ A: 'verified', B: 'deferred', C: 'verified' });
+      expect(tasksMd(cwd)).toContain('2/3 verified');
+      // Once B is right again, its own verification checks it off.
+      writeFileSync(join(cwd, 'src', 'b.txt'), 'b\n');
+      const again = progress(cwd, 'verify', 'B');
+      expect(again.code, again.stderr + again.stdout).toBe(0);
+      expect(statuses(cwd)).toEqual({ A: 'verified', B: 'verified', C: 'verified' });
+    } finally { rmSync(cwd, { recursive: true, force: true }); }
+  });
+
+  test('a deferred task with no command of its own is not checked off when its file is back to the start', () => {
+    const plan = envelope({ validation: { commands: ['test -f src/c.txt'], requirement_refs: ['R1'] }, steps: [['A'], ['C']] });
+    plan.tasks[1] = { id: 'C', title: 'Implement demo', depends_on: [], requirement_refs: ['R1'], expected_files: ['src/c.txt'], done_criteria: ['C exists'] };
+    const cwd = setup(plan);
+    try {
+      expect(JSON.parse(verifyA(cwd).stdout)).toMatchObject({ status: 'deferred' });
+      rmSync(join(cwd, 'src', 'a.txt'));
+      expect(progress(cwd, 'start', 'C').code).toBe(0);
+      writeFileSync(join(cwd, 'src', 'c.txt'), 'c\n');
+      const second = progress(cwd, 'verify', 'C');
+      expect(second.code, second.stderr + second.stdout).toBe(0);
+      const verified = JSON.parse(second.stdout);
+      expect('promoted' in verified).toBe(false);
+      expect(verified.still_deferred).toEqual([{ task: 'A', reason: 'no_file_change' }]);
+      expect(statuses(cwd)).toEqual({ A: 'deferred', C: 'verified' });
+      const text = run(cwd, ['progress', 'show', '--plan', RUN]);
+      expect(text.stdout).toContain('1/2 verified');
+    } finally { rmSync(cwd, { recursive: true, force: true }); }
+  });
+
   // Each sees the other task as open while the plan-wide command runs. The first to reach the
   // lock is deferred. The second then finds no open task, so it fails instead of being
   // deferred too: the plan cannot end with every task waiting and none checked off.
