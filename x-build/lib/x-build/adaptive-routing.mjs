@@ -55,9 +55,10 @@ function failedReceiptPath(decisionId) {
 // dispatch in the same session while a failed start has no later lease. One file per
 // decision AND session: with one file per decision, another session that retried the same
 // decision and failed replaced the record, and the first session was no longer blocked.
-// The session id comes from the environment, so it is reduced to filename-safe characters.
+// The session id comes from the environment and must not shape a path, so the name carries
+// its SHA-256. Replacing unsafe characters instead gave different ids (a/b, a?b) one file.
 function startFailedPath(decisionId, sessionId) {
-  const session = String(sessionId || 'no-session').replace(/[^A-Za-z0-9-]/g, '_');
+  const session = sessionId ? createHash('sha256').update(String(sessionId)).digest('hex') : 'no-session';
   return join(adaptiveRunDir(), `${decisionId}.start-failed.${session}.json`);
 }
 

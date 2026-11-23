@@ -525,7 +525,9 @@ describe('lease-guard hook', () => {
   const agentCall = (overrides = {}, env) => runHook(LEASE_HOOK, { tool_name: 'Agent', session_id: SESSION, cwd: DIR, tool_input: { prompt: 'T1' }, ...overrides }, env);
   const OTHER = '99999999-2222-4333-8444-555555555555';
   const runsDir = () => join(DIR, '.xm', 'build', 'adaptive-runs');
-  const failedFile = (id, session = SESSION) => join(runsDir(), `${id}.start-failed.${session}.json`);
+  // The record name carries the SHA-256 of the session id; a run with no session id uses a fixed name.
+  const sessionKey = (session) => (session ? createHash('sha256').update(session).digest('hex') : 'no-session');
+  const failedFile = (id, session = SESSION) => join(runsDir(), `${id}.start-failed.${sessionKey(session)}.json`);
   const failedFiles = () => (existsSync(runsDir()) ? readdirSync(runsDir()).filter(name => name.includes('.start-failed.')) : []);
   function decision({ confirm = true } = {}) {
     const decided = route(['decide', '--kind', 'bugfix', '--scope', 'bounded', '--independent', '--files', 'src/a.txt,src/b.txt', '--risk', 'low', '--failure-modes', '2', '--gates', 'test,boundary', '--json']);
@@ -571,7 +573,7 @@ describe('lease-guard hook', () => {
     rmSync(runsDir(), { recursive: true });
     const id = decision();
     expect(start(id, GATES, { CLAUDE_CODE_SESSION_ID: '' }).status).toBe(1);
-    expect(JSON.parse(readFileSync(failedFile(id, 'no-session'), 'utf8')).session_id).toBeNull();
+    expect(JSON.parse(readFileSync(failedFile(id, null), 'utf8')).session_id).toBeNull();
     expect(agentCall().status).toBe(0);
   });
 
@@ -611,7 +613,7 @@ describe('lease-guard hook', () => {
     const id = decision();
     expect(start(id).status).toBe(1);
     expect(start(id, [], { CLAUDE_CODE_SESSION_ID: OTHER }).status).toBe(1);
-    expect(failedFiles().sort()).toEqual([`${id}.start-failed.${SESSION}.json`, `${id}.start-failed.${OTHER}.json`].sort());
+    expect(failedFiles().sort()).toEqual([`${id}.start-failed.${sessionKey(SESSION)}.json`, `${id}.start-failed.${sessionKey(OTHER)}.json`].sort());
     expect(agentCall().status).toBe(2);
     expect(agentCall({ session_id: OTHER }).status).toBe(2);
     expect(route(['abandon', '--decision-id', id], { CLAUDE_CODE_SESSION_ID: OTHER }).status).toBe(0);
@@ -631,11 +633,15 @@ describe('lease-guard hook', () => {
     expect(agentCall({ session_id: OTHER }).status).toBe(0);
   });
 
-  test('a session id from the environment is reduced to filename-safe characters', () => {
+  // `a/b` and `a?b` became one file name when unsafe characters were replaced, so the second
+  // session's failure replaced the first session's record.
+  test('session ids that differ only in characters unsafe for a file name keep separate records', () => {
     const id = decision();
-    expect(start(id, GATES, { CLAUDE_CODE_SESSION_ID: '../../escape me' }).status).toBe(1);
-    expect(failedFiles()).toEqual([`${id}.start-failed.______escape_me.json`]);
-    expect(agentCall({ session_id: '../../escape me' }).status).toBe(2);
+    for (const session of ['a/b', 'a?b', '../../escape me']) expect(start(id, GATES, { CLAUDE_CODE_SESSION_ID: session }).status).toBe(1);
+    const names = failedFiles();
+    expect(names).toHaveLength(3);
+    for (const name of names) expect(name).toMatch(/^route-[0-9a-f]{16}\.start-failed\.[0-9a-f]{64}\.json$/);
+    for (const session of ['a/b', 'a?b', '../../escape me']) expect(agentCall({ session_id: session }).status).toBe(2);
   });
 
   test('route abandon drops a failed start that has no lease', () => {
