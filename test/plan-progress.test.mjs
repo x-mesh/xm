@@ -398,7 +398,7 @@ describe('xm build progress', () => {
       writeFileSync(join(cwd, 'src', 'b.txt'), 'b\n');
       const consumer = progress(cwd, 'verify', 'B');
       expect(consumer.code).toBe(0);
-      expect(JSON.parse(consumer.stdout)).toMatchObject({ status: 'deferred', reason: 'dependency_deferred', waiting_for: ['A'] });
+      expect(JSON.parse(consumer.stdout)).toMatchObject({ status: 'deferred', reason: 'dependency_not_verified', waiting_for: ['A'] });
       expect(statuses(cwd)).toEqual({ A: 'deferred', B: 'deferred', C: 'pending' });
       expect(progress(cwd, 'start', 'C').code).toBe(0);
       writeFileSync(join(cwd, 'src', 'c.txt'), 'c\n');
@@ -407,6 +407,39 @@ describe('xm build progress', () => {
       expect(JSON.parse(last.stdout).promoted.sort()).toEqual(['A', 'B']);
       expect(statuses(cwd)).toEqual({ A: 'verified', B: 'verified', C: 'verified' });
       expect(record(cwd, 'B').commands).toEqual(['test -f src/b.txt', 'test -f src/c.txt']);
+    } finally { rmSync(cwd, { recursive: true, force: true }); }
+  });
+
+  // When the plan-wide commands pass, a deferred task is checked off only if the tasks it
+  // depends on are checked off. A dependency can have been started again or revised since.
+  test.each([
+    ['started again', (cwd) => { expect(progress(cwd, 'start', 'A').code).toBe(0); }, 'in_progress'],
+    ['revised', (cwd, plan) => { plan.tasks[0].done_criteria = ['A exists and is documented']; writeEnvelope(cwd, plan); }, 'reset'],
+  ])('a deferred consumer is not checked off while its dependency was %s', (_label, disturb, stateOfA) => {
+    const plan = envelope({ validation: { commands: ['test -f src/c.txt'], requirement_refs: ['R1'] }, steps: [['A'], ['B'], ['C']] });
+    plan.tasks[1].verify_commands = ['test -f src/b.txt'];
+    plan.tasks.push({ id: 'C', title: 'Implement demo', depends_on: [], requirement_refs: ['R1'], expected_files: ['src/c.txt'], done_criteria: ['C exists'] });
+    const cwd = setup(plan);
+    try {
+      expect(JSON.parse(verifyA(cwd).stdout)).toMatchObject({ status: 'deferred' });
+      expect(progress(cwd, 'start', 'B').code).toBe(0);
+      writeFileSync(join(cwd, 'src', 'b.txt'), 'b\n');
+      expect(JSON.parse(progress(cwd, 'verify', 'B').stdout)).toMatchObject({ status: 'deferred', waiting_for: ['A'] });
+      disturb(cwd, plan);
+      expect(progress(cwd, 'start', 'C').code).toBe(0);
+      writeFileSync(join(cwd, 'src', 'c.txt'), 'c\n');
+      const third = progress(cwd, 'verify', 'C');
+      expect(third.code, third.stderr + third.stdout).toBe(0);
+      const verified = JSON.parse(third.stdout);
+      expect(verified.status).toBe('verified');
+      expect('promoted' in verified).toBe(false);
+      expect(statuses(cwd)).toEqual({ A: stateOfA, B: 'deferred', C: 'verified' });
+      // A is checked off again, and B follows it in the same write.
+      if (stateOfA === 'reset') expect(progress(cwd, 'start', 'A').code).toBe(0);
+      const again = progress(cwd, 'verify', 'A');
+      expect(again.code, again.stderr + again.stdout).toBe(0);
+      expect(JSON.parse(again.stdout)).toMatchObject({ status: 'verified', task: 'A', promoted: ['B'] });
+      expect(statuses(cwd)).toEqual({ A: 'verified', B: 'verified', C: 'verified' });
     } finally { rmSync(cwd, { recursive: true, force: true }); }
   });
 

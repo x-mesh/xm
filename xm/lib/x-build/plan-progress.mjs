@@ -289,32 +289,49 @@ async function cmdVerify(args, json) {
     modifyJSON(session.progressPath, (data) => {
       const others = session.plan.tasks.filter((other) => other.id !== task.id);
       const workRemains = others.some((other) => !settledForPlan(data.tasks, other));
+      const notVerified = (candidate) => session.plan.tasks
+        .filter((dep) => candidate.depends_on.includes(dep.id) && stateForPlan(data.tasks, dep) !== 'verified').map((dep) => dep.id);
       if (planRan && !planFailure) {
-        // The plan-wide commands passed with every recorded task in the tree, so the tasks
-        // that waited for them are checked off with this one.
-        const promoted = others.filter((other) => stateForPlan(data.tasks, other) === 'deferred');
-        for (const other of promoted) {
-          data.tasks[other.id] = verifiedRecord(data.tasks[other.id], hashFiles(session.root, other.expected_files),
-            [...ownCommands(other), ...planCommands], { verified_with: task.id });
+        // The plan-wide commands passed with every recorded task in the tree, so this task
+        // and the tasks that waited for them can be checked off. Each one still needs its own
+        // dependencies checked off first: a dependency can have been started again or revised
+        // since, and a consumer is not checked off before its producer. Repeated until nothing
+        // changes, because checking off one task can free the tasks that depend on it.
+        const waiting = new Set([task, ...others.filter((other) => stateForPlan(data.tasks, other) === 'deferred')]);
+        const promoted = [];
+        for (let progressed = true; progressed;) {
+          progressed = false;
+          for (const candidate of [...waiting]) {
+            if (notVerified(candidate).length) continue;
+            data.tasks[candidate.id] = candidate === task
+              ? verifiedRecord(data.tasks[task.id], current, [...own, ...planCommands])
+              : verifiedRecord(data.tasks[candidate.id], hashFiles(session.root, candidate.expected_files),
+                [...ownCommands(candidate), ...planCommands], { verified_with: task.id });
+            if (candidate !== task) promoted.push(candidate.id);
+            waiting.delete(candidate);
+            progressed = true;
+          }
         }
-        data.tasks[task.id] = verifiedRecord(data.tasks[task.id], current, [...own, ...planCommands]);
-        outcome = { state: 'verified', promoted: promoted.map((other) => other.id) };
+        if (waiting.has(task)) {
+          data.tasks[task.id] = { ...data.tasks[task.id], state: 'deferred', deferred_at: now(), deferred_reason: 'dependency_not_verified' };
+          outcome = { state: 'deferred', reason: 'dependency_not_verified', waiting_for: notVerified(task), promoted };
+        } else outcome = { state: 'verified', promoted };
       } else if (planRan) {
         // No task is left that could make the plan-wide commands pass, so this is a failure.
         if (!workRemains) outcome = { state: 'failed' };
         else {
           data.tasks[task.id] = { ...data.tasks[task.id], state: 'deferred', deferred_at: now(), deferred_reason: 'plan_command_failed' };
-          outcome = { state: 'deferred', reason: 'plan_command_failed' };
+          outcome = { state: 'deferred', reason: 'plan_command_failed', promoted: [] };
         }
       } else if (!workRemains) {
         outcome = { state: 'needs_plan_commands' };
       } else {
         // The task's own commands passed. It is checked off unless a task it depends on is
-        // still deferred: a consumer is not checked off before its producer.
-        const waiting = dependencies.filter((dep) => stateForPlan(data.tasks, dep) !== 'verified').map((dep) => dep.id);
+        // not checked off: a consumer is not checked off before its producer.
+        const waiting = notVerified(task);
         if (waiting.length) {
-          data.tasks[task.id] = { ...data.tasks[task.id], state: 'deferred', deferred_at: now(), deferred_reason: 'dependency_deferred' };
-          outcome = { state: 'deferred', reason: 'dependency_deferred', waiting_for: waiting };
+          data.tasks[task.id] = { ...data.tasks[task.id], state: 'deferred', deferred_at: now(), deferred_reason: 'dependency_not_verified' };
+          outcome = { state: 'deferred', reason: 'dependency_not_verified', waiting_for: waiting, promoted: [] };
         } else {
           data.tasks[task.id] = verifiedRecord(data.tasks[task.id], current, [...own]);
           outcome = { state: 'verified', promoted: [] };
@@ -340,6 +357,7 @@ async function cmdVerify(args, json) {
       console.log(JSON.stringify({
         status: 'deferred', plan_id: session.runId, task: task.id, reason: outcome.reason,
         ...(byPlan ? { failed_command: planFailure.command, exit_code: planFailure.exit } : { waiting_for: outcome.waiting_for }),
+        ...(outcome.promoted.length ? { promoted: outcome.promoted } : {}),
       }, null, 2));
     } else if (byPlan) {
       console.log('Deferred ' + task.id + ' ' + task.title);
@@ -348,7 +366,8 @@ async function cmdVerify(args, json) {
       console.log('  If the work of ' + task.id + ' causes this failure, fix it before the next task.');
     } else {
       console.log('Deferred ' + task.id + ' ' + task.title);
-      console.log('  its commands pass, but it depends on ' + outcome.waiting_for.join(', ') + ', which is deferred. It is checked off when the plan-wide commands pass.');
+      console.log('  its commands pass, but it depends on ' + outcome.waiting_for.join(', ') + ', not checked off yet. It is checked off after that, when the plan-wide commands pass.');
+      if (outcome.promoted.length) console.log('Checked off, deferred until the plan-wide commands passed: ' + outcome.promoted.join(', '));
     }
     return;
   }
