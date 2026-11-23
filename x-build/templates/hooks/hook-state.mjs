@@ -163,8 +163,8 @@ const ROUTE_RUN_OVER = new Set(['finished', 'abandoned', 'closed']);
 
 /**
  * Find a failed `xm build route start` of this Claude session that nothing released.
- * The CLI writes <dir>/.xm/build/adaptive-runs/<decision>.start-failed.json when a start
- * fails and <decision>.lease.json when one succeeds. A failed start is released by
+ * The CLI writes <dir>/.xm/build/adaptive-runs/<decision>.start-failed.<session>.json when
+ * a start fails and <decision>.lease.json when one succeeds. A failed start is released by
  * `route abandon`, by a lease started after it (the same decision retried, or a later
  * decision), or by its own decision's lease reaching a final status.
  * A lease does not record its session, so a later lease of ANOTHER session releases it
@@ -194,7 +194,7 @@ export function failedRouteStart(projectDirs, sessionId, now = Date.now()) {
     // run, and this hook runs on every Agent dispatch.
     let leases = null;
     for (const name of names) {
-      if (!name.endsWith('.start-failed.json')) continue;
+      if (!name.includes('.start-failed.') || !name.endsWith('.json')) continue;
       const failed = readJSON(join(runs, name));
       const failedAt = Date.parse(failed?.failed_at || '');
       if (!failed || failed.session_id !== sessionId || failed.abandoned_at || !Number.isFinite(failedAt)) continue;

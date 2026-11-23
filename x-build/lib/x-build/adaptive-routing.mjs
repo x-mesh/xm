@@ -52,9 +52,13 @@ function failedReceiptPath(decisionId) {
 }
 
 // Read by the lease-guard hook (templates/hooks/hook-state.mjs), which blocks an Agent
-// dispatch in the same session while a failed start has no later lease.
-function startFailedPath(decisionId) {
-  return join(adaptiveRunDir(), `${decisionId}.start-failed.json`);
+// dispatch in the same session while a failed start has no later lease. One file per
+// decision AND session: with one file per decision, another session that retried the same
+// decision and failed replaced the record, and the first session was no longer blocked.
+// The session id comes from the environment, so it is reduced to filename-safe characters.
+function startFailedPath(decisionId, sessionId) {
+  const session = String(sessionId || 'no-session').replace(/[^A-Za-z0-9-]/g, '_');
+  return join(adaptiveRunDir(), `${decisionId}.start-failed.${session}.json`);
 }
 
 function readLocalJSON(path) {
@@ -625,9 +629,10 @@ export function startAdaptiveRun(input) {
 // "not confirmed" error the next legitimate Agent call can be the planner, so that error
 // must not arm the lease guard.
 function recordStartFailure(decisionId, error, nowMs) {
+  const sessionId = process.env.CLAUDE_CODE_SESSION_ID || null;
   try {
-    writeLocalJSON(startFailedPath(decisionId), {
-      schema: 1, decision_id: decisionId, session_id: process.env.CLAUDE_CODE_SESSION_ID || null,
+    writeLocalJSON(startFailedPath(decisionId, sessionId), {
+      schema: 1, decision_id: decisionId, session_id: sessionId,
       failed_at: new Date(nowMs ?? Date.now()).toISOString(), error: error.message,
     });
   } catch (writeError) {
@@ -895,11 +900,15 @@ export function abandonAdaptiveRun(input) {
   const lease = readLocalJSON(leasePath(input.decision_id));
   if (!lease) {
     // A start that failed left no lease to close, but its record still blocks Agent
-    // dispatches through the lease guard. Abandoning the decision releases that block.
-    const failedStart = /^route-[0-9a-f]{16}$/.test(String(input.decision_id)) ? readLocalJSON(startFailedPath(input.decision_id)) : null;
+    // dispatches through the lease guard. Abandoning releases that block for the session
+    // that runs this command only: releasing every session's record would let one session
+    // unblock another whose start also failed.
+    const ownPath = /^route-[0-9a-f]{16}$/.test(String(input.decision_id))
+      ? startFailedPath(input.decision_id, process.env.CLAUDE_CODE_SESSION_ID || null) : null;
+    const failedStart = ownPath ? readLocalJSON(ownPath) : null;
     if (!failedStart || failedStart.abandoned_at) throw new Error('execution lease not found');
     const dropped = { ...failedStart, status: 'start_abandoned', abandoned_at: new Date(input.now_ms ?? Date.now()).toISOString() };
-    writeLocalJSON(startFailedPath(input.decision_id), dropped);
+    writeLocalJSON(ownPath, dropped);
     return dropped;
   }
   if (['finished', 'abandoned', 'closed'].includes(lease.status)) throw new Error(`execution lease is already ${lease.status}`);
@@ -960,7 +969,7 @@ const ROUTE_HELP = {
   verify: '--decision-id <id> [--expected-files a,b] [--timeout-ms <n>]',
   finish: '--decision-id <id> [--cost-event-id <id>]',
   status: '[--decision-id <id>]',
-  abandon: '--decision-id <id>\n  Closes an interrupted lease. With no lease, drops a failed start so the lease guard hook stops blocking Agent dispatches.',
+  abandon: '--decision-id <id>\n  Closes an interrupted lease. With no lease, drops the failed start of this session so the lease guard hook stops blocking its Agent dispatches.',
   close: '--decision-id <id>',
   record: '--decision-id <id> --class <id> --route direct|planned --outcome accepted|escalated|failed --quality pass|fail [--gates-run a,b] [--duration-ms <n>] [--cost-usd <n>] [--json]',
   report: '[--class <id>]',

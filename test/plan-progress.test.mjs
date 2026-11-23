@@ -168,18 +168,64 @@ describe('xm build progress', () => {
     } finally { rmSync(cwd, { recursive: true, force: true }); }
   });
 
-  // A revision that changes no file cannot be verified again, so it must not block B for good.
-  test('a dependency revised after its verification does not block the consumer', () => {
+  // For a contract pair the producer's done criteria are the interface, so a record made for
+  // an earlier definition of A does not let B through. A itself stays verifiable: start keeps
+  // the first baseline of a file, so the finished file still counts as changed.
+  test('a dependency revised after its verification blocks the consumer until it is verified again, with no new edit', () => {
+    const cwd = setup();
+    try {
+      expect(verifyA(cwd).code).toBe(0);
+      const plan = envelope(); plan.tasks[0].done_criteria = ['A exists and returns the byte count'];
+      writeEnvelope(cwd, plan);
+      expect(progress(cwd, 'start', 'B').code).toBe(0);
+      writeFileSync(join(cwd, 'src', 'b.txt'), 'b\n');
+      const blocked = progress(cwd, 'verify', 'B');
+      expect(blocked.code).toBe(1);
+      expect(blocked.stderr).toContain('task B depends on A, not verified yet');
+      expect(progress(cwd, 'start', 'A').code).toBe(0);
+      const again = progress(cwd, 'verify', 'A');
+      expect(again.code, again.stderr + again.stdout).toBe(0);
+      expect(progress(cwd, 'verify', 'B').code).toBe(0);
+      expect(statuses(cwd)).toEqual({ A: 'verified', B: 'verified' });
+    } finally { rmSync(cwd, { recursive: true, force: true }); }
+  });
+
+  test('a revision that names another file is not verified until that file changes', () => {
+    const cwd = setup();
+    try {
+      expect(verifyA(cwd).code).toBe(0);
+      const plan = envelope(); plan.tasks[0].expected_files = ['src/a2.txt'];
+      writeEnvelope(cwd, plan);
+      expect(progress(cwd, 'start', 'A').code).toBe(0);
+      const refused = progress(cwd, 'verify', 'A');
+      expect(refused.code).toBe(1);
+      expect(refused.stderr).toContain('no expected file changed since start of A');
+      writeFileSync(join(cwd, 'src', 'a2.txt'), 'a2\n');
+      expect(progress(cwd, 'verify', 'A').code).toBe(0);
+    } finally { rmSync(cwd, { recursive: true, force: true }); }
+  });
+
+  test('start run twice after a revision keeps the first baseline', () => {
     const cwd = setup();
     try {
       expect(verifyA(cwd).code).toBe(0);
       const plan = envelope(); plan.tasks[0].title = 'Implement API v2';
       writeEnvelope(cwd, plan);
-      expect(progress(cwd, 'start', 'B').code).toBe(0);
-      writeFileSync(join(cwd, 'src', 'b.txt'), 'b\n');
-      const result = progress(cwd, 'verify', 'B');
+      expect(progress(cwd, 'start', 'A').code).toBe(0);
+      expect(progress(cwd, 'start', 'A').code).toBe(0);
+      const result = progress(cwd, 'verify', 'A');
       expect(result.code, result.stderr + result.stdout).toBe(0);
-      expect(statuses(cwd)).toEqual({ A: 'reset', B: 'verified' });
+    } finally { rmSync(cwd, { recursive: true, force: true }); }
+  });
+
+  test('a task that was never worked on is still refused after a second start', () => {
+    const cwd = setup();
+    try {
+      expect(progress(cwd, 'start', 'A').code).toBe(0);
+      expect(progress(cwd, 'start', 'A').code).toBe(0);
+      const result = progress(cwd, 'verify', 'A');
+      expect(result.code).toBe(1);
+      expect(result.stderr).toContain('no expected file changed since start of A');
     } finally { rmSync(cwd, { recursive: true, force: true }); }
   });
 

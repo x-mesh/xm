@@ -5,7 +5,7 @@
  */
 import { describe, test, expect, beforeEach, afterEach } from 'bun:test';
 import { spawnSync } from 'node:child_process';
-import { mkdtempSync, rmSync, mkdirSync, writeFileSync, readFileSync, existsSync, symlinkSync } from 'node:fs';
+import { mkdtempSync, rmSync, mkdirSync, writeFileSync, readFileSync, readdirSync, existsSync, symlinkSync } from 'node:fs';
 import { join } from 'node:path';
 import { tmpdir } from 'node:os';
 import { createHash } from 'node:crypto';
@@ -523,7 +523,10 @@ describe('lease-guard hook', () => {
   const route = (args, env = {}) => runCli(['route', ...args], { CLAUDE_CODE_SESSION_ID: SESSION, GIT_CEILING_DIRECTORIES: tmpdir(), ...env });
   const start = (id, extra = [], env) => route(['start', '--decision-id', id, '--expected-files', 'src/a.txt', ...extra, '--json'], env);
   const agentCall = (overrides = {}, env) => runHook(LEASE_HOOK, { tool_name: 'Agent', session_id: SESSION, cwd: DIR, tool_input: { prompt: 'T1' }, ...overrides }, env);
-  const failedFile = (id) => join(DIR, '.xm', 'build', 'adaptive-runs', `${id}.start-failed.json`);
+  const OTHER = '99999999-2222-4333-8444-555555555555';
+  const runsDir = () => join(DIR, '.xm', 'build', 'adaptive-runs');
+  const failedFile = (id, session = SESSION) => join(runsDir(), `${id}.start-failed.${session}.json`);
+  const failedFiles = () => (existsSync(runsDir()) ? readdirSync(runsDir()).filter(name => name.includes('.start-failed.')) : []);
   function decision({ confirm = true } = {}) {
     const decided = route(['decide', '--kind', 'bugfix', '--scope', 'bounded', '--independent', '--files', 'src/a.txt,src/b.txt', '--risk', 'low', '--failure-modes', '2', '--gates', 'test,boundary', '--json']);
     const { decision_id: id, route: selected } = JSON.parse(decided.stdout);
@@ -563,12 +566,12 @@ describe('lease-guard hook', () => {
   test('allows another tool, another session, and a payload or a record with no session id', () => {
     failedStart();
     expect(agentCall({ tool_name: 'Bash' }).status).toBe(0);
-    expect(agentCall({ session_id: '99999999-2222-4333-8444-555555555555' }).status).toBe(0);
+    expect(agentCall({ session_id: OTHER }).status).toBe(0);
     expect(agentCall({ session_id: undefined }).status).toBe(0);
-    rmSync(join(DIR, '.xm', 'build', 'adaptive-runs'), { recursive: true });
+    rmSync(runsDir(), { recursive: true });
     const id = decision();
     expect(start(id, GATES, { CLAUDE_CODE_SESSION_ID: '' }).status).toBe(1);
-    expect(JSON.parse(readFileSync(failedFile(id), 'utf8')).session_id).toBeNull();
+    expect(JSON.parse(readFileSync(failedFile(id, 'no-session'), 'utf8')).session_id).toBeNull();
     expect(agentCall().status).toBe(0);
   });
 
@@ -576,7 +579,7 @@ describe('lease-guard hook', () => {
     const id = decision({ confirm: false });
     const result = start(id, GATES);
     expect(result.stderr).toContain('model routes are not confirmed');
-    expect(existsSync(failedFile(id))).toBe(false);
+    expect(failedFiles()).toEqual([]);
     expect(agentCall().status).toBe(0);
   });
 
@@ -599,6 +602,40 @@ describe('lease-guard hook', () => {
     expect(start(second, GATES).status).toBe(0);
     expect(existsSync(failedFile(first))).toBe(true);
     expect(agentCall().status).toBe(0);
+  });
+
+  // One record per decision and session. With one record per decision, the second session's
+  // failure replaced the first session's record and released it with nothing fixed.
+  test('another session that fails the same decision does not release the first, and abandons only its own', () => {
+    gitRepo();
+    const id = decision();
+    expect(start(id).status).toBe(1);
+    expect(start(id, [], { CLAUDE_CODE_SESSION_ID: OTHER }).status).toBe(1);
+    expect(failedFiles().sort()).toEqual([`${id}.start-failed.${SESSION}.json`, `${id}.start-failed.${OTHER}.json`].sort());
+    expect(agentCall().status).toBe(2);
+    expect(agentCall({ session_id: OTHER }).status).toBe(2);
+    expect(route(['abandon', '--decision-id', id], { CLAUDE_CODE_SESSION_ID: OTHER }).status).toBe(0);
+    expect(agentCall({ session_id: OTHER }).status).toBe(0);
+    expect(agentCall().status).toBe(2);
+  });
+
+  test('a start that succeeds releases every session that failed before it', () => {
+    gitRepo();
+    const id = decision();
+    expect(start(id).status).toBe(1);
+    expect(start(id, [], { CLAUDE_CODE_SESSION_ID: OTHER }).status).toBe(1);
+    expect(agentCall().status).toBe(2);
+    expect(agentCall({ session_id: OTHER }).status).toBe(2);
+    expect(start(id, GATES, { CLAUDE_CODE_SESSION_ID: OTHER }).status).toBe(0);
+    expect(agentCall().status).toBe(0);
+    expect(agentCall({ session_id: OTHER }).status).toBe(0);
+  });
+
+  test('a session id from the environment is reduced to filename-safe characters', () => {
+    const id = decision();
+    expect(start(id, GATES, { CLAUDE_CODE_SESSION_ID: '../../escape me' }).status).toBe(1);
+    expect(failedFiles()).toEqual([`${id}.start-failed.______escape_me.json`]);
+    expect(agentCall({ session_id: '../../escape me' }).status).toBe(2);
   });
 
   test('route abandon drops a failed start that has no lease', () => {

@@ -166,13 +166,20 @@ function cmdStart(args, json) {
   return loadSession(args).then((session) => {
     requireExecutable(session);
     const task = requireTask(session, args);
-    const record = {
-      task_hash: taskHash(task), state: 'in_progress', started_at: new Date().toISOString(),
-      baseline_head: gitHead(session.root), baseline_files: hashFiles(session.root, task.expected_files),
-    };
+    const baselineHead = gitHead(session.root);
+    const hashedNow = hashFiles(session.root, task.expected_files);
     modifyJSON(session.progressPath, (data) => {
       const next = data && data.tasks ? data : { schema_version: 1, plan_id: session.runId, tasks: {} };
-      next.tasks[task.id] = record;
+      // A file the task already tracked keeps its first baseline. Without this, a task that
+      // was revised after its work is done could never be verified again: start would take
+      // the finished file as the baseline, and verify would find no change. A file that is
+      // new to the task is hashed now, so a revision that names other files still needs work.
+      const tracked = next.tasks[task.id]?.baseline_files || {};
+      const baselineFiles = Object.fromEntries(task.expected_files.map((file) => [file, file in tracked ? tracked[file] : hashedNow[file]]));
+      next.tasks[task.id] = {
+        task_hash: taskHash(task), state: 'in_progress', started_at: new Date().toISOString(),
+        baseline_head: baselineHead, baseline_files: baselineFiles,
+      };
       return next;
     });
     writeTasks(session);
@@ -200,9 +207,11 @@ async function cmdVerify(args, json) {
   if (record.task_hash !== taskHash(task)) fail('plan task ' + task.id + ' changed since start; run `xm build progress start` again');
   // A task can start beside a dependency (contract_deps), so the order is enforced here: a
   // consumer is not checked off against a producer that has not passed its own verification.
-  // The producer's task hash is not compared: a plan revision that changes no file cannot be
-  // verified again ("no expected file changed"), and would block every consumer for good.
-  const unverified = task.depends_on.filter((id) => session.plan.tasks.some((dep) => dep.id === id) && records[id]?.state !== 'verified');
+  // The record must be for the producer as the plan defines it now. For a contract pair the
+  // producer's done criteria are the interface, so a producer revised after its verification
+  // has to be started and verified again first; cmdStart keeps that possible.
+  const unverified = session.plan.tasks.filter((dep) => task.depends_on.includes(dep.id)
+    && !(records[dep.id]?.state === 'verified' && records[dep.id].task_hash === taskHash(dep))).map((dep) => dep.id);
   if (unverified.length) fail('task ' + task.id + ' depends on ' + unverified.join(', ') + ', not verified yet; verify ' + unverified.join(', ') + ' first');
   const current = hashFiles(session.root, task.expected_files);
   if (!task.expected_files.some((file) => current[file] !== record.baseline_files[file])) fail('no expected file changed since start of ' + task.id);
