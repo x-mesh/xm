@@ -3,6 +3,16 @@ import { PLAN_SCHEMA_VERSION } from './schema.mjs';
 function text(value) { return typeof value === 'string' ? value.trim() : ''; }
 function strings(value) { return Array.isArray(value) ? value.map(text).filter(Boolean) : []; }
 function byId(a, b) { return String(a.id).localeCompare(String(b.id)); }
+function execution(value) {
+  if (!value || typeof value !== 'object' || Array.isArray(value)) return null;
+  const notes = text(value.notes);
+  const timeout = value.command_timeout_seconds;
+  const result = {
+    ...(notes ? { notes } : {}),
+    ...(Number.isInteger(timeout) && timeout > 0 ? { command_timeout_seconds: timeout } : {}),
+  };
+  return Object.keys(result).length ? result : null;
+}
 
 export function normalizePlanEnvelope(input = {}) {
   const value = input && typeof input === 'object' && !Array.isArray(input) ? input : {};
@@ -34,6 +44,7 @@ export function normalizePlanEnvelope(input = {}) {
     mitigation: text(item?.mitigation), verification: text(item?.verification),
   }));
   const outOfScope = strings(value.out_of_scope);
+  const executionContext = execution(value.execution);
   const validation = value.validation && typeof value.validation === 'object' && !Array.isArray(value.validation) ? value.validation : {};
   return {
     schema_version: Number(value.schema_version ?? PLAN_SCHEMA_VERSION),
@@ -47,6 +58,7 @@ export function normalizePlanEnvelope(input = {}) {
     // Emitted only when set: x-build batch receipts store a hash of the normalized envelope,
     // so an always-present key would invalidate every receipt written before it.
     ...(outOfScope.length ? { out_of_scope: outOfScope } : {}),
+    ...(executionContext ? { execution: executionContext } : {}),
     disagreements: (Array.isArray(value.disagreements) ? value.disagreements : []).map((item) => ({ topic: text(item?.topic), positions: strings(item?.positions), resolution: text(item?.resolution), confidence: text(item?.confidence) || 'unknown' })),
     unresolved_questions: unresolved,
     provenance: value.provenance && typeof value.provenance === 'object' && !Array.isArray(value.provenance) ? { ...value.provenance } : {},

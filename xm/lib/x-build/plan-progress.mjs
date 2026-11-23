@@ -8,7 +8,7 @@ import { modifyJSON, readJSON, writeMD, exitFail } from './core.mjs';
 
 const HERE = dirname(fileURLToPath(import.meta.url));
 const RUN_ID = /^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$/;
-const COMMAND_TIMEOUT_MS = 120000;
+const DEFAULT_COMMAND_TIMEOUT_MS = 120000;
 const VERIFY_FAILED = 2;
 
 async function loadPlanNormalizer() {
@@ -129,6 +129,7 @@ function renderTasks(session, summary) {
     summary.verified + '/' + summary.tasks.length + ' verified',
     '',
   ];
+  if (session.plan.execution?.notes) lines.push('Execution: ' + session.plan.execution.notes, '');
   for (const { task, status } of ordered) {
     const suffix = status === 'pending' || status === 'verified' ? '' : '  (' + status + ')';
     lines.push('- [' + (status === 'verified' ? 'x' : ' ') + '] ' + task.id + ' ' + task.title + '  [' + task.requirement_refs.join(', ') + ']' + suffix);
@@ -224,8 +225,13 @@ function cmdStart(args, json) {
   });
 }
 
-function runCommand(root, command) {
-  return spawnSync(process.env.SHELL || '/bin/sh', ['-lc', command], { cwd: root, stdio: 'ignore', timeout: COMMAND_TIMEOUT_MS });
+function commandTimeoutMs(plan) {
+  const seconds = plan.execution?.command_timeout_seconds;
+  return seconds ? seconds * 1000 : DEFAULT_COMMAND_TIMEOUT_MS;
+}
+
+function runCommand(session, command) {
+  return spawnSync(process.env.SHELL || '/bin/sh', ['-lc', command], { cwd: session.root, stdio: 'ignore', timeout: commandTimeoutMs(session.plan) });
 }
 
 async function cmdVerify(args, json) {
@@ -251,7 +257,7 @@ async function cmdVerify(args, json) {
   const planCommands = session.plan.validation.commands;
   const firstFailure = (commands) => {
     for (const command of commands) {
-      const result = runCommand(session.root, command);
+      const result = runCommand(session, command);
       if (result.status === 0 && !result.error) continue;
       return { command, exit: result.status ?? (result.error?.code || result.signal || 'unknown') };
     }

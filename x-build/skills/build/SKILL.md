@@ -186,7 +186,7 @@ fallback은 다음 조건을 모두 만족할 때만 추가합니다.
 - agent batch 전에 실제 사용할 model과 task 수를 한 줄로 알립니다.
 - direct route와 planned route의 Execute는 `route confirm` 출력의 `model_routes.execute`를 사용합니다. Claude는 `model_routes.execute.model_by_vendor.claude`를 사용합니다.
 - task prompt에 Execution Principles와 task-specific done criteria를 포함합니다.
-- When the plan lists `out_of_scope`, put the list in every task prompt and tell the executor not to implement those items. Add a task's `verify_commands` to its prompt as the commands that decide whether the task is done.
+- When the plan lists `out_of_scope`, put the list in every task prompt and tell the executor not to implement those items. Add a task's `verify_commands` to its prompt as the commands that decide whether the task is done. When the plan has `execution.notes`, put them in every task prompt next to `out_of_scope`: they hold the context that every executor needs, such as where the code builds or the order in which lanes merge.
 - 순차 실행이 기본입니다. 병렬 실행은 예상 수정 파일, 공유 상태, dependency와 검증 환경이 모두 독립적이고 측정 가능한 시간 이득이 예상될 때만 허용합니다.
 - 병렬화를 위해 task를 억지로 분해하거나 worktree를 만들지 않습니다.
 - A contract dependency is the only exception to the dependency condition above. When the plan puts a task in the `steps` entry of a task it depends on and lists that dependency in the task's `contract_deps`, start the two together (send their executor agents in one message). The other conditions still apply: tasks that start together list no common expected file and share no state. Verify every task of an entry before the next entry starts.
@@ -208,6 +208,7 @@ When executing an executable x-plan session (`.xm/plan/<run-id>/`):
 - For tasks that start together, run `progress start` for each task before its agent starts. Run `progress verify` only after every agent of that entry has returned, and verify a dependency before its consumer. A verify command can read the whole tree, so a file that another agent has half written can fail it. `progress verify` exits 1 and names the dependency when a dependency of the task is neither verified nor deferred.
 - When a task with `contract_deps` fails verification, continue the agent that wrote it with the failed command (Claude Code: SendMessage to that agent). A new agent has to load the whole context again.
 - Never edit `tasks.md` or `progress.json` by hand. Both are generated.
+- `progress` needs the source tree in the repository that holds `.xm`: it records the local `HEAD`, hashes `expected_files` there, and runs the commands there. When the code builds on another host, do not mark the plan executable for progress tracking; tell the user instead. Each command stops after 120 seconds unless the plan sets `execution.command_timeout_seconds`.
 - At the end, run `xm build progress show --plan <run-id>` and report it to the user.
 
 ## Explicit Legacy Opt-In

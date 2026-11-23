@@ -10,6 +10,35 @@ function issue(code, path, message) { return { code, path, message }; }
 function object(value) { return value !== null && typeof value === 'object' && !Array.isArray(value); }
 function stringArray(value) { return Array.isArray(value) && value.every((item) => typeof item === 'string'); }
 function duplicates(items) { const seen = new Set(), dup = new Set(); for (const item of items) { if (seen.has(item.id)) dup.add(item.id); seen.add(item.id); } return [...dup]; }
+const CARGO_VALUE_OPTIONS = new Set(['-p', '--package', '-F', '--features', '--manifest-path', '--target', '--target-dir', '--test', '--bin', '--example', '--bench', '-j', '--jobs', '--profile', '--color', '--message-format', '--exclude', '--config', '-Z']);
+const LIBTEST_VALUE_OPTIONS = new Set(['--test-threads', '--skip', '--format', '--color', '--logfile', '-Z']);
+
+// These runners exit 0 when a test filter matches nothing ("0 passed", "[no tests to run]"),
+// so a verify command built on one passes before the code it names exists. A command piped
+// into another one is taken to check the count itself.
+export function vacuousTestFilter(command) {
+  if (/(^|[^|])\|(?!\|)/.test(command)) return null;
+  for (const part of String(command).split(/&&|\|\||;/)) {
+    const tokens = part.trim().split(/\s+/);
+    const cargo = tokens.indexOf('cargo');
+    if (cargo >= 0 && tokens[cargo + 1] === 'test') {
+      let libtest = false;
+      for (let i = cargo + 2; i < tokens.length; i += 1) {
+        const token = tokens[i];
+        if (token === '--') { libtest = true; continue; }
+        if (token.startsWith('-')) {
+          if (!token.includes('=') && (libtest ? LIBTEST_VALUE_OPTIONS : CARGO_VALUE_OPTIONS).has(token)) i += 1;
+          continue;
+        }
+        return 'cargo test';
+      }
+    }
+    const go = tokens.indexOf('go');
+    if (go >= 0 && tokens[go + 1] === 'test' && tokens.slice(go + 2).some((token) => /^--?run(=|$)/.test(token))) return 'go test -run';
+  }
+  return null;
+}
+
 function hasCycle(tasks) {
   const deps = new Map(tasks.map((task) => [task.id, task.depends_on]));
   const visiting = new Set(), done = new Set();
@@ -68,11 +97,20 @@ export function validatePlanEnvelope(input) {
       if (field in item && typeof item[field] !== 'string') errors.push(issue('failure_mode.field_type', `failure_modes[${index}].${field}`, `${field} must be a string`));
     }
   });
+  if ('execution' in input) {
+    if (!object(input.execution)) errors.push(issue('plan.field_type', 'execution', 'execution must be an object'));
+    else {
+      if ('notes' in input.execution && typeof input.execution.notes !== 'string') errors.push(issue('execution.field_type', 'execution.notes', 'notes must be a string'));
+      const timeout = input.execution.command_timeout_seconds;
+      if ('command_timeout_seconds' in input.execution && !(Number.isInteger(timeout) && timeout > 0 && timeout <= 86400)) errors.push(issue('execution.field_type', 'execution.command_timeout_seconds', 'command_timeout_seconds must be an integer from 1 to 86400'));
+    }
+  }
   if (Array.isArray(input.unresolved_questions) && !stringArray(input.unresolved_questions)) errors.push(issue('plan.field_type', 'unresolved_questions', 'unresolved_questions must be a string array'));
   const requestedExecutable = input.executable === true;
   const value = normalizePlanEnvelope(input);
   if (value.schema_version !== PLAN_SCHEMA_VERSION) errors.push(issue('plan.unsupported_version', 'schema_version', `expected ${PLAN_SCHEMA_VERSION}`));
-  if (!PLAN_STATUSES.includes(value.status)) errors.push(issue('plan.status', 'status', 'invalid status'));
+  // 'invalid' is in PLAN_STATUSES for CLI error envelopes only, so a plan is told the two it can use.
+  if (!PLAN_STATUSES.includes(value.status)) errors.push(issue('plan.status', 'status', `invalid status "${value.status}"; status must be complete or incomplete`));
   if (value.status === 'invalid') errors.push(issue('plan.invalid_state', 'status', 'invalid status is not a valid plan result'));
   if (requestedExecutable && value.status !== 'complete') errors.push(issue('plan.status_executable', 'status', 'executable plans require status=complete'));
   if (!value.goal) errors.push(issue('plan.goal', 'goal', 'goal is required'));
@@ -108,7 +146,9 @@ export function validatePlanEnvelope(input) {
   });
   if (hasCycle(value.tasks)) errors.push(issue('task.dependency_cycle', 'tasks', 'task dependency cycle detected'));
   const covered = new Set([...value.tasks.flatMap((task) => task.requirement_refs), ...value.validation.requirement_refs]);
-  for (const id of reqIds) if (!covered.has(id)) errors.push(issue('requirement.uncovered', 'requirements', `requirement ${id} is not covered`));
+  // An interview is saved as status incomplete before any task exists, so there a gap is reported, not refused.
+  const uncovered = value.status === 'incomplete' ? warnings : errors;
+  for (const id of reqIds) if (!covered.has(id)) uncovered.push(issue('requirement.uncovered', 'requirements', `requirement ${id} is not covered`));
   const scheduled = new Map();
   value.steps.forEach((step, stepIndex) => step.forEach((id) => {
     if (!taskIds.has(id)) errors.push(issue('steps.unknown_task', 'steps', `unknown task ${id}`));
@@ -144,6 +184,12 @@ export function validatePlanEnvelope(input) {
       warnings.push(issue('plan.failure_modes_missing', 'failure_modes', `risk-domain requirement ${requirement.id} has no enumerated failure mode; add one or state "none — <justification>"`));
     }
   }
+  const vacuous = (command, path) => {
+    const runner = vacuousTestFilter(command);
+    if (runner) warnings.push(issue('verify.vacuous_filter', path, `\`${command}\` passes a test filter to ${runner}, which exits 0 when no test matches; pipe its output into a check that at least one test ran`));
+  };
+  value.tasks.forEach((task, index) => (task.verify_commands || []).forEach((command) => vacuous(command, `tasks[${index}].verify_commands`)));
+  value.validation.commands.forEach((command) => vacuous(command, 'validation.commands'));
   const unverified = unverifiedAssumptions(value);
   for (const item of unverified) {
     warnings.push(issue('assumption.unverified', 'assumptions', `assumption ${item.id || '(no id)'} has ${item.confidence} confidence and no evidence; verify it against a source, or ask it as a question`));
