@@ -783,17 +783,19 @@ xm pr land 42 --yes                         # 모든 체크가 통과했으면 �
 xm pr land --wait --require-review --yes    # 현재 브랜치의 PR: 체크를 기다리고 LGTM 리뷰를 요구
 xm pr land 42 --yes --cleanup               # head 브랜치의 워크트리까지 제거
 xm pr land 42 --wait --require-check reviewer --yes   # `reviewer` 체크가 통과해야 머지
+xm pr land 42 --wait-required --require-check reviewer --dry-run   # `reviewer` 판정이 나오면 다른 체크를 기다리지 않고 반환
 ```
 
 1. `gh`로 PR과 체크를 읽습니다. 실패했거나 진행 중인 체크가 있으면 머지하지 않습니다. 체크가 하나도 없는 PR은 `--allow-no-checks`를 줄 때만 머지합니다. `--wait`를 주면 체크가 끝나거나, PR이 닫히거나 draft가 되거나, `--timeout`(기본 1800초)이 지날 때까지 기다립니다.
    `--require-check <name>`을 주면 PR head에서 그 이름과 정확히 같은 체크가 통과해야 합니다. 이 플래그는 여러 번 쓸 수 있습니다. 필수 체크가 없으면 진행 중으로 셉니다. `--wait`와 함께 쓰면 체크가 통과하거나 timeout이 지날 때까지 기다립니다. `--allow-no-checks`로는 이 조건을 면제할 수 없습니다.
+   `--wait-required`를 주면 필수 체크마다 통과나 실패 판정이 나올 때까지만 기다리고, 나머지 체크는 기다리지 않습니다. 진행 중이거나 실패한 체크가 있으면 머지하지 않는 것은 같습니다.
 2. `--require-review`를 주면 같은 head 커밋을 대상으로 끝난 `xm review` 실행 중 판정이 `LGTM`인 기록이 있어야 합니다. 이 명령이 리뷰를 실행하지는 않습니다.
 3. `gh pr merge <n> --merge --match-head-commit <head>`를 실행합니다. 체크를 확인한 뒤 head가 바뀌었으면 GitHub가 머지를 거부합니다.
 4. base 브랜치를 체크아웃한 워크트리를 `git-kit pull --strategy ff-only --no-autostash`로 빨리감기합니다. `--cleanup`을 주면 head 브랜치의 워크트리를 `git-kit worktree remove`로 제거하며, 변경 사항이 남은 워크트리는 제거하지 않습니다. PR이 같은 저장소에서 왔고 워크트리가 머지된 head 커밋에 있을 때만 제거합니다. 현재 체크아웃이 PR의 저장소가 아니면 이 단계를 건너뜁니다. 동기화나 제거가 실패하면 종료 코드 1로 끝납니다.
 
 PR이 이미 머지됐으면 머지를 건너뛰고, `--yes`를 준 경우에만 4단계를 실행합니다. 원격 브랜치 삭제, `main` 빨리감기, 릴리스는 하지 않습니다.
 
-`/xm:land`는 열린 PR 하나를 현재 세션에서 머지까지 진행합니다. 외부 reviewer 체크를 기다리고, 리뷰를 읽고, 항목을 고친 뒤 `xm pr land <pr> --wait --require-check reviewer --yes`를 실행합니다.
+`/xm:land`는 열린 PR 하나를 현재 세션에서 머지까지 진행합니다. `--wait-required`로 외부 reviewer 체크의 판정을 기다리고, 리뷰를 읽고, 항목을 고친 뒤 `xm pr land <pr> --wait --require-check reviewer --yes`를 실행합니다.
 
 ```bash
 /xm:land 42 --review reviewer --merge here --check reviewer
