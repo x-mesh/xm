@@ -160,10 +160,16 @@ function requireExecutable(session) {
   if (!session.plan.validation.commands.length) fail('plan has no validation.commands to verify against');
 }
 
-// The task's own commands run first: they observe this task's criteria, while the plan-wide
-// commands only show that nothing else broke.
-function verifyCommands(session, task) {
-  return [...(task.verify_commands || []), ...session.plan.validation.commands];
+// A task with verify_commands is decided by them. The plan-wide commands then run only when
+// it is the last task left to verify: they can need a later task's output, and running them
+// for every task made the first task of such a plan impossible to verify. A task with no
+// command of its own is still decided by the plan-wide commands at its own position.
+function ownCommands(task) {
+  return task.verify_commands || [];
+}
+
+function verifiedForPlan(records, task) {
+  return records[task.id]?.state === 'verified' && records[task.id].task_hash === taskHash(task);
 }
 
 function cmdStart(args, json) {
@@ -187,12 +193,23 @@ function cmdStart(args, json) {
       return next;
     });
     writeTasks(session);
-    const commands = verifyCommands(session, task);
-    if (json) console.log(JSON.stringify({ status: 'started', plan_id: session.runId, task: task.id, verify_commands: commands }, null, 2));
-    else {
+    // Start names only what verify is certain to run. Whether the plan-wide commands follow
+    // the task's own depends on which tasks are verified by then.
+    const own = ownCommands(task);
+    const planCommands = session.plan.validation.commands;
+    if (json) {
+      console.log(JSON.stringify({
+        status: 'started', plan_id: session.runId, task: task.id, verify_commands: own.length ? own : planCommands,
+        ...(own.length ? { plan_commands_when_last: planCommands } : {}),
+      }, null, 2));
+    } else {
       console.log('Started ' + task.id + ' ' + task.title);
       console.log('verify will run:');
-      for (const command of commands) console.log('  ' + command);
+      for (const command of (own.length ? own : planCommands)) console.log('  ' + command);
+      if (own.length) {
+        console.log('and, when ' + task.id + ' is the last task left to verify, the plan-wide commands:');
+        for (const command of planCommands) console.log('  ' + command);
+      }
     }
   });
 }
@@ -220,25 +237,53 @@ async function cmdVerify(args, json) {
   const current = hashFiles(session.root, task.expected_files);
   if (!task.expected_files.some((file) => current[file] !== record.baseline_files[file])) fail('no expected file changed since start of ' + task.id);
 
-  const commands = verifyCommands(session, task);
-  for (const command of commands) {
-    const result = runCommand(session.root, command);
-    if (result.status !== 0 || result.error) {
+  const own = ownCommands(task);
+  const planCommands = session.plan.validation.commands;
+  // Runs the commands and reports the first failure. `scope` tells a command of this task from
+  // a plan-wide one, because the fix differs: the task's work, or another task or the plan.
+  const passes = (commands, scope) => {
+    for (const command of commands) {
+      const result = runCommand(session.root, command);
+      if (result.status === 0 && !result.error) continue;
       const exit = result.status ?? (result.error?.code || result.signal || 'unknown');
-      if (json) console.log(JSON.stringify({ status: 'failed', plan_id: session.runId, task: task.id, failed_command: command, exit_code: exit }, null, 2));
-      else console.error('verification failed for ' + task.id + ': `' + command + '` exited with ' + exit);
+      if (json) console.log(JSON.stringify({ status: 'failed', plan_id: session.runId, task: task.id, failed_command: command, exit_code: exit, scope }, null, 2));
+      else if (scope === 'task') console.error('verification failed for ' + task.id + ': `' + command + '` exited with ' + exit);
+      else {
+        console.error('verification failed for ' + task.id + ': plan-wide command `' + command + '` exited with ' + exit + '.'
+          + (own.length ? ' ' + task.id + ' is the last task left to verify, so the plan-wide commands run with it.'
+            : ' ' + task.id + ' has no verify_commands of its own, so the plan-wide commands decide it. If this command needs a later task, the plan has to give ' + task.id + ' its own verify_commands.'));
+      }
       writeTasks(session);
       exitFail(VERIFY_FAILED, 'verification failed');
-      return;
+      return false;
     }
+    return true;
+  };
+  if (!passes(own.length ? own : planCommands, own.length ? 'task' : 'plan')) return;
+  const commands = own.length ? [...own] : [...planCommands];
+  const verifiedHead = gitHead(session.root);
+  // Whether this is the last task left is decided here, under the lock of progress.json. Two
+  // verifications that run at the same time each see the other task as not verified; deciding
+  // before the lock would let both skip the plan-wide commands and complete the plan.
+  const writeVerified = (planWideRan) => {
+    let written = false;
+    modifyJSON(session.progressPath, (data) => {
+      const last = session.plan.tasks.every((other) => other.id === task.id || verifiedForPlan(data.tasks, other));
+      if (last && !planWideRan) return data;
+      data.tasks[task.id] = {
+        ...data.tasks[task.id], state: 'verified', verified_at: new Date().toISOString(), verified_head: verifiedHead,
+        verified_files: current, commands, commands_hash: sha256(JSON.stringify(commands)),
+      };
+      written = true;
+      return data;
+    });
+    return written;
+  };
+  if (!writeVerified(own.length === 0)) {
+    if (!passes(planCommands, 'plan')) return;
+    commands.push(...planCommands);
+    writeVerified(true);
   }
-  modifyJSON(session.progressPath, (data) => {
-    data.tasks[task.id] = {
-      ...data.tasks[task.id], state: 'verified', verified_at: new Date().toISOString(), verified_head: gitHead(session.root),
-      verified_files: current, commands, commands_hash: sha256(JSON.stringify(commands)),
-    };
-    return data;
-  });
   writeTasks(session);
   if (json) console.log(JSON.stringify({ status: 'verified', plan_id: session.runId, task: task.id }, null, 2));
   else console.log('Verified ' + task.id + ' ' + task.title);

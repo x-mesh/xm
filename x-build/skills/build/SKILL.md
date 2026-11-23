@@ -201,9 +201,10 @@ fallback은 다음 조건을 모두 만족할 때만 추가합니다.
 When executing an executable x-plan session (`.xm/plan/<run-id>/`):
 
 - Before each task, run `xm build progress start --plan <run-id> --task <id>`.
-- After the task, run `xm build progress verify --plan <run-id> --task <id>`. It runs the task's `verify_commands`, when the plan gives any, and then the plan's `validation.commands`. It checks off the task only if every command passes.
+- After the task, run `xm build progress verify --plan <run-id> --task <id>`. A task with `verify_commands` is checked by them, and the plan's `validation.commands` run with it only when it is the last task left to verify. A task with no `verify_commands` is checked by the plan's `validation.commands`. The task is checked off only if every command that ran passes.
+- When a plan-wide command fails for a task that has no `verify_commands` because the command needs a later task, the plan is wrong for that task. Revise the plan to give the task its own `verify_commands`. Do not skip the verification or start the later task first.
 - Treat a verify failure (exit code 2) as the task not done. Fix the work and verify again.
-- For tasks that start together, run `progress start` for each task before its agent starts. Run `progress verify` only after every agent of that entry has returned, and verify a dependency before its consumer. The plan-wide commands read the whole tree, so a file that another agent has half written fails them. `progress verify` exits 1 and names the dependency when a dependency of the task is not verified yet.
+- For tasks that start together, run `progress start` for each task before its agent starts. Run `progress verify` only after every agent of that entry has returned, and verify a dependency before its consumer. A verify command can read the whole tree, so a file that another agent has half written can fail it. `progress verify` exits 1 and names the dependency when a dependency of the task is not verified yet.
 - When a task with `contract_deps` fails verification, continue the agent that wrote it with the failed command (Claude Code: SendMessage to that agent). A new agent has to load the whole context again.
 - Never edit `tasks.md` or `progress.json` by hand. Both are generated.
 - At the end, run `xm build progress show --plan <run-id>` and report it to the user.
