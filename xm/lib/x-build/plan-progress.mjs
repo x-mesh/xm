@@ -67,11 +67,15 @@ function gitHead(root) {
 }
 
 // Why root has no commit to record as a baseline, or null when git gives another failure.
+// Each call has the limit of the rev-parse in gitHead: this runs after that call failed, and
+// a git that hangs must still end in an error instead of a command that never returns.
 function missingBaselineCommit(root) {
-  const git = (...args) => spawnSync('git', args, { cwd: root, encoding: 'utf8' });
+  const git = (...args) => spawnSync('git', args, { cwd: root, encoding: 'utf8', timeout: 5000 });
   const head = git('rev-parse', '--verify', '--quiet', 'HEAD^{commit}');
   if (head.error || head.status === 0) return null;
-  return git('rev-parse', '--is-inside-work-tree').status === 0 ? 'this repository has no commit yet' : root + ' is not in a git repository';
+  const inside = git('rev-parse', '--is-inside-work-tree');
+  if (inside.error) return null;
+  return inside.status === 0 ? 'this repository has no commit yet' : root + ' is not in a git repository';
 }
 
 function taskHash(task) {

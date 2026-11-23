@@ -131,12 +131,15 @@ function gitHead(cwd) {
 }
 
 // Why cwd has no commit to record as a baseline, or null when it has one. A git that cannot
-// run returns null, so the later git call reports that failure itself.
+// run, or does not answer within the limit, returns null, so the later git call reports that
+// failure itself.
 function missingBaselineCommit(cwd) {
-  const git = (...args) => spawnSync('git', args, { cwd, encoding: 'utf8' });
+  const git = (...args) => spawnSync('git', args, { cwd, encoding: 'utf8', timeout: 5000 });
   const head = git('rev-parse', '--verify', '--quiet', 'HEAD^{commit}');
   if (head.error || head.status === 0) return null;
-  return git('rev-parse', '--is-inside-work-tree').status === 0 ? 'this repository has no commit yet' : `${cwd} is not in a git repository`;
+  const inside = git('rev-parse', '--is-inside-work-tree');
+  if (inside.error) return null;
+  return inside.status === 0 ? 'this repository has no commit yet' : `${cwd} is not in a git repository`;
 }
 
 function hashMap(cwd, files) {

@@ -6,7 +6,7 @@
  */
 import { describe, expect, test } from 'bun:test';
 import { spawnSync } from 'node:child_process';
-import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs';
+import { chmodSync, mkdirSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { dirname, join } from 'node:path';
 
@@ -83,6 +83,22 @@ describe('a missing baseline commit', () => {
       expect(result.text).toContain('run this command again');
     } finally { rmSync(cwd, { recursive: true, force: true }); }
   });
+
+  // The rev-parse in progress has a 5 second limit. The diagnosis that follows a failure
+  // had none, so a git that hangs turned an error after 5 seconds into no answer at all.
+  test('progress start still ends in an error when git does not answer', () => {
+    const cwd = fixture('one commit');
+    const bin = mkdtempSync(join(tmpdir(), 'xb-hung-git-'));
+    try {
+      writeFileSync(join(bin, 'git'), '#!/bin/sh\nexec sleep 120\n');
+      chmodSync(join(bin, 'git'), 0o755);
+      const env = { ...process.env, XM_ROOT: join(cwd, '.xm'), X_BUILD_ROOT: undefined, XKIT_SERVER: undefined, PATH: bin + ':' + process.env.PATH };
+      const result = spawnSync('node', [CLI, 'progress', 'start', '--plan', RUN, '--task', 'A'], { cwd, env, encoding: 'utf8', timeout: 25_000 });
+      expect(result.error).toBeUndefined();
+      expect(result.status).toBe(1);
+      expect(result.stderr).toContain('progress requires a git repository with at least one commit');
+    } finally { rmSync(cwd, { recursive: true, force: true }); rmSync(bin, { recursive: true, force: true }); }
+  }, 30_000);
 
   test('progress start with a commit starts the task', () => {
     const cwd = fixture('one commit');
