@@ -76,6 +76,12 @@ describe('xm:write honours the build answer', () => {
   test('stays within the 500-line budget', () => {
     expect(WRITE.split('\n').length).toBeLessThanOrEqual(500);
   });
+
+  test('a branch stacked on an open PR targets that PR branch, not the repository base', () => {
+    expect(WRITE).toContain('gh pr list --state open --json headRefName,headRefOid');
+    expect(WRITE).toContain('git merge-base --is-ancestor <headRefOid> HEAD');
+    expect(WRITE).toMatch(/take the\s+smallest count/);
+  });
 });
 
 describe('xm:land handles a missing reviewer check', () => {

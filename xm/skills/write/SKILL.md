@@ -93,11 +93,11 @@ Collect before writing. Run independent reads in one Bash call.
 | `issue` | The user's report, reproduction steps, exact error text, `git rev-parse --short HEAD`, OS and version when relevant, the issue template (see Templates below). Existing body via `gh issue view <n> --json title,body` when revising |
 | `release`, `changelog`, `commit` | `GK_AGENT=1 git-kit log --body <range>`, `GK_AGENT=1 git-kit diff --digest <range>`, the existing `CHANGELOG.md` sections for format, and the version passed by the caller |
 
-Base branch for `pr`: a `--base <branch>` argument wins. `xm:wt` passes the branch's recorded
-`gk-parent` this way, because `git-kit context` reports the repository's `base_branch` (often
-`main`) even for a branch cut from `develop`. Without `--base`, use the base that
-`git-kit context` reports. If it reports none, use
-`gh repo view --json defaultBranchRef -q .defaultBranchRef.name`. Never assume `main`.
+Base branch for `pr`: a `--base <branch>` argument wins (`xm:wt` passes the `gk-parent`: `git-kit context` reports the
+repository's `base_branch`, often `main`). Else stack on an open PR so the diff holds only this branch's commits: from
+`gh pr list --state open --json headRefName,headRefOid`, keep heads other than this branch where
+`git merge-base --is-ancestor <headRefOid> HEAD` passes and `git rev-list --count <headRefOid>..HEAD` is above 0, take the
+smallest count, and name that PR in the confirmation. Else the `git-kit context` base, else `gh repo view --json defaultBranchRef -q .defaultBranchRef.name`. Never assume `main`.
 
 Templates for `pr` and `issue`. Stop at the first source that has one:
 
