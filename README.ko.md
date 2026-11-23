@@ -516,7 +516,7 @@ xm build progress verify --plan <run-id> --task T1
 xm build progress show --plan <run-id>
 ```
 
-`verify`는 `start` 이후 expected file 중 하나 이상이 바뀌었고 실행한 명령이 모두 0으로 끝날 때만 task를 체크합니다. `verify_commands`가 있는 task는 그 명령을 실행하고, plan의 `validation.commands`는 마지막으로 남은 task를 검증할 때 함께 실행합니다. `verify_commands`가 없는 task는 plan의 `validation.commands`를 실행합니다. 다른 task가 아직 남아 있는데 이 명령이 실패하면 `verify`는 종료 코드 0으로 끝나고 task를 보류(deferred)로 기록합니다. 보류된 task에 의존하는 task도 보류됩니다. 보류된 task는 체크되지 않으며, plan의 `validation.commands`가 통과하고 자기 명령도 여전히 통과할 때 체크됩니다. 명령마다 120초 제한이 있습니다. 그 밖의 경우에 명령이 실패하면 종료 코드 2로 끝나고 아무것도 기록하지 않습니다. 상태는 `.xm/plan/<run-id>/progress.json`에 저장되고, 같은 디렉터리의 `tasks.md`가 이를 체크 목록으로 보여 줍니다. 두 파일은 직접 고치지 마세요.
+`verify`는 `start` 이후 expected file 중 하나 이상이 바뀌었고 실행한 명령이 모두 0으로 끝날 때만 task를 체크합니다. `verify_commands`가 있는 task는 그 명령을 실행하고, plan의 `validation.commands`는 마지막으로 남은 task를 검증할 때 함께 실행합니다. `verify_commands`가 없는 task는 plan의 `validation.commands`를 실행합니다. 다른 task가 아직 남아 있는데 이 명령이 실패하면 `verify`는 종료 코드 0으로 끝나고 task를 보류(deferred)로 기록합니다. 보류된 task에 의존하는 task도 보류됩니다. 보류된 task는 체크되지 않습니다. plan의 `validation.commands`가 통과하고, 자기 명령이 다시 통과하고, expected file 중 하나 이상이 `start` 시점과 여전히 다를 때 체크됩니다. 이 조건 중 하나라도 맞지 않으면 task는 보류로 남고, `verify`가 `still_deferred`에 이유와 함께 표시합니다. 명령마다 120초 제한이 있습니다. 그 밖의 경우에 `verify`를 호출한 task의 명령이 실패하면 종료 코드 2로 끝나고 그 task에 대해 아무것도 기록하지 않습니다. 상태는 `.xm/plan/<run-id>/progress.json`에 저장되고, 같은 디렉터리의 `tasks.md`가 이를 체크 목록으로 보여 줍니다. 두 파일은 직접 고치지 마세요.
 
 `xm build plan`은 같은 x-plan entry point로 위임하며 deprecated입니다. 기존 PRD·task·phase planner는 명시적 호환 경로 `xm build legacy-plan`으로만 남아 있습니다.
 
