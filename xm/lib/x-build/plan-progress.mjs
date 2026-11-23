@@ -59,8 +59,19 @@ function gitHead(root) {
   try {
     return execFileSync('git', ['rev-parse', 'HEAD'], { cwd: root, encoding: 'utf8', stdio: ['ignore', 'pipe', 'ignore'], timeout: 5000 }).trim();
   } catch {
-    return fail('progress requires a git repository with at least one commit');
+    const problem = missingBaselineCommit(root);
+    return fail(problem
+      ? 'progress records HEAD as the baseline, and ' + problem + '. Create the first commit, then run this command again. An agent asks the user before it creates a repository or a commit.'
+      : 'progress requires a git repository with at least one commit');
   }
+}
+
+// Why root has no commit to record as a baseline, or null when git gives another failure.
+function missingBaselineCommit(root) {
+  const git = (...args) => spawnSync('git', args, { cwd: root, encoding: 'utf8' });
+  const head = git('rev-parse', '--verify', '--quiet', 'HEAD^{commit}');
+  if (head.error || head.status === 0) return null;
+  return git('rev-parse', '--is-inside-work-tree').status === 0 ? 'this repository has no commit yet' : root + ' is not in a git repository';
 }
 
 function taskHash(task) {
@@ -117,6 +128,7 @@ function renderTasks(session, summary) {
     const suffix = status === 'pending' || status === 'verified' ? '' : '  (' + status + ')';
     lines.push('- [' + (status === 'verified' ? 'x' : ' ') + '] ' + task.id + ' ' + task.title + '  [' + task.requirement_refs.join(', ') + ']' + suffix);
     if (task.depends_on.length) lines.push('  - Depends on: ' + task.depends_on.join(', '));
+    if (task.contract_deps?.length) lines.push('  - Contract only: ' + task.contract_deps.join(', '));
     if (task.expected_files.length) lines.push('  - Files: ' + task.expected_files.join(', '));
     lines.push('  - Done when: ' + task.done_criteria.join('; '));
     if (task.verify_commands?.length) lines.push('  - Verify: ' + task.verify_commands.join('; '));
@@ -182,9 +194,16 @@ async function cmdVerify(args, json) {
   const session = await loadSession(args);
   requireExecutable(session);
   const task = requireTask(session, args);
-  const record = readProgress(session).tasks[task.id];
+  const records = readProgress(session).tasks;
+  const record = records[task.id];
   if (!record || record.state !== 'in_progress') fail('task ' + task.id + ' has no in_progress record; run `xm build progress start` first');
   if (record.task_hash !== taskHash(task)) fail('plan task ' + task.id + ' changed since start; run `xm build progress start` again');
+  // A task can start beside a dependency (contract_deps), so the order is enforced here: a
+  // consumer is not checked off against a producer that has not passed its own verification.
+  // The producer's task hash is not compared: a plan revision that changes no file cannot be
+  // verified again ("no expected file changed"), and would block every consumer for good.
+  const unverified = task.depends_on.filter((id) => session.plan.tasks.some((dep) => dep.id === id) && records[id]?.state !== 'verified');
+  if (unverified.length) fail('task ' + task.id + ' depends on ' + unverified.join(', ') + ', not verified yet; verify ' + unverified.join(', ') + ' first');
   const current = hashFiles(session.root, task.expected_files);
   if (!task.expected_files.some((file) => current[file] !== record.baseline_files[file])) fail('no expected file changed since start of ' + task.id);
 

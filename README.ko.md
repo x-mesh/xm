@@ -142,6 +142,8 @@ xm setup --notify       # 오래 걸린 Claude·Codex 작업이 끝나면 알림
 
 `~/.claude/hooks/xm-trace-session.mjs`를 복사하고 `~/.claude/settings.json`의 `PreToolUse`/`PostToolUse`에 Skill matcher를 병합합니다. 기존 훅(mem-mesh 등)은 보존되며, 수정 시 타임스탬프 백업이 생성됩니다. Claude Code 밖에서 실행해야 할 때는 bash 경로를 쓰고, 그 외에는 `/xm init`을 권장합니다.
 
+`xm setup`은 x-build lease guard도 `~/.claude/hooks/xm-build/`에 설치합니다. 한 세션에서 `xm build route start`가 실패하면, start가 성공할 때까지 그 세션의 Agent 호출을 막습니다. `xm build route abandon`으로 풀 수 있고 `XM_BUILD_HOOKS_OFF=1`로 끌 수 있습니다. `xm update`도 전역 훅을 갱신할 때 함께 설치합니다.
+
 `--claude-md`를 주면 `~/.claude/CLAUDE.md`에 마커로 둘러싼 라우팅 블록을 추가합니다. 이 블록은 PR을 올릴 때 **xm:write**를 쓰는 것처럼 Claude가 어떤 상황에서 어떤 xm 스킬을 호출할지 정합니다. 플래그 없이 설치하면 블록을 추가하지 않습니다. 한 번 추가한 뒤에는 `xm setup`과 `xm update`가 블록을 최신 내용으로 갱신합니다. 갱신할 때 블록 안의 내용은 교체되므로, 직접 쓰는 규칙은 블록 밖에 두세요. 블록만 없애려면 블록을 지우면 되고, 이후 설치에서도 다시 추가하지 않습니다. `CLAUDE.md`를 바꿀 때마다 타임스탬프 백업을 만듭니다.
 
 `--codex-md`는 같은 방식의 블록을 `~/.codex/AGENTS.md`에 추가합니다. 이 블록은 스킬을 Codex 표기인 `$xm:<스킬>`로 부릅니다. 추가, 갱신, 백업 규칙은 `--claude-md`와 같고, 두 플래그를 함께 줄 수 있습니다.
@@ -472,13 +474,15 @@ Quick은 결정적 스캐폴드만 만들고 끝냅니다. Standard는 저장소
 
 x-build는 x-plan을 감싸는 lean 실행 workflow입니다. 저장소 근거를 조사하고 계획은 x-plan에만 맡긴 뒤, 순차 native 실행을 기본으로 하며 변경 위험을 직접 확인하는 검증만 고릅니다.
 
+계획이 두 task 사이의 인터페이스를 확정했다면 그 dependency를 `contract_deps`에 적고 두 task를 같은 step에 둘 수 있습니다. x-build는 그 두 task를 함께 시작합니다. 둘 다 끝난 뒤에 검증하며, dependency 쪽을 먼저 검증합니다.
+
 기본은 항상 계획을 세우는 방식이 아니라 adaptive입니다. 범위가 작고 파일이 독립적이며 위험도가 낮은 작업은 direct route로 가되, failure mode를 결정적으로 검증할 gate가 이미 있을 때만 그렇습니다. 공유 상태를 건드리거나 위험도가 높거나 관측이 어려운 작업은 planned route로 갑니다. 설정된 planner model로 x-plan Standard를 돌리고, 계획이 성공하면 설정된 executor model에 실행을 넘깁니다. Plan artifact가 없거나 실행할 수 없으면 Execute 전에 멈춥니다.
 
 x-build는 계획이나 실행을 시작하기 전에 모델을 한 번 확인합니다. 설정된 planner·executor model을 보여 주고 한 번 묻습니다. direct route에서는 executor model만 묻습니다. `--plan <model>`과 `--exec <model>`을 주면 묻지 않습니다. 이 선택은 이번 실행에만 적용되고 config를 바꾸지 않습니다. `xm build route confirm`이 선택을 기록하고, `route start`는 기록이 없는 decision을 거부합니다. Claude Code에서는 세션 모델이 planner model과 같은 tier이면 planner agent를 띄우지 않고 현재 세션에서 계획합니다. Codex에서는 세션의 model과 effort가 planner spec과 모두 같아야 합니다. 실행은 항상 executor agent가 맡아, root 세션이 변경을 독립적으로 확인할 수 있게 합니다. Codex 비대화형 실행처럼 답할 사람이 없으면 설정된 모델을 그대로 쓰고 `source=default`로 기록하며, `route finish`가 이 source를 보여 줍니다. `/xm:plan`을 직접 실행해도 같은 방식으로 planner model을 묻고, `--plan-model <model>`을 주면 묻지 않습니다.
 
 같은 질문에서 실행을 어디까지 할지도 묻습니다. 구현만, PR까지, `/xm:land`로 머지까지 중에서 고릅니다. 머지까지를 고르면 reviewer 체크가 나타나지 않을 때 멈출지, 세션에서 리뷰할지도 함께 고릅니다. `--finish impl|pr|land`와(`land`일 때) `--on-missing stop|here`를 주면 묻지 않습니다. x-build는 `route finish` 뒤에 실행한 파일을 기능 브랜치에 커밋하고, `xm:write`로 PR을 열고, 머지까지를 골랐다면 `/xm:land`를 시작합니다. 한 단계가 실패하면 그 뒤 단계는 실행하지 않습니다.
 
-`route start → verify → finish`는 결정과 baseline commit, 예상 파일, CLI가 실행한 gate, byte hash, 실제 시간과 비용 event를 묶습니다. Direct 검증 실패는 clean planned fallback으로 한 번만 재개합니다. Receipt가 없거나 오래된 상태는 fail-closed로 처리합니다. planned 실행이 모든 gate를 통과했지만 gate에 필요한 선언 밖 파일을 바꿨다면 `xm build route close --decision-id <id>`로 lease를 닫습니다. 이때 사유와 파일 목록만 남기고 outcome은 기록하지 않습니다. `--gate-cmd`는 gate마다 한 번만 넘기고, 한 gate에 명령이 여러 개면 `&&`로 묶습니다. `route start`는 작업 트리가 깨끗해야 시작합니다. 계획 PRD처럼 커밋하지 않은 파일이 있는 채로 시작하려면 `--allow-dirty`를 붙입니다. 그러면 baseline에 그 파일들의 hash가 기록됩니다. `route start`는 변경 전에 gate를 한 번씩 실행해 통과 여부도 기록합니다. `route verify`의 receipt는 변경 전에도 통과했고 지금도 통과하는 gate를 `gates_passing_before_change`로 알려 줍니다. 이 gate들은 이번 변경을 관측하지 못한 것입니다. 이 목록 때문에 실행이 실패하지는 않습니다. 변경 전 실행에서 gate가 `git status`에 나타나는 파일을 바꾸면 `route start`는 lease를 만들지 않고, 바뀐 파일을 알려 주며 실패합니다. ignored 경로에 쓰는 것은 괜찮습니다. `xm build route <verb> --help`는 명령을 실행하지 않고 그 하위 명령의 옵션만 보여 줍니다.
+`route start → verify → finish`는 결정과 baseline commit, 예상 파일, CLI가 실행한 gate, byte hash, 실제 시간과 비용 event를 묶습니다. Direct 검증 실패는 clean planned fallback으로 한 번만 재개합니다. Receipt가 없거나 오래된 상태는 fail-closed로 처리합니다. planned 실행이 모든 gate를 통과했지만 gate에 필요한 선언 밖 파일을 바꿨다면 `xm build route close --decision-id <id>`로 lease를 닫습니다. 이때 사유와 파일 목록만 남기고 outcome은 기록하지 않습니다. `--gate-cmd`는 gate마다 한 번만 넘기고, 한 gate에 명령이 여러 개면 `&&`로 묶습니다. `route start`는 HEAD를 baseline으로 기록하므로 커밋이 하나 이상 있는 git 저장소가 필요합니다. 커밋이 없으면 첫 오류가 그 사실을 알립니다. `route start`는 작업 트리가 깨끗해야 시작합니다. 계획 PRD처럼 커밋하지 않은 파일이 있는 채로 시작하려면 `--allow-dirty`를 붙입니다. 그러면 baseline에 그 파일들의 hash가 기록됩니다. `route start`는 변경 전에 gate를 한 번씩 실행해 통과 여부도 기록합니다. `route verify`의 receipt는 변경 전에도 통과했고 지금도 통과하는 gate를 `gates_passing_before_change`로 알려 줍니다. 이 gate들은 이번 변경을 관측하지 못한 것입니다. 이 목록 때문에 실행이 실패하지는 않습니다. 변경 전 실행에서 gate가 `git status`에 나타나는 파일을 바꾸면 `route start`는 lease를 만들지 않고, 바뀐 파일을 알려 주며 실패합니다. ignored 경로에 쓰는 것은 괜찮습니다. `xm build route <verb> --help`는 명령을 실행하지 않고 그 하위 명령의 옵션만 보여 줍니다.
 
 ```bash
 xm build route decide --kind bugfix --scope bounded --independent \
@@ -547,7 +551,7 @@ xm build progress show --plan <run-id>
 | **워크트리 실행** | `run --worktrees`가 병렬 안전한 태스크를 독립된 `git-kit` 워크트리로 나눠 실행. 각 태스크 patch는 머지 전 `gate-panel`(크로스 모델 패널 리뷰 게이트)을 통과해야 함 — [워크트리 파이프라인](#worktree-pipeline-ko) 참고 |
 | **그룹 단위 리뷰** | `build.review_scope`(기본 `group` / `task`)가 리뷰 그룹의 태스크를 태스크별이 아닌 리뷰 1회 실행으로 묶습니다. `build.review_mode`(기본 `manual` / `auto`)가 그룹 리뷰를 선택적(노출만, 비차단)으로 둘지 Execute→Verify 필수 경계로 둘지, `build.review_depth`(기본 `solo` / `checks-only` / `panel`)가 리뷰 중량을 결정합니다 — `solo`는 reviewer 에이전트 1명이 그룹 패치를 리뷰하고 `review-group <name> --verdict pass\|fail`로 판정을 기록하며, `checks-only`는 test/lint만으로 통과, 크로스벤더 `panel`은 명시적 `review-group <name> --depth panel [--rounds 2]`일 때만 실행됩니다. |
 | **강제 페이즈 게이트** | exit 게이트를 config-schema 기본값 위에 설정을 머지해 해석하고, 각 페이즈 `status.json`에 판정을 기록(`status --json`에 노출), 막히면 non-zero exit — "에이전트가 말로 못 넘는 게이트"가 실제로 작동(no-op 아님) |
-| **Blocking hooks** | `hooks install`이 네이티브 Claude Code 훅 2개를 설치: review-fix 중 `triage.fix_scope.allowed_files` 밖 편집을 막는 PreToolUse **scope-guard**, 미해결 Critical/High가 있으면 턴 종료를 막는 Stop **stop-gate**. 디스크만 읽고 fail-open; `XM_BUILD_HOOKS_OFF=1`로 우회 |
+| **Blocking hooks** | `hooks install`이 네이티브 Claude Code 훅을 설치: review-fix 중 `triage.fix_scope.allowed_files` 밖 편집을 막는 PreToolUse **scope-guard**, 미해결 Critical/High가 있으면 턴 종료를 막는 Stop **stop-gate**, 같은 세션에서 `route start`가 실패한 뒤의 Agent 호출을 막는 PreToolUse **lease-guard**. lease-guard는 이후 start가 성공하거나 `route abandon`을 실행하면 풀림. lease-guard는 `xm setup`이 모든 프로젝트에 설치하고, `hooks install`은 한 프로젝트에 추가함. 디스크만 읽고 fail-open; `XM_BUILD_HOOKS_OFF=1`로 우회 |
 | **ROI 라우팅 신호** | `roi`가 model/role/strategy별 실측 기반 quality-per-dollar(Score/$)를 보고하고 `model_overrides` 변경을 제안 — 단 calibrated 데이터(실측 비용 **및** 점수 있는 태스크 ≥5개)에서만. 추정치로 추측하거나 config를 자동 수정하지 않음 |
 | **보정된 비용 실측** | `forecast update`가 실측 토큰 비용을 재집계해 forecast가 실측 기반으로 산정; `forecast`는 각 추정을 `estimate-only` vs `calibrated`로 라벨 |
 | **워크플로 효과 측정** | `plan --profile light\|standard\|deep`으로 빌드에 들일 절차 무게를 고르고, `effectiveness`가 그 선택이 값을 했는지 측정 — 계획 소요 시간, research 변경률, 재계획/재오픈률, verify 1회 통과율, 완료율을 빌드 단위로 귀속. 근거가 얇으면 `sufficient_sample`(빌드 ≥10)로 표시하고, 집계에서 제외된 이벤트는 조용히 버리지 않고 coverage 줄에 보고 |

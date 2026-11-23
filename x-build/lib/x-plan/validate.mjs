@@ -87,14 +87,22 @@ export function validatePlanEnvelope(input) {
   value.assumptions.forEach((item, index) => { if (!ASSUMPTION_CONFIDENCE.includes(item.confidence)) errors.push(issue('assumption.confidence', `assumptions[${index}].confidence`, 'invalid confidence')); });
   const taskIds = new Set(value.tasks.map((task) => task.id));
   const reqIds = new Set(value.requirements.map((req) => req.id));
+  const taskById = new Map(value.tasks.map((task) => [task.id, task]));
   value.tasks.forEach((task, index) => {
     if (!task.title) errors.push(issue('task.title', `tasks[${index}].title`, 'title is required'));
     if (!task.done_criteria.length) errors.push(issue('task.done_criteria', `tasks[${index}].done_criteria`, 'at least one criterion is required'));
     for (const dep of task.depends_on) if (!taskIds.has(dep)) errors.push(issue('task.dangling_dependency', `tasks[${index}].depends_on`, `unknown task ${dep}`));
     for (const ref of task.requirement_refs) if (!reqIds.has(ref)) errors.push(issue('task.unknown_requirement', `tasks[${index}].requirement_refs`, `unknown requirement ${ref}`));
+    // A contract dependency lets the consumer start beside its producer, so it must be a real
+    // dependency and the two tasks must not write the same file at the same time.
+    for (const dep of task.contract_deps || []) {
+      if (!task.depends_on.includes(dep)) errors.push(issue('task.contract_dependency_undeclared', `tasks[${index}].contract_deps`, `${dep} must also be listed in depends_on`));
+      const shared = task.expected_files.filter((file) => taskById.get(dep)?.expected_files.includes(file));
+      if (shared.length) errors.push(issue('task.contract_dependency_shares_file', `tasks[${index}].contract_deps`, `${task.id} and ${dep} both list ${shared.join(', ')}; a shared file makes ${dep} an output dependency`));
+    }
   });
   if (Array.isArray(input.tasks)) input.tasks.forEach((task, index) => {
-    for (const field of ['depends_on', 'requirement_refs', 'expected_files', 'done_criteria', 'verify_commands']) {
+    for (const field of ['depends_on', 'requirement_refs', 'expected_files', 'done_criteria', 'verify_commands', 'contract_deps']) {
       if (task && field in task && (!Array.isArray(task[field]) || task[field].some((item) => typeof item !== 'string'))) errors.push(issue('task.field_type', `tasks[${index}].${field}`, `${field} must be a string array`));
     }
   });
@@ -109,7 +117,13 @@ export function validatePlanEnvelope(input) {
   }));
   for (const task of value.tasks) {
     if (!scheduled.has(task.id)) errors.push(issue('steps.missing_task', 'steps', `task ${task.id} is not scheduled`));
-    for (const dep of task.depends_on) if (scheduled.has(dep) && scheduled.has(task.id) && scheduled.get(dep) >= scheduled.get(task.id)) errors.push(issue('steps.dependency_order', 'steps', `${dep} must be scheduled before ${task.id}`));
+    for (const dep of task.depends_on) {
+      if (!scheduled.has(dep) || !scheduled.has(task.id)) continue;
+      const gap = scheduled.get(task.id) - scheduled.get(dep);
+      if (task.contract_deps?.includes(dep)) {
+        if (gap < 0) errors.push(issue('steps.dependency_order', 'steps', `${dep} must be scheduled before ${task.id} or in the same step`));
+      } else if (gap <= 0) errors.push(issue('steps.dependency_order', 'steps', `${dep} must be scheduled before ${task.id}`));
+    }
   }
   if (value.unresolved_questions.length && requestedExecutable) errors.push(issue('plan.executable_with_questions', 'executable', 'unresolved questions require executable=false'));
   const hasUnresolvedDisagreement = value.disagreements.some((item) => item.resolution === 'unresolved');

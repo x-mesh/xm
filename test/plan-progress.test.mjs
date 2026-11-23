@@ -135,6 +135,92 @@ describe('xm build progress', () => {
     } finally { rmSync(cwd, { recursive: true, force: true }); }
   });
 
+  test.each([
+    ['a contract dependency started in the same step', (plan) => { plan.tasks[1].contract_deps = ['A']; plan.steps = [['A', 'B']]; }],
+    ['an output dependency', () => {}],
+  ])('verify refuses a task until its dependency is verified: %s', (_label, mark) => {
+    const plan = envelope(); mark(plan);
+    const cwd = setup(plan);
+    try {
+      expect(progress(cwd, 'start', 'A').code).toBe(0);
+      expect(progress(cwd, 'start', 'B').code).toBe(0);
+      writeFileSync(join(cwd, 'src', 'a.txt'), 'a\n');
+      writeFileSync(join(cwd, 'src', 'b.txt'), 'b\n');
+      const early = progress(cwd, 'verify', 'B');
+      expect(early.code).toBe(1);
+      expect(early.stderr).toContain('task B depends on A, not verified yet; verify A first');
+      expect(statuses(cwd)).toEqual({ A: 'in_progress', B: 'in_progress' });
+      expect(progress(cwd, 'verify', 'A').code).toBe(0);
+      const late = progress(cwd, 'verify', 'B');
+      expect(late.code, late.stderr + late.stdout).toBe(0);
+      expect(statuses(cwd)).toEqual({ A: 'verified', B: 'verified' });
+    } finally { rmSync(cwd, { recursive: true, force: true }); }
+  });
+
+  test('a dependency that never started blocks the consumer', () => {
+    const cwd = setup();
+    try {
+      expect(progress(cwd, 'start', 'B').code).toBe(0);
+      writeFileSync(join(cwd, 'src', 'b.txt'), 'b\n');
+      const result = progress(cwd, 'verify', 'B');
+      expect(result.code).toBe(1);
+      expect(result.stderr).toContain('task B depends on A, not verified yet');
+    } finally { rmSync(cwd, { recursive: true, force: true }); }
+  });
+
+  // A revision that changes no file cannot be verified again, so it must not block B for good.
+  test('a dependency revised after its verification does not block the consumer', () => {
+    const cwd = setup();
+    try {
+      expect(verifyA(cwd).code).toBe(0);
+      const plan = envelope(); plan.tasks[0].title = 'Implement API v2';
+      writeEnvelope(cwd, plan);
+      expect(progress(cwd, 'start', 'B').code).toBe(0);
+      writeFileSync(join(cwd, 'src', 'b.txt'), 'b\n');
+      const result = progress(cwd, 'verify', 'B');
+      expect(result.code, result.stderr + result.stdout).toBe(0);
+      expect(statuses(cwd)).toEqual({ A: 'reset', B: 'verified' });
+    } finally { rmSync(cwd, { recursive: true, force: true }); }
+  });
+
+  test('a revised dependency that was started again blocks the consumer until it is verified', () => {
+    const cwd = setup();
+    try {
+      expect(verifyA(cwd).code).toBe(0);
+      const plan = envelope(); plan.tasks[0].title = 'Implement API v2';
+      writeEnvelope(cwd, plan);
+      expect(progress(cwd, 'start', 'A').code).toBe(0);
+      expect(progress(cwd, 'start', 'B').code).toBe(0);
+      writeFileSync(join(cwd, 'src', 'b.txt'), 'b\n');
+      expect(progress(cwd, 'verify', 'B').code).toBe(1);
+      writeFileSync(join(cwd, 'src', 'a.txt'), 'a v2\n');
+      expect(progress(cwd, 'verify', 'A').code).toBe(0);
+      expect(progress(cwd, 'verify', 'B').code).toBe(0);
+    } finally { rmSync(cwd, { recursive: true, force: true }); }
+  });
+
+  test('a dependency whose file changed after its verification does not block the consumer', () => {
+    const cwd = setup();
+    try {
+      expect(verifyA(cwd).code).toBe(0);
+      expect(progress(cwd, 'start', 'B').code).toBe(0);
+      writeFileSync(join(cwd, 'src', 'a.txt'), 'changed by B\n');
+      writeFileSync(join(cwd, 'src', 'b.txt'), 'b\n');
+      const result = progress(cwd, 'verify', 'B');
+      expect(result.code, result.stderr + result.stdout).toBe(0);
+      expect(statuses(cwd)).toEqual({ A: 'changed_after_verification', B: 'verified' });
+    } finally { rmSync(cwd, { recursive: true, force: true }); }
+  });
+
+  test('tasks.md marks a contract dependency', () => {
+    const plan = envelope(); plan.tasks[1].contract_deps = ['A']; plan.steps = [['A', 'B']];
+    const cwd = setup(plan);
+    try {
+      expect(progress(cwd, 'show').code).toBe(0);
+      expect(tasksMd(cwd)).toContain('  - Depends on: A\n  - Contract only: A');
+    } finally { rmSync(cwd, { recursive: true, force: true }); }
+  });
+
   test('rejects non-executable plans and unsafe run ids', () => {
     const cwd = setup(envelope({ executable: false }));
     try {

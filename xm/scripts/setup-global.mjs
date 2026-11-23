@@ -40,6 +40,11 @@ const CODEX_NOTIFY_HOOK_DEST = path.join(CODEX_DIR, 'xm', 'hooks', NOTIFY_HOOK_F
 const NOTIFY_HOOK_TIMEOUT = 15;
 // Codex has no Notification event, so it only gets the turn-done half.
 const NOTIFY_HOOK_EVENTS = { claude: ['UserPromptSubmit', 'Stop', 'Notification'], codex: ['UserPromptSubmit', 'Stop'] };
+// The x-build lease guard and the state reader it imports. `hook-state.mjs` is too generic a
+// name for the shared ~/.claude/hooks, so the pair gets its own directory.
+const LEASE_GUARD_DIR = path.join(HOOKS_DIR, 'xm-build');
+const LEASE_GUARD_FILES = ['xm-build-lease-guard.mjs', 'hook-state.mjs'];
+const LEASE_GUARD_DEST = path.join(LEASE_GUARD_DIR, LEASE_GUARD_FILES[0]);
 const XM_CMD_DEST = path.join(COMMANDS_DIR, 'xm.md');
 const XM_PLAN_CMD_DEST = path.join(COMMANDS_DIR, 'xm-plan.md');
 const XM_PLAN_CMD_BACKUP = path.join(COMMANDS_DIR, 'xm-plan.md.pre-xm');
@@ -445,6 +450,57 @@ function uninstallRelayHook() {
   return removed;
 }
 
+// On by default, like the relay hook: a project that never ran `xm build hooks install`
+// (a new one, for example) is where a failed `route start` was ignored. The files are the
+// x-build templates beside this script, so the per-project install and this one stay one source.
+function installLeaseGuard() {
+  const srcDir = path.join(TEMPLATES_DIR, 'hooks');
+  const missing = LEASE_GUARD_FILES.filter((file) => !fs.existsSync(path.join(srcDir, file)));
+  // An xm build older than the guard has no template; the hooks above still install.
+  if (missing.length) {
+    warn(`lease guard hook skipped: ${missing.join(', ')} not found in ${srcDir}. Update the xm plugin, then re-run xm ${VERB}.`);
+    return;
+  }
+  fs.mkdirSync(LEASE_GUARD_DIR, { recursive: true });
+  for (const file of LEASE_GUARD_FILES) fs.copyFileSync(path.join(srcDir, file), path.join(LEASE_GUARD_DIR, file));
+  fs.chmodSync(LEASE_GUARD_DEST, 0o755);
+  const settings = readSettings();
+  settings.hooks = settings.hooks || {};
+  settings.hooks.PreToolUse = [...withoutHookFile(settings.hooks.PreToolUse, LEASE_GUARD_DEST),
+    { matcher: 'Agent', hooks: [{ type: 'command', command: `"${NODE_BIN}" "${LEASE_GUARD_DEST}"` }] }];
+  const backup = writeSettings(settings);
+  log(`lease guard hook: ${LEASE_GUARD_DEST} (settings backup: ${path.basename(backup)})`);
+  log('lease guard: blocks an Agent call after `xm build route start` fails in the same session (bypass: XM_BUILD_HOOKS_OFF=1)');
+}
+
+// Matched by file, as withoutHookFile does: an earlier install can carry another node path.
+function leaseGuardRegistered(settings) {
+  return (settings.hooks?.PreToolUse || []).some((group) => Array.isArray(group?.hooks)
+    && group.hooks.some((h) => typeof h?.command === 'string' && h.command.includes(LEASE_GUARD_DEST)));
+}
+
+function uninstallLeaseGuard() {
+  let removed = false;
+  if (fs.existsSync(LEASE_GUARD_DIR)) {
+    for (const file of LEASE_GUARD_FILES) fs.rmSync(path.join(LEASE_GUARD_DIR, file), { force: true });
+    // Anything else in the directory is not ours, so it is removed only when empty.
+    if (fs.readdirSync(LEASE_GUARD_DIR).length === 0) fs.rmdirSync(LEASE_GUARD_DIR);
+    log(`removed ${LEASE_GUARD_DEST}`);
+    removed = true;
+  }
+  if (fs.existsSync(SETTINGS)) {
+    const settings = readSettings();
+    if (leaseGuardRegistered(settings)) {
+      settings.hooks.PreToolUse = withoutHookFile(settings.hooks.PreToolUse, LEASE_GUARD_DEST);
+      if (settings.hooks.PreToolUse.length === 0) delete settings.hooks.PreToolUse;
+      const backup = writeSettings(settings);
+      log(`removed the lease guard hook from ${SETTINGS} (backup: ${path.basename(backup)})`);
+      removed = true;
+    }
+  }
+  return removed;
+}
+
 function notifyHookEnabled() {
   if (fs.existsSync(NOTIFY_HOOK_DEST)) return true;
   const settings = fs.existsSync(SETTINGS) ? readSettings() : {};
@@ -552,6 +608,7 @@ function install(opts) {
     log(`updated ${SETTINGS} (backup: ${path.basename(backup)})`);
     log('hook installed. Skill sessions (closed at Stop) + Agent spans → <project>/.xm/traces/');
     installRelayHook();
+    installLeaseGuard();
     installNotifyHook(opts.routingFlags.has('--notify'));
   } else {
     log('hooks skipped (--no-hooks). CLI dispatcher install is handled by install.sh.');
@@ -643,6 +700,7 @@ function resolveBashDispatcher() {
 function uninstall() {
   let removed = uninstallRelayHook();
   if (uninstallNotifyHook()) removed = true;
+  if (uninstallLeaseGuard()) removed = true;
   if (fs.existsSync(HOOK_DEST)) {
     fs.unlinkSync(HOOK_DEST);
     log(`removed ${HOOK_DEST}`);
@@ -711,6 +769,9 @@ function status() {
   // Opt-in, so it is reported but never counted toward `overall`.
   for (const target of ROUTING_TARGETS) log(`${target.label} routing: ${routingStatus(target)}`);
   log(`notify hook      : ${notifyHookEnabled() ? NOTIFY_HOOK_DEST : `(not enabled — opt in: xm ${VERB} --notify)`}`);
+  // Reported but not counted toward `overall`: counting it would turn every install made
+  // before the guard existed into "NOT installed".
+  log(`lease guard hook : ${fs.existsSync(LEASE_GUARD_DEST) && leaseGuardRegistered(settings) ? LEASE_GUARD_DEST : `(missing — re-run xm ${VERB})`}`);
   // Exactly one executable registration per event is "registered"; more than one
   // runs the hook twice per call, none is missing.
   let hooksOk = true;
@@ -756,7 +817,7 @@ switch (cmd) {
   case 'help':
     process.stdout.write(`xm ${VERB} — install global hooks into ~/.claude/ (once per machine)\n\n`
       + `Usage:\n`
-      + `  xm ${VERB}                 # install trace-session and relay auto-reply hooks globally\n`
+      + `  xm ${VERB}                 # install trace-session, relay auto-reply, and x-build lease guard hooks globally\n`
       + `  xm ${VERB} --no-hooks      # skip hook install (CLI only)\n`
       + `  xm ${VERB} --claude-md     # also add the xm routing block to ~/.claude/CLAUDE.md\n`
       + `                           #   (later installs and xm update refresh it while it exists)\n`

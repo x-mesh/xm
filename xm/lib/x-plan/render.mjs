@@ -27,6 +27,7 @@ export function renderPlan(plan, { artifactPath = null } = {}) {
       if (!task) continue;
       const details = ['- [' + task.id + '] ' + task.title];
       if (task.depends_on.length) details.push('  - Depends on: ' + task.depends_on.join(', '));
+      if (task.contract_deps?.length) details.push('  - Contract only: ' + task.contract_deps.join(', '));
       if (task.expected_files.length) details.push('  - Files: ' + task.expected_files.join(', '));
       details.push('  - Done when: ' + task.done_criteria.join('; '));
       if (task.verify_commands?.length) details.push('  - Verify: ' + task.verify_commands.join('; '));

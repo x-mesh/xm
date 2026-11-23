@@ -15,13 +15,16 @@ export function normalizePlanEnvelope(input = {}) {
   })).sort(byId);
   const tasks = (Array.isArray(value.tasks) ? value.tasks : []).map((item) => {
     const verifyCommands = strings(item?.verify_commands);
+    const contractDeps = strings(item?.contract_deps).sort();
     return {
       id: text(item?.id), title: text(item?.title), depends_on: strings(item?.depends_on).sort(),
       requirement_refs: strings(item?.requirement_refs).sort(), expected_files: strings(item?.expected_files).sort(),
       done_criteria: strings(item?.done_criteria),
-      // Emitted only when set: x-build hashes the normalized task to detect a revised plan, so
-      // an always-present key would reset the progress of every session stored before it.
+      // Both emitted only when set, and appended in the order they were added: x-build hashes
+      // the normalized task to detect a revised plan, so an always-present or reordered key
+      // would reset the progress of every session stored before it.
       ...(verifyCommands.length ? { verify_commands: verifyCommands } : {}),
+      ...(contractDeps.length ? { contract_deps: contractDeps } : {}),
     };
   }).sort(byId);
   // mode 'none — <justification>' is the explicit "no failure mode" form, so

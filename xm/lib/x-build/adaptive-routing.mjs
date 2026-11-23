@@ -51,6 +51,12 @@ function failedReceiptPath(decisionId) {
   return join(adaptiveRunDir(), `${decisionId}.direct-failed.receipt.json`);
 }
 
+// Read by the lease-guard hook (templates/hooks/hook-state.mjs), which blocks an Agent
+// dispatch in the same session while a failed start has no later lease.
+function startFailedPath(decisionId) {
+  return join(adaptiveRunDir(), `${decisionId}.start-failed.json`);
+}
+
 function readLocalJSON(path) {
   if (!existsSync(path)) return null;
   return JSON.parse(readFileSync(path, 'utf8'));
@@ -117,6 +123,15 @@ function gitHead(cwd) {
   const result = spawnSync('git', ['rev-parse', 'HEAD'], { cwd, encoding: 'utf8' });
   if (result.status !== 0) throw new Error(`git rev-parse HEAD failed: ${(result.stderr || '').trim()}`);
   return result.stdout.trim();
+}
+
+// Why cwd has no commit to record as a baseline, or null when it has one. A git that cannot
+// run returns null, so the later git call reports that failure itself.
+function missingBaselineCommit(cwd) {
+  const git = (...args) => spawnSync('git', args, { cwd, encoding: 'utf8' });
+  const head = git('rev-parse', '--verify', '--quiet', 'HEAD^{commit}');
+  if (head.error || head.status === 0) return null;
+  return git('rev-parse', '--is-inside-work-tree').status === 0 ? 'this repository has no commit yet' : `${cwd} is not in a git repository`;
 }
 
 function hashMap(cwd, files) {
@@ -598,6 +613,34 @@ export function startAdaptiveRun(input) {
   if (fallback && (!previousLease || previousLease.status !== 'verification_failed' || decision.selected_route !== 'direct')) {
     throw new Error('fallback requires a failed direct execution lease');
   }
+  try {
+    return createStartLease(input, { cwd, decision, previousLease, fallback });
+  } catch (error) {
+    recordStartFailure(decision.decision_id, error, input.now_ms);
+    throw error;
+  }
+}
+
+// Only a failure past the decision, confirmation, and lease checks is recorded. After a
+// "not confirmed" error the next legitimate Agent call can be the planner, so that error
+// must not arm the lease guard.
+function recordStartFailure(decisionId, error, nowMs) {
+  try {
+    writeLocalJSON(startFailedPath(decisionId), {
+      schema: 1, decision_id: decisionId, session_id: process.env.CLAUDE_CODE_SESSION_ID || null,
+      failed_at: new Date(nowMs ?? Date.now()).toISOString(), error: error.message,
+    });
+  } catch (writeError) {
+    error.message += ` (the failed start was not recorded: ${writeError.message})`;
+  }
+}
+
+function createStartLease(input, { cwd, decision, previousLease, fallback }) {
+  // Checked before the expected files and gate commands: no flag gives a repository its first
+  // commit, and an error about a missing gate command invites a placeholder command for a run
+  // that still cannot start.
+  const noBaseline = missingBaselineCommit(cwd);
+  if (noBaseline) throw new Error(`route start records HEAD as the baseline, and ${noBaseline}. Create the first commit, then run route start again. An agent asks the user before it creates a repository or a commit.`);
   const expectedInput = fallback ? previousLease.expected_files : input.expected_files;
   const expectedFiles = [...new Set((expectedInput || []).map((file) => safeRelativeFile(cwd, file)))].sort();
   if (!expectedFiles.length) throw new Error('at least one expected file is required');
@@ -850,7 +893,15 @@ export function closeAdaptiveRun(input) {
 
 export function abandonAdaptiveRun(input) {
   const lease = readLocalJSON(leasePath(input.decision_id));
-  if (!lease) throw new Error('execution lease not found');
+  if (!lease) {
+    // A start that failed left no lease to close, but its record still blocks Agent
+    // dispatches through the lease guard. Abandoning the decision releases that block.
+    const failedStart = /^route-[0-9a-f]{16}$/.test(String(input.decision_id)) ? readLocalJSON(startFailedPath(input.decision_id)) : null;
+    if (!failedStart || failedStart.abandoned_at) throw new Error('execution lease not found');
+    const dropped = { ...failedStart, status: 'start_abandoned', abandoned_at: new Date(input.now_ms ?? Date.now()).toISOString() };
+    writeLocalJSON(startFailedPath(input.decision_id), dropped);
+    return dropped;
+  }
   if (['finished', 'abandoned', 'closed'].includes(lease.status)) throw new Error(`execution lease is already ${lease.status}`);
   if (!existsSync(lease.cwd)) throw new Error('execution repository is unavailable; lease preserved for manual recovery');
   if (gitHead(lease.cwd) !== lease.baseline_head) throw new Error('cannot abandon after HEAD changed');
@@ -909,7 +960,7 @@ const ROUTE_HELP = {
   verify: '--decision-id <id> [--expected-files a,b] [--timeout-ms <n>]',
   finish: '--decision-id <id> [--cost-event-id <id>]',
   status: '[--decision-id <id>]',
-  abandon: '--decision-id <id>',
+  abandon: '--decision-id <id>\n  Closes an interrupted lease. With no lease, drops a failed start so the lease guard hook stops blocking Agent dispatches.',
   close: '--decision-id <id>',
   record: '--decision-id <id> --class <id> --route direct|planned --outcome accepted|escalated|failed --quality pass|fail [--gates-run a,b] [--duration-ms <n>] [--cost-usd <n>] [--json]',
   report: '[--class <id>]',

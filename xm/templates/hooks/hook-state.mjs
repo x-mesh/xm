@@ -8,7 +8,7 @@
 // xm-build-stop-gate.mjs (Stop).
 
 import { existsSync, readFileSync, readdirSync } from 'node:fs';
-import { join, relative, isAbsolute, resolve, sep } from 'node:path';
+import { join, relative, isAbsolute, resolve, sep, dirname } from 'node:path';
 import { createHash } from 'node:crypto';
 
 // Global kill switch — either hook fails open when set. The documented escape hatch.
@@ -154,6 +154,59 @@ export function solverEditState(projectDir, now = Date.now()) {
   if (phase !== 'resolve' || !scope) return inactive;
   const list = (value) => (Array.isArray(value) ? value.map(String) : []);
   return { active: true, problem: best.name, phase, allowedFiles: [...list(scope.files), ...list(scope.tests), ...instruments] };
+}
+
+// A failed start that nobody retried or abandoned for a day is more likely forgotten than
+// pending. Ignoring it fails open, as SOLVER_STALE_MS does.
+const START_FAILED_STALE_MS = 24 * 60 * 60 * 1000;
+const ROUTE_RUN_OVER = new Set(['finished', 'abandoned', 'closed']);
+
+/**
+ * Find a failed `xm build route start` of this Claude session that nothing released.
+ * The CLI writes <dir>/.xm/build/adaptive-runs/<decision>.start-failed.json when a start
+ * fails and <decision>.lease.json when one succeeds. A failed start is released by
+ * `route abandon`, by a lease started after it (the same decision retried, or a later
+ * decision), or by its own decision's lease reaching a final status.
+ * A lease does not record its session, so a later lease of ANOTHER session releases it
+ * too. That fails open, the safe side for a guard that runs on every Agent dispatch.
+ * @param {string[]} projectDirs  the CLI resolves its state from cwd, the hook is given
+ *   CLAUDE_PROJECT_DIR, and the two can differ, so every candidate is read. The CLI also
+ *   falls back from a subdirectory to the .xm of the git top level (xm-root.mjs). A hook
+ *   must not start a subprocess to ask git, so every ancestor directory is read instead.
+ *   Only this session's records count, so a parent project's state adds no block.
+ * @returns {{ decision_id: string, error: string } | null}
+ */
+export function failedRouteStart(projectDirs, sessionId, now = Date.now()) {
+  if (typeof sessionId !== 'string' || !sessionId) return null;
+  const startedAt = (lease) => Math.max(Date.parse(lease.started_at || '') || 0, Date.parse(lease.fallback_started_at || '') || 0);
+  let pending = null;
+  // A payload can carry anything as cwd; only a path is a place to look.
+  const candidates = new Set();
+  for (const entry of projectDirs) {
+    if (typeof entry !== 'string' || !entry) continue;
+    for (let dir = resolve(entry); !candidates.has(dir); dir = dirname(dir)) candidates.add(dir);
+  }
+  for (const dir of candidates) {
+    const runs = join(dir, '.xm', 'build', 'adaptive-runs');
+    let names;
+    try { names = readdirSync(runs); } catch { continue; }
+    // Read only when this session has a failed start: the directory keeps one lease per
+    // run, and this hook runs on every Agent dispatch.
+    let leases = null;
+    for (const name of names) {
+      if (!name.endsWith('.start-failed.json')) continue;
+      const failed = readJSON(join(runs, name));
+      const failedAt = Date.parse(failed?.failed_at || '');
+      if (!failed || failed.session_id !== sessionId || failed.abandoned_at || !Number.isFinite(failedAt)) continue;
+      if (now - failedAt > START_FAILED_STALE_MS) continue;
+      leases ??= names.filter((entry) => entry.endsWith('.lease.json')).map((entry) => readJSON(join(runs, entry))).filter(Boolean);
+      const released = leases.some((lease) => startedAt(lease) >= failedAt
+        || (lease.decision_id === failed.decision_id && ROUTE_RUN_OVER.has(lease.status)));
+      if (released) continue;
+      if (!pending || failedAt > pending.failedAt) pending = { decision_id: String(failed.decision_id), error: String(failed.error || ''), failedAt };
+    }
+  }
+  return pending && { decision_id: pending.decision_id, error: pending.error };
 }
 
 // The guard's OWN decision source. Hard-allowing all of .xm/ let a constrained agent

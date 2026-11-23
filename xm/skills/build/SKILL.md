@@ -65,6 +65,12 @@ xm build route finish --decision-id <id> --json
 
 `route start` runs each gate once on the untouched tree and stores pass or fail, so it takes as long as one gate pass. If that pass changes a file that `git status` reports (tracked, or untracked and not ignored), `route start` fails and names the files without creating a lease. Restore them, make the gate write to an ignored path or outside the repository, and start again. Writes to an ignored path are allowed. The `route verify` receipt then lists `gates_passing_before_change`: the gates that passed before the change and still pass. For a `bugfix` or `feature`, such a gate did not observe the change. Name those gates in the final report and do not cite them as evidence that the change works. For a `refactor` the list is expected to hold every gate. The list never fails a run.
 
+On the planned route, run `route start` after the plan is saved and before the first executor agent. Pass the `expected_files` of every plan task as `--expected-files`, and take each gate command from the plan's `validation.commands` and task `verify_commands`. Never pass a file that the run does not change, or a command that cannot fail (`true`, `:`, `exit 0`), to obtain a lease. When no plan command observes a required gate, stop and report that the plan does not cover that gate.
+
+Start no executor agent without a lease. When `route start` exits non-zero, or `progress start` does for a task of a tracked plan, fix the cause that the error names and run the command again, or stop and report the error to the user. Never continue untracked: a run without a lease leaves no receipt, and `route verify` and `route finish` cannot record it. The lease guard hook enforces this after a failed `route start`: it blocks each Agent call of the session until a start succeeds. `xm setup` installs the hook for every project, and `xm build hooks install` adds it to one project. Giving up the run is the user's decision: run `xm build route abandon --decision-id <id>` to release the guard only after the user says so.
+
+`route start` and `progress start` record HEAD as the baseline, so both need a git repository with at least one commit. Check this in step 1. When the directory has no repository or no commit, ask the user before `git init` or the first commit, in the AskUserQuestion call of the model questions.
+
 Direct verification 실패 시 작업 트리를 baseline으로 복원하거나 clean worktree를 준비한 다음 `route start --decision-id <id> --fallback`을 실행합니다. fallback이 끝나면 같은 `verify → finish`를 사용하며 outcome은 자동으로 `escalated`가 됩니다. 비용은 같은 `decision_id`에 결합되고 `cost_source=actual`인 x-build cost event를 `finish`가 자동 합산하며, 없으면 null로 남깁니다. `route record`는 기존 호출자 호환과 수동 복구용이며 기본 workflow에서는 사용하지 않습니다.
 
 planned route의 `verify`가 gate는 모두 통과했는데 선언하지 않은 파일이 바뀌어서만 실패했고, 그 변경이 gate 통과에 필요하다면 되돌리지 말고 `xm build route close --decision-id <id>`로 닫습니다. close는 사유와 파일 목록만 남기고 outcome을 기록하지 않으므로 accepted로 세지 않고 task class를 quality failure로 표시하지도 않습니다. 되돌려도 gate가 통과하는 변경이면 되돌린 뒤 다시 `verify`합니다.
@@ -183,6 +189,8 @@ fallback은 다음 조건을 모두 만족할 때만 추가합니다.
 - When the plan lists `out_of_scope`, put the list in every task prompt and tell the executor not to implement those items. Add a task's `verify_commands` to its prompt as the commands that decide whether the task is done.
 - 순차 실행이 기본입니다. 병렬 실행은 예상 수정 파일, 공유 상태, dependency와 검증 환경이 모두 독립적이고 측정 가능한 시간 이득이 예상될 때만 허용합니다.
 - 병렬화를 위해 task를 억지로 분해하거나 worktree를 만들지 않습니다.
+- A contract dependency is the only exception to the dependency condition above. When the plan puts a task in the `steps` entry of a task it depends on and lists that dependency in the task's `contract_deps`, start the two together (send their executor agents in one message). The other conditions still apply: tasks that start together list no common expected file and share no state. Verify every task of an entry before the next entry starts.
+- For a task that starts beside a task in its `contract_deps`, put the producing task's done criteria in its prompt as the interface to code against. Tell its executor that the producer is written at the same time: it must not read, edit, or wait for the producer's files, and it is done when its own files are written. Do not give it the task's `verify_commands` to run: they can need the producer's result, so the root runs them through `progress verify`. Tell the producer's executor that a consumer codes against the interface in its done criteria, and to stop and report when it cannot implement that interface as written.
 - agent의 완료 주장을 그대로 신뢰하지 않고 변경 파일과 기존 검증 결과를 확인합니다.
 - native 실행 실패 시 임의로 legacy harness로 fallback하지 않습니다. 실패 원인을 보고하고 같은 native 경로에서 수정하거나 사용자 결정을 요청합니다.
 - direct → planned escalation은 legacy harness fallback이 아닙니다. task-specific deterministic gate가 구체적인 실패를 검출했고 clean state에서 재실행할 때만 한 번 허용합니다.
@@ -195,6 +203,8 @@ When executing an executable x-plan session (`.xm/plan/<run-id>/`):
 - Before each task, run `xm build progress start --plan <run-id> --task <id>`.
 - After the task, run `xm build progress verify --plan <run-id> --task <id>`. It runs the task's `verify_commands`, when the plan gives any, and then the plan's `validation.commands`. It checks off the task only if every command passes.
 - Treat a verify failure (exit code 2) as the task not done. Fix the work and verify again.
+- For tasks that start together, run `progress start` for each task before its agent starts. Run `progress verify` only after every agent of that entry has returned, and verify a dependency before its consumer. The plan-wide commands read the whole tree, so a file that another agent has half written fails them. `progress verify` exits 1 and names the dependency when a dependency of the task is not verified yet.
+- When a task with `contract_deps` fails verification, continue the agent that wrote it with the failed command (Claude Code: SendMessage to that agent). A new agent has to load the whole context again.
 - Never edit `tasks.md` or `progress.json` by hand. Both are generated.
 - At the end, run `xm build progress show --plan <run-id>` and report it to the user.
 
