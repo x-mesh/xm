@@ -65,7 +65,11 @@ export function synthesizePlanCandidates(candidates, metadata = {}) {
         addDisagreement({ topic: `task:${task.title}`, positions: [taskTitle.get(key).source, candidate.source], resolution: 'merged equivalent task', confidence: 'medium' }); continue;
       }
       const id = taskMap.get(task.id); taskTitle.set(key, { id, source: candidate.source });
-      tasks.push({ ...task, id, depends_on: task.depends_on.map((dep) => taskMap.get(dep)).filter(Boolean), requirement_refs: task.requirement_refs.map((ref) => reqMap.get(ref)).filter(Boolean) });
+      // contract_deps is dropped: the merged steps come from topoSteps, which never puts a task
+      // in its dependency's step, and merged tasks can end up sharing a file with a producer.
+      const merged = { ...task, id, depends_on: task.depends_on.map((dep) => taskMap.get(dep)).filter(Boolean), requirement_refs: task.requirement_refs.map((ref) => reqMap.get(ref)).filter(Boolean) };
+      delete merged.contract_deps;
+      tasks.push(merged);
     }
     for (const assumption of candidate.plan.assumptions) assumptions.push({ ...assumption, id: `A${assumptions.length + 1}` });
     candidate.plan.validation.requirement_refs.map((ref) => reqMap.get(ref)).filter(Boolean).forEach((ref) => validationRefs.add(ref));

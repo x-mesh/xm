@@ -5,16 +5,17 @@
  */
 import { describe, test, expect, beforeEach, afterEach } from 'bun:test';
 import { spawnSync } from 'node:child_process';
-import { mkdtempSync, rmSync, mkdirSync, writeFileSync, readFileSync, existsSync, symlinkSync } from 'node:fs';
+import { mkdtempSync, rmSync, mkdirSync, writeFileSync, readFileSync, readdirSync, existsSync, symlinkSync } from 'node:fs';
 import { join } from 'node:path';
 import { tmpdir } from 'node:os';
 import { createHash } from 'node:crypto';
-import { reviewFixState, isProtectedPath, isAllowed } from '../x-build/templates/hooks/hook-state.mjs';
+import { reviewFixState, isProtectedPath, isAllowed, failedRouteStart } from '../x-build/templates/hooks/hook-state.mjs';
 
 const ROOT = join(import.meta.dirname, '..');
 const CLI = join(ROOT, 'x-build', 'lib', 'x-build-cli.mjs');
 const SCOPE_HOOK = join(ROOT, 'x-build', 'templates', 'hooks', 'xm-build-scope-guard.mjs');
 const STOP_HOOK = join(ROOT, 'x-build', 'templates', 'hooks', 'xm-build-stop-gate.mjs');
+const LEASE_HOOK = join(ROOT, 'x-build', 'templates', 'hooks', 'xm-build-lease-guard.mjs');
 
 // reviewed_commit mirrors the real artifact: `verify-review-fix --init` always stamps it,
 // and an LGTM only releases the guard when last-result.json carries the SAME commit.
@@ -410,6 +411,7 @@ describe('hooks install/uninstall/status CLI', () => {
     expect(existsSync(join(DIR, '.claude', 'hooks', 'hook-state.mjs'))).toBe(true);
     expect(existsSync(join(DIR, '.claude', 'hooks', 'xm-build-scope-guard.mjs'))).toBe(true);
     expect(existsSync(join(DIR, '.claude', 'hooks', 'block-when-over-budget.mjs'))).toBe(true);
+    expect(existsSync(join(DIR, '.claude', 'hooks', 'xm-build-lease-guard.mjs'))).toBe(true);
     expect(runCli(['hooks', 'status']).status).toBe(0); // installed
     expect(runCli(['hooks', 'install']).stdout).toContain('0 settings entries added'); // idempotent
 
@@ -417,13 +419,27 @@ describe('hooks install/uninstall/status CLI', () => {
     expect(s.hooks.PreToolUse.some(e => e.hooks.some(h => h.command === 'node existing.mjs'))).toBe(true); // existing kept
     expect(s.hooks.PreToolUse.some(e => e.hooks.some(h => h.command.includes('scope-guard')))).toBe(true);
     expect(s.hooks.PreToolUse.some(e => e.matcher === 'Agent' && e.hooks.some(h => h.command.includes('block-when-over-budget')))).toBe(true);
+    expect(s.hooks.PreToolUse.some(e => e.matcher === 'Agent' && e.hooks.some(h => h.command.includes('xm-build-lease-guard')))).toBe(true);
     expect(s.hooks.Stop.some(e => e.hooks.some(h => h.command.includes('stop-gate')))).toBe(true);
 
     expect(runCli(['hooks', 'uninstall']).status).toBe(0);
     s = JSON.parse(readFileSync(join(DIR, '.claude', 'settings.json'), 'utf8'));
     expect(s.hooks.PreToolUse.some(e => e.hooks.some(h => h.command === 'node existing.mjs'))).toBe(true); // still kept
     expect(s.hooks.PreToolUse.some(e => e.hooks.some(h => h.command.includes('scope-guard')))).toBe(false); // ours removed
+    expect(s.hooks.PreToolUse.some(e => e.hooks.some(h => h.command.includes('xm-build-lease-guard')))).toBe(false);
     expect(s.hooks.Stop).toBeUndefined(); // emptied → removed
+  });
+  test('status keeps exit 0 for a project installed before the lease guard, and install adds it', () => {
+    expect(runCli(['hooks', 'install']).status).toBe(0);
+    const file = join(DIR, '.claude', 'settings.json');
+    const s = JSON.parse(readFileSync(file, 'utf8'));
+    s.hooks.PreToolUse = s.hooks.PreToolUse.filter(e => !e.hooks.some(h => h.command.includes('xm-build-lease-guard')));
+    writeFileSync(file, JSON.stringify(s));
+    const status = runCli(['hooks', 'status']);
+    expect(status.status).toBe(0);
+    expect(status.stdout).toMatch(/lease-guard: \S*not installed/);
+    expect(runCli(['hooks', 'install']).stdout).toContain('1 settings entry added');
+    expect(runCli(['hooks', 'status']).stdout).toMatch(/lease-guard: \S*installed/);
   });
   test('install refuses a malformed settings.json (loud, no clobber)', () => {
     mkdirSync(join(DIR, '.claude'), { recursive: true });
@@ -495,5 +511,212 @@ describe('scope-guard: x-solver edit guard', () => {
   test('XM_BUILD_HOOKS_OFF=1 releases it', () => {
     writeSolver('p', { current_phase: 'diagnose' });
     expect(runHook(SCOPE_HOOK, { tool_name: 'Edit', tool_input: { file_path: 'src/cache.ts' } }, { XM_BUILD_HOOKS_OFF: '1' }).status).toBe(0);
+  });
+});
+
+// The failed-start record is written by the real CLI in every test below: a hand-written
+// fixture would not catch a path or field that the CLI and the hook stop agreeing on.
+describe('lease-guard hook', () => {
+  const SESSION = '11111111-2222-4333-8444-555555555555';
+  const GATES = ['--gate-cmd', 'test=test -f src/never.txt', '--gate-cmd', 'boundary=test -s src/a.txt'];
+  // The ceiling keeps git from finding a repository above the temporary directory.
+  const route = (args, env = {}) => runCli(['route', ...args], { CLAUDE_CODE_SESSION_ID: SESSION, GIT_CEILING_DIRECTORIES: tmpdir(), ...env });
+  const start = (id, extra = [], env) => route(['start', '--decision-id', id, '--expected-files', 'src/a.txt', ...extra, '--json'], env);
+  const agentCall = (overrides = {}, env) => runHook(LEASE_HOOK, { tool_name: 'Agent', session_id: SESSION, cwd: DIR, tool_input: { prompt: 'T1' }, ...overrides }, env);
+  const OTHER = '99999999-2222-4333-8444-555555555555';
+  const runsDir = () => join(DIR, '.xm', 'build', 'adaptive-runs');
+  // The record name carries the SHA-256 of the session id; a run with no session id uses a fixed name.
+  const sessionKey = (session) => (session ? createHash('sha256').update(session).digest('hex') : 'no-session');
+  const failedFile = (id, session = SESSION) => join(runsDir(), `${id}.start-failed.${sessionKey(session)}.json`);
+  const failedFiles = () => (existsSync(runsDir()) ? readdirSync(runsDir()).filter(name => name.includes('.start-failed.')) : []);
+  function decision({ confirm = true } = {}) {
+    const decided = route(['decide', '--kind', 'bugfix', '--scope', 'bounded', '--independent', '--files', 'src/a.txt,src/b.txt', '--risk', 'low', '--failure-modes', '2', '--gates', 'test,boundary', '--json']);
+    const { decision_id: id, route: selected } = JSON.parse(decided.stdout);
+    expect(selected).toBe('direct');
+    if (confirm) expect(route(['confirm', '--decision-id', id, '--host', 'claude', '--session-model', 'unknown', '--source', 'default']).status).toBe(0);
+    return id;
+  }
+  function gitRepo() {
+    const git = (...args) => expect(spawnSync('git', args, { cwd: DIR }).status).toBe(0);
+    mkdirSync(join(DIR, 'src'));
+    writeFileSync(join(DIR, 'src', 'a.txt'), 'v1\n');
+    writeFileSync(join(DIR, '.gitignore'), '.xm/\n');
+    git('init', '-q');
+    git('add', '-A');
+    git('-c', 'user.email=p@example.com', '-c', 'user.name=p', 'commit', '-qm', 'fixture');
+  }
+  // DIR is not a repository here, which is the failure the guard was built for.
+  function failedStart() {
+    const id = decision();
+    const result = start(id, GATES);
+    expect(result.status).toBe(1);
+    expect(result.stderr).toContain('is not in a git repository');
+    return id;
+  }
+
+  test('blocks an Agent dispatch after route start failed in the same session', () => {
+    const id = failedStart();
+    const blocked = agentCall();
+    expect(blocked.status).toBe(2);
+    expect(blocked.stderr).toContain(`\`xm build route start\` failed for ${id}`);
+    expect(blocked.stderr).toContain('is not in a git repository');
+    // Abandon is named as the user's decision, with no ready-to-run line for the agent.
+    expect(blocked.stderr).toContain("Giving up this run is the user's decision");
+    expect(blocked.stderr).not.toContain('--decision-id');
+  });
+
+  test('allows another tool, another session, and a payload or a record with no session id', () => {
+    failedStart();
+    expect(agentCall({ tool_name: 'Bash' }).status).toBe(0);
+    expect(agentCall({ session_id: OTHER }).status).toBe(0);
+    expect(agentCall({ session_id: undefined }).status).toBe(0);
+    rmSync(runsDir(), { recursive: true });
+    const id = decision();
+    expect(start(id, GATES, { CLAUDE_CODE_SESSION_ID: '' }).status).toBe(1);
+    expect(JSON.parse(readFileSync(failedFile(id, null), 'utf8')).session_id).toBeNull();
+    expect(agentCall().status).toBe(0);
+  });
+
+  test('an error before the lease checks does not arm it', () => {
+    const id = decision({ confirm: false });
+    const result = start(id, GATES);
+    expect(result.stderr).toContain('model routes are not confirmed');
+    expect(failedFiles()).toEqual([]);
+    expect(agentCall().status).toBe(0);
+  });
+
+  test('a retry of the same decision that starts releases it', () => {
+    gitRepo();
+    const id = decision();
+    expect(start(id).stderr).toContain('missing gate commands: test, boundary');
+    expect(agentCall().status).toBe(2);
+    const retried = start(id, GATES);
+    expect(retried.status, retried.stderr).toBe(0);
+    expect(agentCall().status).toBe(0);
+  });
+
+  test('a later decision that starts releases it', () => {
+    gitRepo();
+    const first = decision();
+    expect(start(first).status).toBe(1);
+    expect(agentCall().status).toBe(2);
+    const second = decision();
+    expect(start(second, GATES).status).toBe(0);
+    expect(existsSync(failedFile(first))).toBe(true);
+    expect(agentCall().status).toBe(0);
+  });
+
+  // One record per decision and session. With one record per decision, the second session's
+  // failure replaced the first session's record and released it with nothing fixed.
+  test('another session that fails the same decision does not release the first, and abandons only its own', () => {
+    gitRepo();
+    const id = decision();
+    expect(start(id).status).toBe(1);
+    expect(start(id, [], { CLAUDE_CODE_SESSION_ID: OTHER }).status).toBe(1);
+    expect(failedFiles().sort()).toEqual([`${id}.start-failed.${sessionKey(SESSION)}.json`, `${id}.start-failed.${sessionKey(OTHER)}.json`].sort());
+    expect(agentCall().status).toBe(2);
+    expect(agentCall({ session_id: OTHER }).status).toBe(2);
+    expect(route(['abandon', '--decision-id', id], { CLAUDE_CODE_SESSION_ID: OTHER }).status).toBe(0);
+    expect(agentCall({ session_id: OTHER }).status).toBe(0);
+    expect(agentCall().status).toBe(2);
+  });
+
+  test('a start that succeeds releases every session that failed before it', () => {
+    gitRepo();
+    const id = decision();
+    expect(start(id).status).toBe(1);
+    expect(start(id, [], { CLAUDE_CODE_SESSION_ID: OTHER }).status).toBe(1);
+    expect(agentCall().status).toBe(2);
+    expect(agentCall({ session_id: OTHER }).status).toBe(2);
+    expect(start(id, GATES, { CLAUDE_CODE_SESSION_ID: OTHER }).status).toBe(0);
+    expect(agentCall().status).toBe(0);
+    expect(agentCall({ session_id: OTHER }).status).toBe(0);
+  });
+
+  // `a/b` and `a?b` became one file name when unsafe characters were replaced, so the second
+  // session's failure replaced the first session's record.
+  test('session ids that differ only in characters unsafe for a file name keep separate records', () => {
+    const id = decision();
+    for (const session of ['a/b', 'a?b', '../../escape me']) expect(start(id, GATES, { CLAUDE_CODE_SESSION_ID: session }).status).toBe(1);
+    const names = failedFiles();
+    expect(names).toHaveLength(3);
+    for (const name of names) expect(name).toMatch(/^route-[0-9a-f]{16}\.start-failed\.[0-9a-f]{64}\.json$/);
+    for (const session of ['a/b', 'a?b', '../../escape me']) expect(agentCall({ session_id: session }).status).toBe(2);
+  });
+
+  test('route abandon drops a failed start that has no lease', () => {
+    const id = failedStart();
+    const dropped = route(['abandon', '--decision-id', id]);
+    expect(dropped.status, dropped.stderr).toBe(0);
+    expect(JSON.parse(dropped.stdout)).toMatchObject({ decision_id: id, status: 'start_abandoned' });
+    expect(agentCall().status).toBe(0);
+    const again = route(['abandon', '--decision-id', id]);
+    expect(again.status).toBe(1);
+    expect(again.stderr).toContain('execution lease not found');
+  });
+
+  test('a failed fallback start is released when its lease is abandoned', () => {
+    gitRepo();
+    const id = decision();
+    expect(start(id, GATES).status).toBe(0);
+    writeFileSync(join(DIR, 'src', 'a.txt'), 'v2\n');
+    expect(route(['verify', '--decision-id', id]).status).toBe(2);
+    const fallback = route(['start', '--decision-id', id, '--fallback', '--json']);
+    expect(fallback.stderr).toContain('working tree must be clean before route start: src/a.txt');
+    expect(agentCall().status).toBe(2);
+    writeFileSync(join(DIR, 'src', 'a.txt'), 'v1\n');
+    const abandoned = route(['abandon', '--decision-id', id]);
+    expect(abandoned.status, abandoned.stderr).toBe(0);
+    expect(JSON.parse(abandoned.stdout).status).toBe('abandoned');
+    expect(agentCall().status).toBe(0);
+  });
+
+  test('a failed start older than a day is ignored', () => {
+    const id = failedStart();
+    expect(failedRouteStart([DIR], SESSION)).toMatchObject({ decision_id: id });
+    expect(failedRouteStart([DIR], SESSION, Date.now() + 23 * 60 * 60 * 1000)).not.toBeNull();
+    expect(failedRouteStart([DIR], SESSION, Date.now() + 25 * 60 * 60 * 1000)).toBeNull();
+  });
+
+  test('reads the state under the payload cwd when CLAUDE_PROJECT_DIR is another directory', () => {
+    failedStart();
+    const other = mkdtempSync(join(tmpdir(), 'xb-hooks-other-'));
+    try {
+      expect(agentCall({}, { CLAUDE_PROJECT_DIR: other }).status).toBe(2);
+      expect(agentCall({ cwd: other }, { CLAUDE_PROJECT_DIR: other }).status).toBe(0);
+    } finally { rmSync(other, { recursive: true, force: true }); }
+  });
+
+  // No X_BUILD_ROOT or XM_ROOT here: the CLI picks the state directory itself, and from a
+  // subdirectory it picks the .xm of the git top level.
+  test('finds the state the CLI wrote at the git top level when the session runs in a subdirectory', () => {
+    gitRepo();
+    const sub = join(DIR, 'src');
+    const cli = (...args) => spawnSync('node', [CLI, 'route', ...args], {
+      cwd: sub, encoding: 'utf8',
+      env: { ...process.env, X_BUILD_ROOT: undefined, XM_ROOT: undefined, CLAUDE_CODE_SESSION_ID: SESSION, GIT_CEILING_DIRECTORIES: tmpdir() },
+    });
+    const id = JSON.parse(cli('decide', '--kind', 'bugfix', '--scope', 'bounded', '--independent', '--files', 'a.txt,b.txt', '--risk', 'low', '--failure-modes', '2', '--gates', 'test,boundary', '--json').stdout).decision_id;
+    expect(cli('confirm', '--decision-id', id, '--host', 'claude', '--session-model', 'unknown', '--source', 'default').status).toBe(0);
+    expect(cli('start', '--decision-id', id, '--expected-files', 'a.txt').stderr).toContain('missing gate commands');
+    expect(existsSync(failedFile(id))).toBe(true);
+    expect(existsSync(join(sub, '.xm'))).toBe(false);
+    const blocked = agentCall({ cwd: sub }, { CLAUDE_PROJECT_DIR: sub });
+    expect(blocked.status, blocked.stderr).toBe(2);
+    expect(blocked.stderr).toContain(id);
+  });
+
+  test('the copy that hooks install writes blocks too', () => {
+    failedStart();
+    expect(runCli(['hooks', 'install']).status).toBe(0);
+    const installed = runHook(join(DIR, '.claude', 'hooks', 'xm-build-lease-guard.mjs'), { tool_name: 'Agent', session_id: SESSION, cwd: DIR });
+    expect(installed.status, installed.stderr).toBe(2);
+    expect(installed.stderr).toContain('blocked by xm-build-lease-guard');
+  });
+
+  test('fail-open: XM_BUILD_HOOKS_OFF=1 and malformed stdin', () => {
+    failedStart();
+    expect(agentCall({}, { XM_BUILD_HOOKS_OFF: '1' }).status).toBe(0);
+    expect(runHook(LEASE_HOOK, 'not json').status).toBe(0);
   });
 });

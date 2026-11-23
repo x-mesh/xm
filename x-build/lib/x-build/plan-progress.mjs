@@ -59,8 +59,23 @@ function gitHead(root) {
   try {
     return execFileSync('git', ['rev-parse', 'HEAD'], { cwd: root, encoding: 'utf8', stdio: ['ignore', 'pipe', 'ignore'], timeout: 5000 }).trim();
   } catch {
-    return fail('progress requires a git repository with at least one commit');
+    const problem = missingBaselineCommit(root);
+    return fail(problem
+      ? 'progress records HEAD as the baseline, and ' + problem + '. Create the first commit, then run this command again. An agent asks the user before it creates a repository or a commit.'
+      : 'progress requires a git repository with at least one commit');
   }
+}
+
+// Why root has no commit to record as a baseline, or null when git gives another failure.
+// Each call has the limit of the rev-parse in gitHead: this runs after that call failed, and
+// a git that hangs must still end in an error instead of a command that never returns.
+function missingBaselineCommit(root) {
+  const git = (...args) => spawnSync('git', args, { cwd: root, encoding: 'utf8', timeout: 5000 });
+  const head = git('rev-parse', '--verify', '--quiet', 'HEAD^{commit}');
+  if (head.error || head.status === 0) return null;
+  const inside = git('rev-parse', '--is-inside-work-tree');
+  if (inside.error) return null;
+  return inside.status === 0 ? 'this repository has no commit yet' : root + ' is not in a git repository';
 }
 
 function taskHash(task) {
@@ -117,6 +132,7 @@ function renderTasks(session, summary) {
     const suffix = status === 'pending' || status === 'verified' ? '' : '  (' + status + ')';
     lines.push('- [' + (status === 'verified' ? 'x' : ' ') + '] ' + task.id + ' ' + task.title + '  [' + task.requirement_refs.join(', ') + ']' + suffix);
     if (task.depends_on.length) lines.push('  - Depends on: ' + task.depends_on.join(', '));
+    if (task.contract_deps?.length) lines.push('  - Contract only: ' + task.contract_deps.join(', '));
     if (task.expected_files.length) lines.push('  - Files: ' + task.expected_files.join(', '));
     lines.push('  - Done when: ' + task.done_criteria.join('; '));
     if (task.verify_commands?.length) lines.push('  - Verify: ' + task.verify_commands.join('; '));
@@ -154,13 +170,20 @@ function cmdStart(args, json) {
   return loadSession(args).then((session) => {
     requireExecutable(session);
     const task = requireTask(session, args);
-    const record = {
-      task_hash: taskHash(task), state: 'in_progress', started_at: new Date().toISOString(),
-      baseline_head: gitHead(session.root), baseline_files: hashFiles(session.root, task.expected_files),
-    };
+    const baselineHead = gitHead(session.root);
+    const hashedNow = hashFiles(session.root, task.expected_files);
     modifyJSON(session.progressPath, (data) => {
       const next = data && data.tasks ? data : { schema_version: 1, plan_id: session.runId, tasks: {} };
-      next.tasks[task.id] = record;
+      // A file the task already tracked keeps its first baseline. Without this, a task that
+      // was revised after its work is done could never be verified again: start would take
+      // the finished file as the baseline, and verify would find no change. A file that is
+      // new to the task is hashed now, so a revision that names other files still needs work.
+      const tracked = next.tasks[task.id]?.baseline_files || {};
+      const baselineFiles = Object.fromEntries(task.expected_files.map((file) => [file, file in tracked ? tracked[file] : hashedNow[file]]));
+      next.tasks[task.id] = {
+        task_hash: taskHash(task), state: 'in_progress', started_at: new Date().toISOString(),
+        baseline_head: baselineHead, baseline_files: baselineFiles,
+      };
       return next;
     });
     writeTasks(session);
@@ -182,9 +205,18 @@ async function cmdVerify(args, json) {
   const session = await loadSession(args);
   requireExecutable(session);
   const task = requireTask(session, args);
-  const record = readProgress(session).tasks[task.id];
+  const records = readProgress(session).tasks;
+  const record = records[task.id];
   if (!record || record.state !== 'in_progress') fail('task ' + task.id + ' has no in_progress record; run `xm build progress start` first');
   if (record.task_hash !== taskHash(task)) fail('plan task ' + task.id + ' changed since start; run `xm build progress start` again');
+  // A task can start beside a dependency (contract_deps), so the order is enforced here: a
+  // consumer is not checked off against a producer that has not passed its own verification.
+  // The record must be for the producer as the plan defines it now. For a contract pair the
+  // producer's done criteria are the interface, so a producer revised after its verification
+  // has to be started and verified again first; cmdStart keeps that possible.
+  const unverified = session.plan.tasks.filter((dep) => task.depends_on.includes(dep.id)
+    && !(records[dep.id]?.state === 'verified' && records[dep.id].task_hash === taskHash(dep))).map((dep) => dep.id);
+  if (unverified.length) fail('task ' + task.id + ' depends on ' + unverified.join(', ') + ', not verified yet; verify ' + unverified.join(', ') + ' first');
   const current = hashFiles(session.root, task.expected_files);
   if (!task.expected_files.some((file) => current[file] !== record.baseline_files[file])) fail('no expected file changed since start of ' + task.id);
 

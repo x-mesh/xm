@@ -117,10 +117,27 @@ function parallelismForSteps(tasks, steps) {
   };
 }
 
+// The imported project has no contract-only dependency: `steps next` releases a whole step at
+// once, and its task prompt does not say that a producer is still being written. So a step
+// that holds a task beside a task it depends on (`contract_deps`) is split until every
+// dependency comes first. A step without such a pair is returned as it is.
+function splitDependentTasks(step, byId) {
+  const inStep = new Set(step);
+  const depsInStep = (id) => (byId.get(id)?.depends_on || []).filter((dep) => inStep.has(dep));
+  if (!step.some((id) => depsInStep(id).length)) return [step];
+  const layers = []; const placed = new Set();
+  while (placed.size < step.length) {
+    const layer = step.filter((id) => !placed.has(id) && depsInStep(id).every((dep) => placed.has(dep)));
+    layers.push(layer); layer.forEach((id) => placed.add(id));
+  }
+  return layers;
+}
+
 function compileSteps(plan, tasks) {
   const idMap = new Map(plan.tasks.map((task, index) => [task.id, 't' + (index + 1)]));
   computeSteps(tasks); // cycle and dependency integrity guard
-  return plan.steps.map((step, index) => ({ id: index + 1, tasks: step.map((id) => idMap.get(id)), status: 'pending' }));
+  const byId = new Map(plan.tasks.map((task) => [task.id, task]));
+  return plan.steps.flatMap((step) => splitDependentTasks(step, byId)).map((step, index) => ({ id: index + 1, tasks: step.map((id) => idMap.get(id)), status: 'pending' }));
 }
 
 function enterPlanPhase(project) {
