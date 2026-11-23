@@ -82,16 +82,18 @@ plus `xm inbox record --scope inbox` — see step 5 below.
 
    새 toss pin의 `content`는 `<toss id> — <title>` 형식입니다. `materialize` 대상의 toss id로
    `mcp__mem-mesh__search(query=<toss id>, project_id=<현재 프로젝트의 mem-mesh id>,
-   limit=10)`을 호출하고, **같은 `id`를 가진 JSON 본문**만 고릅니다. 그 결과의
-   `content`를 아래 명령으로 materialize합니다. **memory 본문은 파일로 먼저 쓰고
-   `--content-file`로 넘깁니다** — 본문은 repro 명령과 캡처된 출력을 품은 JSON 문서라,
-   셸 인자로 넘기면 중첩 escape를 손으로 다시 맞춰야 하고 한 글자만 어긋나도 repro가
-   조용히 손상됩니다.
+   limit=10)`을 호출합니다. **검색 응답 전체를 받은 그대로 파일에 쓰고
+   `--search-file`로 넘깁니다.** CLI가 `results`에서 본문 `id`가 toss id와 같은 memory를
+   골라 그 memory id까지 기록합니다. `content` 필드만 잘라 내거나 이스케이프를 직접 풀지
+   마십시오 — 검색 응답 안의 본문은 문자열로 한 번 더 감싸져 있어, 손으로 옮기면
+   `{\"id\":...}` 형태가 그대로 남아 파싱에 실패하거나 repro가 조용히 손상됩니다.
    ```bash
-   # memory content를 그대로 파일에 기록한 뒤
-   xm inbox materialize --content-file <path> --memory-id <memory id> --pin-id <pin id> --json
+   # search 응답 JSON 전체를 파일에 기록한 뒤
+   xm inbox materialize --search-file <path> --toss-id <toss id> --pin-id <pin id> --json
    ```
-   `--content <json>` 인라인 형태도 여전히 동작하며, 둘 다 주면 인라인이 이깁니다.
+   일치하는 본문이 없거나 서로 다른 본문이 같은 toss id를 가지면 거부되고 아무것도
+   기록되지 않습니다. 본문 JSON만 손에 있을 때는 `--content-file <path>`(또는 인라인
+   `--content <json>`)도 동작합니다.
    기존 pin처럼 toss id가 없는 항목은 title 또는 일반어로 추측 검색하지 않습니다. pin id와
    title을 보여 주고 발신 측에 재전달을 요청합니다. 이 CLI는 네트워크를 호출하지 않고
    **현재 cwd의** `.xm/inbox/<id>.json`에만 기록합니다. 따라서 materialize 명령은 반드시
@@ -161,7 +163,8 @@ plus `xm inbox record --scope inbox` — see step 5 below.
 | "`pin_list(tags=[\"inbox\"])` 한 번이면 모든 상태가 나온다." | `status` 생략 시 서버 기본 상태만 반환될 수 있다. `open`, `in_progress`, `completed`를 각각 조회해 합쳐야 신규 delivery pin을 놓치지 않는다. |
 | "I compared the pin list against `list`'s output by eye — same count, so nothing is missing." | Counting agrees even when a pin points at an id the ledger never had. `reconcile` diffs both directions by id; eyeballing missed exactly this for five days (`toss-20260721-666aa5a0`, taken 07-21, local file gone by 07-26, pin still `in_progress`). Run the command. |
 | "list didn't print anything about pins, so they must all still be fine." | `list` never checks pin state (t11 — no network in the CLI). Silence from `list` says nothing about pin health; you have to actually call `pin_get` yourself to know. |
-| "The memory body is short enough — I'll just paste it into `--content '...'`." | Bodies embed a repro command and its captured output, both of which routinely contain quotes, backslashes and newlines. Re-quoting them by hand corrupts the repro with no error — nothing validates the repro against its source. Write the body to a file and use `--content-file`. |
+| "The memory body is short enough — I'll just paste it into `--content '...'`." | Bodies embed a repro command and its captured output, both of which routinely contain quotes, backslashes and newlines. Re-quoting them by hand corrupts the repro with no error — nothing validates the repro against its source. Write the whole search response to a file and use `--search-file --toss-id`. |
+| "I'll copy just the `content` field out of the search result and decode it myself." | Inside the search response the body is a JSON string, so a hand copy keeps the outer escapes (`{\"id\":...}`) and fails to parse — this is how astar's first materialize of `toss-20261118-50dd3e62` failed. Pass the whole response with `--search-file`. |
 | "take() gave me the item, I'll now `later promote` it to keep the body." | `later promote` has no field for why/repro/fix_direction — the body does not survive that trip. Use the returned item content directly instead. |
 | "The fix is obvious, I'll put 'fixed' in --verification and move on." | `--verification` is the sender's only evidence that this project checked anything. A restatement of the summary is what let 5 x-kit items sit marked done while only 2 were actually fixed. Name the command you ran and its result, or the file:line you confirmed. |
 | "I resolved it and delivered the receipt — the pin will sort itself out." | Nothing closes a delivery pin but you. Left open it reads as an unhandled report at every future session start. If `mcp_calls.pin_complete` is in the output, call `mcp__mem-mesh__pin_complete` with it. |
