@@ -19,6 +19,7 @@ export function renderPlan(plan, { artifactPath = null } = {}) {
     sections.push('## Execution', list([
       ...(plan.execution.notes ? [plan.execution.notes] : []),
       ...(plan.execution.command_timeout_seconds ? ['Command timeout: ' + plan.execution.command_timeout_seconds + ' s'] : []),
+      ...(plan.execution.lanes ? ['Lanes: on'] : []),
     ]));
   }
   if (plan.assumptions.length) {

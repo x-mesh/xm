@@ -10,6 +10,7 @@ function execution(value) {
   const result = {
     ...(notes ? { notes } : {}),
     ...(Number.isInteger(timeout) && timeout > 0 ? { command_timeout_seconds: timeout } : {}),
+    ...(value.lanes === true ? { lanes: true } : {}),
   };
   return Object.keys(result).length ? result : null;
 }

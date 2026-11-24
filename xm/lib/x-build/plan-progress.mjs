@@ -5,11 +5,12 @@ import { existsSync, readFileSync } from 'node:fs';
 import { dirname, isAbsolute, join, relative, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { modifyJSON, readJSON, writeMD, exitFail } from './core.mjs';
+import { cmdMerge, isLaneTask, startLane, verifyLane } from './plan-lanes.mjs';
 
 const HERE = dirname(fileURLToPath(import.meta.url));
 const RUN_ID = /^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$/;
 const DEFAULT_COMMAND_TIMEOUT_MS = 120000;
-const VERIFY_FAILED = 2;
+export const VERIFY_FAILED = 2;
 
 async function loadPlanNormalizer() {
   const candidates = [join(HERE, '..', 'x-plan', 'normalize.mjs'), join(HERE, '..', '..', '..', 'x-plan', 'lib', 'x-plan', 'normalize.mjs')];
@@ -20,7 +21,7 @@ async function loadPlanNormalizer() {
   return null;
 }
 
-function fail(message, code = 1) {
+export function fail(message, code = 1) {
   console.error(message);
   exitFail(code, message);
 }
@@ -40,7 +41,7 @@ function planRepoRoot(cwd) {
   return cwd;
 }
 
-function sha256(data) {
+export function sha256(data) {
   return createHash('sha256').update(data).digest('hex');
 }
 
@@ -51,11 +52,11 @@ function fileHash(root, file) {
   return existsSync(abs) ? sha256(readFileSync(abs)) : null;
 }
 
-function hashFiles(root, files) {
+export function hashFiles(root, files) {
   return Object.fromEntries(files.map((file) => [file, fileHash(root, file)]));
 }
 
-function gitHead(root) {
+export function gitHead(root) {
   try {
     return execFileSync('git', ['rev-parse', 'HEAD'], { cwd: root, encoding: 'utf8', stdio: ['ignore', 'pipe', 'ignore'], timeout: 5000 }).trim();
   } catch {
@@ -78,11 +79,11 @@ function missingBaselineCommit(root) {
   return inside.status === 0 ? 'this repository has no commit yet' : root + ' is not in a git repository';
 }
 
-function taskHash(task) {
+export function taskHash(task) {
   return sha256(JSON.stringify(task));
 }
 
-async function loadSession(args) {
+export async function loadSession(args) {
   const runId = flag(args, '--plan');
   if (!runId || !RUN_ID.test(runId) || runId.includes('..')) fail('invalid or missing --plan run id');
   const root = planRepoRoot(process.cwd());
@@ -96,7 +97,7 @@ async function loadSession(args) {
   return { runId, root, dir, plan: core.normalizePlanEnvelope(raw), progressPath: join(dir, 'progress.json') };
 }
 
-function readProgress(session) {
+export function readProgress(session) {
   const data = readJSON(session.progressPath);
   return data && typeof data === 'object' && data.tasks ? data : { schema_version: 1, plan_id: session.runId, tasks: {} };
 }
@@ -105,6 +106,7 @@ function deriveStatus(session, task, record) {
   if (!record) return 'pending';
   if (record.task_hash !== taskHash(task)) return 'reset';
   if (record.state === 'deferred') return 'deferred';
+  if (record.state === 'lane_verified' || record.state === 'merge_conflict') return record.state;
   if (record.state !== 'verified') return 'in_progress';
   const current = hashFiles(session.root, Object.keys(record.verified_files || {}));
   return Object.entries(record.verified_files || {}).some(([file, hash]) => current[file] !== hash) ? 'changed_after_verification' : 'verified';
@@ -142,14 +144,14 @@ function renderTasks(session, summary) {
   return lines.join('\n') + '\n';
 }
 
-function writeTasks(session) {
+export function writeTasks(session) {
   const summary = summarize(session);
   const text = renderTasks(session, summary);
   writeMD(join(session.dir, 'tasks.md'), text);
   return { summary, text };
 }
 
-function requireTask(session, args) {
+export function requireTask(session, args) {
   const id = flag(args, '--task');
   if (!id) fail('missing --task');
   const task = session.plan.tasks.find((item) => item.id === id);
@@ -157,7 +159,7 @@ function requireTask(session, args) {
   return task;
 }
 
-function requireExecutable(session) {
+export function requireExecutable(session) {
   if (session.plan.executable !== true) fail('plan is not executable: ' + session.runId);
   if (!session.plan.validation.commands.length) fail('plan has no validation.commands to verify against');
 }
@@ -167,12 +169,12 @@ function requireExecutable(session) {
 // task made the first task of such a plan impossible to verify. A task with no command of
 // its own is decided by the plan-wide commands at its own position. When they fail there
 // and another task is still open, it is recorded as deferred instead of failed.
-function ownCommands(task) {
+export function ownCommands(task) {
   return task.verify_commands || [];
 }
 
 // The state of the record for the task as the plan defines it now, or null.
-function stateForPlan(records, task) {
+export function stateForPlan(records, task) {
   const record = records[task.id];
   return record && record.task_hash === taskHash(task) ? record.state : null;
 }
@@ -187,6 +189,7 @@ function cmdStart(args, json) {
   return loadSession(args).then((session) => {
     requireExecutable(session);
     const task = requireTask(session, args);
+    if (isLaneTask(session.plan, task, readProgress(session).tasks[task.id])) return startLane(session, task, json);
     const baselineHead = gitHead(session.root);
     const hashedNow = hashFiles(session.root, task.expected_files);
     modifyJSON(session.progressPath, (data) => {
@@ -197,9 +200,11 @@ function cmdStart(args, json) {
       // new to the task is hashed now, so a revision that names other files still needs work.
       const tracked = next.tasks[task.id]?.baseline_files || {};
       const baselineFiles = Object.fromEntries(task.expected_files.map((file) => [file, file in tracked ? tracked[file] : hashedNow[file]]));
+      // A merged lane keeps its lane record, so the task stays a root task when it starts again.
+      const lane = next.tasks[task.id]?.lane;
       next.tasks[task.id] = {
         task_hash: taskHash(task), state: 'in_progress', started_at: new Date().toISOString(),
-        baseline_head: baselineHead, baseline_files: baselineFiles,
+        baseline_head: baselineHead, baseline_files: baselineFiles, ...(lane ? { lane } : {}),
       };
       return next;
     });
@@ -230,8 +235,8 @@ function commandTimeoutMs(plan) {
   return seconds ? seconds * 1000 : DEFAULT_COMMAND_TIMEOUT_MS;
 }
 
-function runCommand(session, command) {
-  return spawnSync(process.env.SHELL || '/bin/sh', ['-lc', command], { cwd: session.root, stdio: 'ignore', timeout: commandTimeoutMs(session.plan) });
+export function runCommand(session, command, cwd = session.root) {
+  return spawnSync(process.env.SHELL || '/bin/sh', ['-lc', command], { cwd, stdio: 'ignore', timeout: commandTimeoutMs(session.plan) });
 }
 
 async function cmdVerify(args, json) {
@@ -240,6 +245,7 @@ async function cmdVerify(args, json) {
   const task = requireTask(session, args);
   const records = readProgress(session).tasks;
   const record = records[task.id];
+  if (isLaneTask(session.plan, task, record)) return verifyLane(session, task, record, json);
   if (!record || !['in_progress', 'deferred'].includes(record.state)) fail('task ' + task.id + ' has no in_progress record; run `xm build progress start` first');
   if (record.task_hash !== taskHash(task)) fail('plan task ' + task.id + ' changed since start; run `xm build progress start` again');
   // A task can start beside a dependency (contract_deps), so the order is enforced here. The
@@ -252,7 +258,13 @@ async function cmdVerify(args, json) {
   if (open.length) fail('task ' + task.id + ' depends on ' + open.join(', ') + ', not verified yet; verify ' + open.join(', ') + ' first');
   const current = hashFiles(session.root, task.expected_files);
   if (!task.expected_files.some((file) => current[file] !== record.baseline_files[file])) fail('no expected file changed since start of ' + task.id);
+  return recordVerification(session, task, current, json);
+}
 
+// Runs the task's own commands unless `ownPassed`, then records the outcome by the rules
+// below and prints it. A lane merge calls this after the task's commands passed in the root;
+// `extra` adds its fields to the JSON output.
+export function recordVerification(session, task, current, json, { ownPassed = false, extra = {} } = {}) {
   const own = ownCommands(task);
   const planCommands = session.plan.validation.commands;
   const firstFailure = (commands) => {
@@ -266,7 +278,7 @@ async function cmdVerify(args, json) {
   // `scope` tells a command of this task from a plan-wide one, because the fix differs: the
   // task's own work, or another task or the plan.
   const failed = (failure, scope, detail = '') => {
-    if (json) console.log(JSON.stringify({ status: 'failed', plan_id: session.runId, task: task.id, failed_command: failure.command, exit_code: failure.exit, scope }, null, 2));
+    if (json) console.log(JSON.stringify({ status: 'failed', plan_id: session.runId, task: task.id, failed_command: failure.command, exit_code: failure.exit, scope, ...extra }, null, 2));
     else console.error('verification failed for ' + task.id + ': ' + (scope === 'plan' ? 'plan-wide command ' : '') + '`' + failure.command + '` exited with ' + failure.exit + (detail ? '. ' + detail : ''));
     writeTasks(session);
     exitFail(VERIFY_FAILED, 'verification failed');
@@ -290,7 +302,7 @@ async function cmdVerify(args, json) {
     if (!planFailure) recheckDeferred();
   };
   if (own.length) {
-    const failure = firstFailure(own);
+    const failure = ownPassed ? null : firstFailure(own);
     if (failure) return failed(failure, 'task');
   } else runPlanCommands();
   const verifiedHead = gitHead(session.root);
@@ -391,7 +403,7 @@ async function cmdVerify(args, json) {
         status: 'deferred', plan_id: session.runId, task: task.id, reason: outcome.reason,
         ...(byPlan ? { failed_command: planFailure.command, exit_code: planFailure.exit } : { waiting_for: outcome.waiting_for }),
         ...(outcome.promoted.length ? { promoted: outcome.promoted } : {}),
-        ...(outcome.stillDeferred?.length ? { still_deferred: outcome.stillDeferred } : {}),
+        ...(outcome.stillDeferred?.length ? { still_deferred: outcome.stillDeferred } : {}), ...extra,
       }, null, 2));
     } else if (byPlan) {
       console.log('Deferred ' + task.id + ' ' + task.title);
@@ -410,7 +422,7 @@ async function cmdVerify(args, json) {
     console.log(JSON.stringify({
       status: 'verified', plan_id: session.runId, task: task.id,
       ...(outcome.promoted.length ? { promoted: outcome.promoted } : {}),
-      ...(outcome.stillDeferred?.length ? { still_deferred: outcome.stillDeferred } : {}),
+      ...(outcome.stillDeferred?.length ? { still_deferred: outcome.stillDeferred } : {}), ...extra,
     }, null, 2));
   } else {
     console.log('Verified ' + task.id + ' ' + task.title);
@@ -448,5 +460,6 @@ export async function cmdProgress(args = []) {
   if (sub === 'start') return cmdStart(rest, json);
   if (sub === 'verify') return cmdVerify(rest, json);
   if (sub === 'show') return cmdShow(rest, json);
-  return fail('Usage: xm build progress <start|verify|show> --plan <run-id> [--task <id>] [--json]');
+  if (sub === 'merge') return cmdMerge(rest, json);
+  return fail('Usage: xm build progress <start|verify|show|merge> --plan <run-id> [--task <id>] [--json]');
 }

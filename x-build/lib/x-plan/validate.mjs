@@ -103,6 +103,7 @@ export function validatePlanEnvelope(input) {
       if ('notes' in input.execution && typeof input.execution.notes !== 'string') errors.push(issue('execution.field_type', 'execution.notes', 'notes must be a string'));
       const timeout = input.execution.command_timeout_seconds;
       if ('command_timeout_seconds' in input.execution && !(Number.isInteger(timeout) && timeout > 0 && timeout <= 86400)) errors.push(issue('execution.field_type', 'execution.command_timeout_seconds', 'command_timeout_seconds must be an integer from 1 to 86400'));
+      if ('lanes' in input.execution && typeof input.execution.lanes !== 'boolean') errors.push(issue('execution.field_type', 'execution.lanes', 'lanes must be a boolean'));
     }
   }
   if (Array.isArray(input.unresolved_questions) && !stringArray(input.unresolved_questions)) errors.push(issue('plan.field_type', 'unresolved_questions', 'unresolved_questions must be a string array'));
@@ -165,6 +166,16 @@ export function validatePlanEnvelope(input) {
       } else if (gap <= 0) errors.push(issue('steps.dependency_order', 'steps', `${dep} must be scheduled before ${task.id}`));
     }
   }
+  // Lane mode runs each task of a step in its own worktree and merges them, so every task needs
+  // its own check and two tasks of one step must not write the same file.
+  if (value.execution?.lanes) value.steps.filter((step) => step.length > 1).forEach((step) => {
+    const tasks = step.map((id) => taskById.get(id)).filter(Boolean);
+    for (const task of tasks) if (!task.verify_commands) errors.push(issue('execution.lane_needs_verify', `tasks[${value.tasks.indexOf(task)}].verify_commands`, `lane task ${task.id} needs verify_commands`));
+    tasks.forEach((a, i) => tasks.slice(i + 1).forEach((b) => {
+      const shared = a.expected_files.filter((file) => b.expected_files.includes(file));
+      if (shared.length) errors.push(issue('execution.lane_shared_file', 'steps', `${a.id} and ${b.id} run in the same lane step but both list ${shared.join(', ')}`));
+    }));
+  });
   if (value.unresolved_questions.length && requestedExecutable) errors.push(issue('plan.executable_with_questions', 'executable', 'unresolved questions require executable=false'));
   const hasUnresolvedDisagreement = value.disagreements.some((item) => item.resolution === 'unresolved');
   if (hasUnresolvedDisagreement && requestedExecutable) errors.push(issue('plan.executable_with_disagreement', 'executable', 'unresolved disagreements require executable=false'));
