@@ -15,10 +15,10 @@ const LIBTEST_VALUE_OPTIONS = new Set(['--test-threads', '--skip', '--format', '
 
 // These runners exit 0 when a test filter matches nothing ("0 passed", "[no tests to run]"),
 // so a verify command built on one passes before the code it names exists. A command piped
-// into another one is taken to check the count itself.
+// into grep is taken to check the count itself; a pipe into tee or cat checks nothing.
 export function vacuousTestFilter(command) {
-  if (/(^|[^|])\|(?!\|)/.test(command)) return null;
-  for (const part of String(command).split(/&&|\|\||;/)) {
+  if (/(^|[^|])\|(?!\|)\s*grep\b/.test(command)) return null;
+  for (const part of String(command).split(/&&|\|\|?|;/)) {
     const tokens = part.trim().split(/\s+/);
     const cargo = tokens.indexOf('cargo');
     if (cargo >= 0 && tokens[cargo + 1] === 'test') {
@@ -171,6 +171,11 @@ export function validatePlanEnvelope(input) {
   if (value.execution?.lanes) value.steps.filter((step) => step.length > 1).forEach((step) => {
     const tasks = step.map((id) => taskById.get(id)).filter(Boolean);
     for (const task of tasks) if (!task.verify_commands) errors.push(issue('execution.lane_needs_verify', `tasks[${value.tasks.indexOf(task)}].verify_commands`, `lane task ${task.id} needs verify_commands`));
+    // A lane is verified before any lane of its step is merged, so a consumer's lane never holds
+    // its producer's work and a contract dependency inside one lane step cannot be verified.
+    for (const task of tasks) for (const dep of (task.contract_deps || []).filter((id) => step.includes(id))) {
+      errors.push(issue('execution.lane_contract_dep', `tasks[${value.tasks.indexOf(task)}].contract_deps`, `${task.id} and ${dep} share a lane step, but ${task.id}'s lane is verified before ${dep} is merged; schedule ${task.id} in a later step`));
+    }
     tasks.forEach((a, i) => tasks.slice(i + 1).forEach((b) => {
       const shared = a.expected_files.filter((file) => b.expected_files.includes(file));
       if (shared.length) errors.push(issue('execution.lane_shared_file', 'steps', `${a.id} and ${b.id} run in the same lane step but both list ${shared.join(', ')}`));

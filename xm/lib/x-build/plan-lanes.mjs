@@ -17,9 +17,12 @@ function laneStep(plan, taskId) {
   return index >= 0 && plan.steps[index].length > 1 ? index : -1;
 }
 
-// A merged lane task is a root task from then on: start and verify run in the root.
+// A merged lane task is a root task from then on: start and verify run in the root. So is a
+// task that was started in the root before the plan turned lanes on: execution is not part of
+// the task hash, so its record stays valid and has no lane to verify in.
 export function isLaneTask(plan, task, record) {
-  return laneStep(plan, task.id) >= 0 && !record?.lane?.merged_at;
+  if (laneStep(plan, task.id) < 0 || record?.lane?.merged_at) return false;
+  return !record || Boolean(record.lane) || record.task_hash !== taskHash(task);
 }
 
 function laneBranch(session, task) {
@@ -114,23 +117,20 @@ export async function startLane(session, task, json) {
   const dirty = rootTrackedChanges(session.root);
   if (dirty.length) fail('lane task ' + task.id + ' cannot start: the repository root has uncommitted changes to ' + dirty.join(', ') + '; lanes branch from HEAD, so commit them first');
 
-  const head = gitHead(session.root);
-  let base;
-  // Every lane of a step branches from the same commit: the root HEAD when the first lane started.
-  modifyJSON(session.progressPath, (data) => {
-    const next = data && data.tasks ? data : { schema_version: 1, plan_id: session.runId, tasks: {} };
-    next.step_bases = next.step_bases || {};
-    if (!next.step_bases[stepIndex]) next.step_bases[stepIndex] = head;
-    base = next.step_bases[stepIndex];
-    return next;
-  });
+  // Every lane of a step branches from the same commit: the root HEAD when the first lane of the
+  // step was created. It is stored only after that lane exists, so a failed first start leaves
+  // no base behind and a retry branches from the HEAD of then.
+  const base = readProgress(session).step_bases?.[stepIndex] || gitHead(session.root);
   const branch = laneBranch(session, task);
   const acquired = gk(session.root, ['worktree', 'acquire', branch, '--from', base, '--json']);
   const reported = acquired.envelope?.result?.path;
   if (!acquired.ok || !reported) fail('`git-kit worktree acquire ' + branch + '` failed: ' + (acquired.ok ? 'no worktree path in the result' : acquired.message));
   const path = existsSync(resolve(reported)) ? realpathSync(resolve(reported)) : resolve(reported);
   const hashedNow = hashFiles(path, task.expected_files);
-  modifyJSON(session.progressPath, (data) => {
+  modifyJSON(session.progressPath, (stored) => {
+    const data = stored && stored.tasks ? stored : { schema_version: 1, plan_id: session.runId, tasks: {} };
+    data.step_bases = data.step_bases || {};
+    if (!data.step_bases[stepIndex]) data.step_bases[stepIndex] = base;
     const tracked = data.tasks[task.id]?.baseline_files || {};
     data.tasks[task.id] = {
       task_hash: taskHash(task), state: 'in_progress', started_at: new Date().toISOString(),
@@ -196,18 +196,36 @@ function pidAlive(pid) {
 // fail() ends the process, so the lock is also released from an exit handler.
 function takeMergeLock(session) {
   const path = join(session.dir, 'merge.lock');
-  const take = () => {
-    try { writeFileSync(path, String(process.pid), { flag: 'wx' }); return true; } catch (error) {
+  const take = (file = path) => {
+    try { writeFileSync(file, String(process.pid), { flag: 'wx' }); return true; } catch (error) {
       if (error.code !== 'EEXIST') throw error;
       return false;
     }
   };
+  const holder = () => {
+    try { return Number.parseInt(readFileSync(path, 'utf8'), 10); } catch (error) { if (error.code !== 'ENOENT') throw error; return null; }
+  };
+  const busy = (pid) => fail('another `xm build progress merge` holds ' + path + ' (pid ' + pid + '); wait for it to finish, then run merge again');
   if (!take()) {
-    let holder = null;
-    try { holder = Number.parseInt(readFileSync(path, 'utf8'), 10); } catch (error) { if (error.code !== 'ENOENT') throw error; }
-    if (pidAlive(holder)) fail('another `xm build progress merge` holds ' + path + ' (pid ' + holder + '); wait for it to finish, then run merge again');
-    try { unlinkSync(path); } catch (error) { if (error.code !== 'ENOENT') throw error; }
-    if (!take()) fail('another `xm build progress merge` took ' + path + ' while its stale lock was replaced; run merge again');
+    const stale = holder();
+    if (pidAlive(stale)) busy(stale);
+    // Two merges can find the same dead lock. Only the one that holds the takeover file removes
+    // it, after it reads the lock again: otherwise one of them could remove the lock the other
+    // has just taken, and both would merge at once.
+    const takeover = path + '.takeover';
+    if (!take(takeover)) fail('another `xm build progress merge` is replacing the stale lock ' + path + '; run merge again. If no merge is running, remove ' + takeover);
+    // fail() exits the process without running finally blocks, so the takeover file is removed
+    // before any refusal.
+    const current = holder();
+    const live = current !== stale && pidAlive(current);
+    let taken = false;
+    if (!live) {
+      try { unlinkSync(path); } catch (error) { if (error.code !== 'ENOENT') throw error; }
+      taken = take();
+    }
+    try { unlinkSync(takeover); } catch (error) { if (error.code !== 'ENOENT') throw error; }
+    if (live) busy(current);
+    if (!taken) fail('another `xm build progress merge` took ' + path + ' while its stale lock was replaced; run merge again');
   }
   const release = () => {
     try {
@@ -228,6 +246,7 @@ export async function cmdMerge(args, json) {
   const record = records[task.id];
   if (laneStep(session.plan, task.id) < 0) fail('task ' + task.id + ' is not a lane task: merge applies to a task of a multi-task step in a plan with execution.lanes');
   if (record?.lane?.merged_at) fail('the lane of ' + task.id + ' was merged at ' + record.lane.merged_at + '; verify it in the root with `' + progressCommand(session, 'verify', task) + '`');
+  if (!isLaneTask(session.plan, task, record)) fail('task ' + task.id + ' was started in the repository root before the plan turned lanes on; verify it there with `' + progressCommand(session, 'verify', task) + '`');
   if (!record || record.task_hash !== taskHash(task)) fail('task ' + task.id + ' has no record for the plan as it is now; run `' + progressCommand(session, 'start', task) + '` first');
   if (record.state !== 'lane_verified') fail('task ' + task.id + ' is ' + record.state + ', not lane_verified; run `' + progressCommand(session, 'verify', task) + '` first');
   const open = session.plan.tasks.filter((dep) => task.depends_on.includes(dep.id) && stateForPlan(records, dep) !== 'verified').map((dep) => dep.id);
@@ -264,6 +283,11 @@ function mergeLane(session, task, record, json) {
   const before = gitHead(root);
   const uncommitted = changedPaths(path, { untracked: true });
   const laneTip = gitOut(path, ['rev-parse', 'HEAD']).trim();
+  // A run that committed the merge and stopped before recording it leaves the lane tip inside the
+  // root and the record at lane_verified. Merging again would find nothing to merge.
+  if (!uncommitted.length && laneTip !== record.lane.base && git(root, ['merge-base', '--is-ancestor', laneTip, before]).status === 0) {
+    return concludeMerge(session, task, record.lane, before, json, { recovered: true });
+  }
   const mergeBase = gitOut(root, ['merge-base', before, laneTip]).trim();
   const committed = gitOut(root, ['diff', '--name-only', '-z', mergeBase, laneTip]).split('\0').filter(Boolean);
   const outside = [...new Set([...uncommitted, ...committed])].filter((file) => !task.expected_files.includes(file));
@@ -315,25 +339,55 @@ function mergeLane(session, task, record, json) {
     abortMerge(session, before);
     fail('committing the merge of lane ' + branch + ' failed, and the merge was aborted: ' + detail);
   }
-  const mergeCommit = gitHead(root);
+  return concludeMerge(session, task, record.lane, gitHead(root), json);
+}
+
+// Records a committed merge, removes the lane, and decides the task as a root task. With
+// `recovered`, the merge was committed by an earlier run that stopped before recording it, so
+// the task's commands run again in the root first: the root can have moved since.
+function concludeMerge(session, task, lane, mergeCommit, json, { recovered = false } = {}) {
+  const { root } = session;
+  const { branch, path } = lane;
+  if (recovered) {
+    for (const command of ownCommands(task)) {
+      const result = runCommand(session, command);
+      if (result.status === 0 && !result.error) continue;
+      const exit = result.status ?? (result.error?.code || result.signal || 'unknown');
+      markMerged(session, task, mergeCommit);
+      writeTasks(session);
+      if (json) console.log(JSON.stringify({ status: 'failed', plan_id: session.runId, task: task.id, failed_command: command, exit_code: exit, scope: 'task', phase: 'merge', lane_merged: branch, recovered: true }, null, 2));
+      else console.error('lane ' + branch + ' was already merged into the root, and `' + command + '` exits with ' + exit + ' there. ' + task.id + ' is a root task now: fix it in the root, then run `' + progressCommand(session, 'verify', task) + '`');
+      return exitFail(VERIFY_FAILED, 'verification failed');
+    }
+  }
   // Recorded before the outcome: the merge is committed now, so if the plan-wide commands
   // fail below, the task is fixed and verified again in the root, not merged again.
+  markMerged(session, task, mergeCommit);
+  return removeLaneAndRecord(session, task, lane, mergeCommit, json, recovered);
+}
+
+function markMerged(session, task, mergeCommit) {
   modifyJSON(session.progressPath, (data) => {
     const current = data.tasks[task.id];
     data.tasks[task.id] = { ...current, state: 'in_progress', lane: { ...current.lane, merged_at: new Date().toISOString(), merge_commit: mergeCommit } };
     return data;
   });
+}
+
+function removeLaneAndRecord(session, task, lane, mergeCommit, json, recovered) {
+  const { root } = session;
+  const { branch, path } = lane;
   const cleanup = [];
   const removed = git(root, ['worktree', 'remove', '--force', path]);
   if (removed.error || removed.status !== 0) cleanup.push({ command: 'git worktree remove --force ' + path, error: String(removed.stderr || removed.error?.message || '').trim() });
   const deleted = git(root, ['branch', '-D', branch]);
   if (deleted.error || deleted.status !== 0) cleanup.push({ command: 'git branch -D ' + branch, error: String(deleted.stderr || deleted.error?.message || '').trim() });
   if (!json) {
-    console.log('Merged lane ' + branch + ' into ' + rootBranch(root) + ' (' + mergeCommit.slice(0, 12) + ')');
+    console.log((recovered ? 'Recorded the earlier merge of lane ' : 'Merged lane ') + branch + ' into ' + rootBranch(root) + ' (' + mergeCommit.slice(0, 12) + ')');
     for (const item of cleanup) console.error('could not remove the lane: `' + item.command + '` failed: ' + item.error + '. Run it in ' + root);
   }
   return recordVerification(session, task, hashFiles(root, task.expected_files), json, {
     ownPassed: true,
-    extra: { lane_merged: branch, merge_commit: mergeCommit, ...(cleanup.length ? { lane_cleanup_failed: cleanup } : {}) },
+    extra: { lane_merged: branch, merge_commit: mergeCommit, ...(recovered ? { recovered: true } : {}), ...(cleanup.length ? { lane_cleanup_failed: cleanup } : {}) },
   });
 }

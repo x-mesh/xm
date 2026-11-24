@@ -42,6 +42,11 @@ describe('PlanEnvelope execution lanes', () => {
     expect(errors[0].message).not.toContain('a.mjs');
   });
 
+  test('lanes reject a contract dependency inside one lane step', () => {
+    const plan = lanePlan([laneTask('T1', { expected_files: ['a'] }), laneTask('T2', { expected_files: ['b'], depends_on: ['T1'], contract_deps: ['T1'] })], [['T1', 'T2']]);
+    expect(errorsOf(plan)).toEqual([{ code: 'execution.lane_contract_dep', path: 'tasks[1].contract_deps' }]);
+  });
+
   test('step checks do not apply without lanes', () => {
     const plan = { ...lanePlan([laneTask('T1', { expected_files: ['a'], verify_commands: [] }), laneTask('T2', { expected_files: ['a'] })], [['T1', 'T2']]), execution: { lanes: false } };
     expect(validatePlanEnvelope(plan).valid).toBe(true);

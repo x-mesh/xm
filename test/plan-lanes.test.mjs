@@ -429,3 +429,98 @@ describe('xm build progress lanes', () => {
     } finally { cleanup(ctx); }
   }, TIMEOUT);
 });
+
+describe('xm build progress lanes: review fixes', () => {
+  test('a lane whose command fails in the lane exits 2, goes back to in_progress, and cannot merge', () => {
+    const ctx = setup(envelope({ aVerify: ['test -f src/a.txt', 'grep -q ready src/a.txt'] }));
+    try {
+      finishP(ctx);
+      const path = startLane(ctx, 'A');
+      writeFileSync(join(path, 'src', 'a.txt'), 'draft\n');
+      const failed = progress(ctx, 'verify', 'A');
+      expect(failed.code).toBe(2);
+      expect(json(failed)).toMatchObject({ status: 'failed', failed_command: 'grep -q ready src/a.txt', lane_path: path });
+      expect(progressFile(ctx).tasks.A.state).toBe('in_progress');
+      const refused = progress(ctx, 'merge', 'A');
+      expect(refused.code).toBe(1);
+      expect(refused.stderr).toContain('not lane_verified');
+      writeFileSync(join(path, 'src', 'a.txt'), 'ready\n');
+      expect(json(progress(ctx, 'verify', 'A')).status).toBe('lane_verified');
+    } finally { cleanup(ctx); }
+  }, TIMEOUT);
+
+  test('a merge committed by a run that stopped before recording it is recorded on the next merge', () => {
+    const ctx = setup();
+    try {
+      finishP(ctx);
+      const path = laneVerified(ctx, 'A');
+      // What a run killed between the merge commit and the progress write leaves behind.
+      git(path, 'add', 'src/a.txt');
+      git(path, 'commit', '-qm', 'chore(lane): Lane A (A)');
+      git(ctx.cwd, 'merge', '--no-ff', '--no-edit', 'xm-lane/' + RUN + '/A');
+      const head = git(ctx.cwd, 'rev-parse', 'HEAD');
+      expect(progressFile(ctx).tasks.A.state).toBe('lane_verified');
+      const merged = progress(ctx, 'merge', 'A');
+      expect(merged.code, merged.stderr + merged.stdout).toBe(0);
+      expect(json(merged)).toMatchObject({ status: 'verified', task: 'A', recovered: true, merge_commit: head });
+      expect(git(ctx.cwd, 'rev-parse', 'HEAD')).toBe(head);
+      expect(existsSync(path)).toBe(false);
+      expect(progressFile(ctx).tasks.A.lane.merged_at).toBeTruthy();
+      expect(gkCalls(ctx).some((call) => call[0] === 'merge')).toBe(false);
+    } finally { cleanup(ctx); }
+  }, TIMEOUT);
+
+  test('a task started in the root before the plan turned lanes on stays a root task', () => {
+    const ctx = setup(envelope({ lanes: false }));
+    try {
+      finishP(ctx);
+      expect(progress(ctx, 'start', 'A').code).toBe(0);
+      writeFileSync(join(ctx.cwd, '.xm', 'plan', RUN, 'envelope.json'), JSON.stringify(envelope()));
+      writeFileSync(join(ctx.cwd, 'src', 'a.txt'), 'a\n');
+      const verified = progress(ctx, 'verify', 'A');
+      expect(verified.code, verified.stderr + verified.stdout).toBe(0);
+      expect(json(verified).status).toBe('verified');
+      const refused = progress(ctx, 'merge', 'A');
+      expect(refused.code).toBe(1);
+      expect(refused.stderr).toMatch(/lane of A was merged|started in the repository root/);
+      expect(progressFile(ctx).tasks.A.lane).toBeUndefined();
+    } finally { cleanup(ctx); }
+  }, TIMEOUT);
+
+  test('a first lane start that fails to create the worktree stores no step base', () => {
+    const ctx = setup();
+    try {
+      finishP(ctx);
+      const failed = progress(ctx, 'start', 'A', { X_BUILD_GK_ARGV: JSON.stringify(['node', '-e', 'process.exit(1)']) });
+      expect(failed.code).toBe(1);
+      expect(progressFile(ctx).step_bases).toBeUndefined();
+      writeFileSync(join(ctx.cwd, 'NOTES.md'), 'n\n');
+      git(ctx.cwd, 'add', 'NOTES.md');
+      git(ctx.cwd, 'commit', '-qm', 'notes');
+      const head = git(ctx.cwd, 'rev-parse', 'HEAD');
+      const started = json(progress(ctx, 'start', 'A'));
+      expect(started.base).toBe(head);
+      expect(progressFile(ctx).step_bases['1']).toBe(head);
+    } finally { cleanup(ctx); }
+  }, TIMEOUT);
+
+  test('a stale merge lock is not taken over while another merge holds the takeover file', () => {
+    const ctx = setup();
+    try {
+      finishP(ctx);
+      laneVerified(ctx, 'A');
+      const lock = join(ctx.cwd, '.xm', 'plan', RUN, 'merge.lock');
+      writeFileSync(lock, String(spawnSync('true').pid));
+      writeFileSync(lock + '.takeover', String(process.pid));
+      const refused = progress(ctx, 'merge', 'A');
+      expect(refused.code).toBe(1);
+      expect(refused.stderr).toContain('is replacing the stale lock');
+      expect(existsSync(lock)).toBe(true);
+      rmSync(lock + '.takeover');
+      const merged = progress(ctx, 'merge', 'A');
+      expect(merged.code, merged.stderr + merged.stdout).toBe(0);
+      expect(existsSync(lock)).toBe(false);
+      expect(existsSync(lock + '.takeover')).toBe(false);
+    } finally { cleanup(ctx); }
+  }, TIMEOUT);
+});

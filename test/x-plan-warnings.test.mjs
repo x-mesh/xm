@@ -153,6 +153,9 @@ describe('verify commands that pass with no matching test', () => {
     expect(vacuousTestFilter('cd crates/x && cargo test calls')).toBe('cargo test');
     expect(vacuousTestFilter('go test ./... -run TestFoo')).toBe('go test -run');
     expect(vacuousTestFilter('go test ./... -run=TestFoo')).toBe('go test -run');
+    expect(vacuousTestFilter('cargo test missing_test | tee test.log')).toBe('cargo test');
+    expect(vacuousTestFilter('go test ./... -run MissingTest | cat')).toBe('go test -run');
+    expect(vacuousTestFilter('cargo test missing_test || true')).toBe('cargo test');
     for (const command of ['cargo test -p packet-mesh', 'cargo test --workspace --features ebpf', 'cargo test -- --test-threads 1', 'go test ./...', 'bun test', 'cargo test -p x calls 2>&1 | grep -E "[1-9][0-9]* passed"']) {
       expect(vacuousTestFilter(command)).toBe(null);
     }

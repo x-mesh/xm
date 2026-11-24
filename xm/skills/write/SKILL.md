@@ -95,7 +95,7 @@ Collect before writing. Run independent reads in one Bash call.
 
 Base branch for `pr`: a `--base <branch>` argument wins (`xm:wt` passes the `gk-parent`: `git-kit context` reports the
 repository's `base_branch`, often `main`). Else stack on an open PR so the diff holds only this branch's commits: from
-`gh pr list --state open --json headRefName,headRefOid`, keep heads other than this branch where
+`gh pr list --state open --limit 1000 --json headRefName,headRefOid`, keep heads other than this branch where
 `git merge-base --is-ancestor <headRefOid> HEAD` passes and `git rev-list --count <headRefOid>..HEAD` is above 0, take the
 smallest count, and name that PR in the confirmation. Else the `git-kit context` base, else `gh repo view --json defaultBranchRef -q .defaultBranchRef.name`. Never assume `main`.
 
