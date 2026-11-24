@@ -186,9 +186,9 @@ fallback은 다음 조건을 모두 만족할 때만 추가합니다.
 - agent batch 전에 실제 사용할 model과 task 수를 한 줄로 알립니다.
 - direct route와 planned route의 Execute는 `route confirm` 출력의 `model_routes.execute`를 사용합니다. Claude는 `model_routes.execute.model_by_vendor.claude`를 사용합니다.
 - task prompt에 Execution Principles와 task-specific done criteria를 포함합니다.
-- When the plan lists `out_of_scope`, put the list in every task prompt and tell the executor not to implement those items. Add a task's `verify_commands` to its prompt as the commands that decide whether the task is done.
+- When the plan lists `out_of_scope`, put the list in every task prompt and tell the executor not to implement those items. Add a task's `verify_commands` to its prompt as the commands that decide whether the task is done. When the plan has `execution.notes`, put them in every task prompt next to `out_of_scope`: they hold the context that every executor needs, such as where the code builds or the order in which lanes merge.
 - 순차 실행이 기본입니다. 병렬 실행은 예상 수정 파일, 공유 상태, dependency와 검증 환경이 모두 독립적이고 측정 가능한 시간 이득이 예상될 때만 허용합니다.
-- 병렬화를 위해 task를 억지로 분해하거나 worktree를 만들지 않습니다.
+- 병렬화를 위해 task를 억지로 분해하거나 worktree를 만들지 않습니다. 예외는 `execution.lanes`가 true인 plan 하나뿐입니다: 그 plan만 task가 둘 이상인 step을 lane(task마다 하나의 worktree)에서 실행합니다(아래 Plan progress tracking).
 - A contract dependency is the only exception to the dependency condition above. When the plan puts a task in the `steps` entry of a task it depends on and lists that dependency in the task's `contract_deps`, start the two together (send their executor agents in one message). The other conditions still apply: tasks that start together list no common expected file and share no state. Verify every task of an entry before the next entry starts.
 - For a task that starts beside a task in its `contract_deps`, put the producing task's done criteria in its prompt as the interface to code against. Tell its executor that the producer is written at the same time: it must not read, edit, or wait for the producer's files, and it is done when its own files are written. Do not give it the task's `verify_commands` to run: they can need the producer's result, so the root runs them through `progress verify`. Tell the producer's executor that a consumer codes against the interface in its done criteria, and to stop and report when it cannot implement that interface as written.
 - agent의 완료 주장을 그대로 신뢰하지 않고 변경 파일과 기존 검증 결과를 확인합니다.
@@ -207,7 +207,15 @@ When executing an executable x-plan session (`.xm/plan/<run-id>/`):
 - Treat a verify failure (exit code 2) as the task not done. Fix the work and verify again.
 - For tasks that start together, run `progress start` for each task before its agent starts. Run `progress verify` only after every agent of that entry has returned, and verify a dependency before its consumer. A verify command can read the whole tree, so a file that another agent has half written can fail it. `progress verify` exits 1 and names the dependency when a dependency of the task is neither verified nor deferred.
 - When a task with `contract_deps` fails verification, continue the agent that wrote it with the failed command (Claude Code: SendMessage to that agent). A new agent has to load the whole context again.
+- When the plan sets `execution.lanes: true`, each task of a `steps` entry with two or more tasks runs in its own git worktree (a lane). A task of a one-task step runs in the root as usual. The contract-dependency rule above does not apply in a lane step: a lane is verified before any lane of its step is merged, so the validator rejects a `contract_deps` entry that names a task of the same lane step.
+  - Before a lane step, commit the earlier steps' work to the branch. Lanes branch from HEAD, so uncommitted work is missing from every lane. `progress start` refuses a root with tracked changes outside `.xm/`, a tracked `.xm/`, or an earlier step's task that is not verified.
+  - For each task of the step, run `progress start` and put the printed `lane_path` in that executor's prompt. Tell the executor to edit only inside `lane_path`, and not to commit or run `xm build progress` commands. Send the step's executor agents in one message.
+  - After every agent returns, run `progress verify` for each task. It runs the task's `verify_commands` in the lane. Success is `lane_verified`, not checked off.
+  - Then run `xm build progress merge --plan <run-id> --task <id>` one task at a time, a dependency before its consumer. It refuses a lane that changed a file outside the task's `expected_files`. It commits the lane as `chore(lane): <title> (<id>)`, merges it with git's merge message, runs the task's `verify_commands` in the root, and records verified or deferred by the rules above. It then removes the lane worktree and branch, and the task is an ordinary root task. Never write these commits yourself.
+  - When a lane fails `progress verify` or `progress merge`, continue its agent with the failed command (Claude Code: SendMessage). Keep merging the other lanes. A verify failure after the merge aborts the merge, and the task stays `lane_verified`.
+  - `merge_conflict` (exit 2) leaves the root unchanged. In the lane, merge the root branch and resolve the conflicts. Then run `progress verify` and `progress merge` for the task again. The output lists these commands.
 - Never edit `tasks.md` or `progress.json` by hand. Both are generated.
+- `progress` needs the source tree in the repository that holds `.xm`: it records the local `HEAD`, hashes `expected_files` there, and runs the commands there. When the code builds on another host, do not mark the plan executable for progress tracking; tell the user instead. Each command stops after 120 seconds unless the plan sets `execution.command_timeout_seconds`.
 - At the end, run `xm build progress show --plan <run-id>` and report it to the user.
 
 ## Explicit Legacy Opt-In
@@ -223,7 +231,7 @@ legacy 명령은 요청한 명령까지만 실행합니다. 다음 phase, gate �
 
 ### Worktree execution
 
-Legacy experimental opt-in only입니다. 사용자가 worktree 실행을 명시했을 때만 사용합니다. 측정된 작은 task에서는 pass-rate 향상 없이 overhead가 발생했음을 밝힙니다. 쓰기 범위가 불확실하면 worktree 병렬화를 추측하지 않고 native sequential 실행을 제안합니다.
+Legacy experimental opt-in only입니다: `xm build run --worktrees`가 대상입니다. 사용자가 worktree 실행을 명시했을 때만 사용합니다. `execution.lanes`를 설정한 plan의 lane은 이 명령과 별개인 native 경로입니다(Plan progress tracking). 측정된 작은 task에서는 pass-rate 향상 없이 overhead가 발생했음을 밝힙니다. 쓰기 범위가 불확실하면 worktree 병렬화를 추측하지 않고 native sequential 실행을 제안합니다.
 
 ## Routing
 
@@ -232,7 +240,7 @@ Legacy experimental opt-in only입니다. 사용자가 worktree 실행을 명시
 - `plan ...`: x-plan과 동일한 engine으로 계획을 만들어 `.xm/plan`에 저장하고, 계획이 executable이면 현재 프로젝트로 자동 import해 PRD·task·step을 생성합니다. draft이면 import하지 않고 이유를 알립니다. 이 alias는 deprecated이며 새 사용자는 `xm plan`을 사용합니다.
 - `legacy-plan ...`: 기존 x-build PRD·task·phase planner를 명시적으로 실행합니다.
 - 명시적인 legacy subcommand: 해당 `xm build` 명령만 실행합니다.
-- 병렬 실행, `worktree`, `task-check`, `review-group`, `group-check`는 명시적 요청이나 위의 독립성·효용 조건 없이는 자동 선택하지 않습니다.
+- 병렬 실행, `worktree`, `task-check`, `review-group`, `group-check`는 명시적 요청이나 위의 독립성·효용 조건 없이는 자동 선택하지 않습니다. `execution.lanes` plan의 lane은 예외입니다.
 
 ## Model Disclosure
 

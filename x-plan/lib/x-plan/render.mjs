@@ -15,6 +15,13 @@ export function renderPlan(plan, { artifactPath = null } = {}) {
   }
   sections.push('## Requirements', list(plan.requirements.map((item) => '[' + item.id + '] (' + item.priority + ') ' + item.text)));
   if (plan.out_of_scope?.length) sections.push('## Out of scope', list(plan.out_of_scope));
+  if (plan.execution) {
+    sections.push('## Execution', list([
+      ...(plan.execution.notes ? [plan.execution.notes] : []),
+      ...(plan.execution.command_timeout_seconds ? ['Command timeout: ' + plan.execution.command_timeout_seconds + ' s'] : []),
+      ...(plan.execution.lanes ? ['Lanes: on'] : []),
+    ]));
+  }
   if (plan.assumptions.length) {
     sections.push('## Assumptions', list(plan.assumptions.map((item) => '[' + item.id + '] ' + item.text + ' (' + item.confidence + ')' + (item.evidence ? ' — ' + item.evidence : ''))));
   }

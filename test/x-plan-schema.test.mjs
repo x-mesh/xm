@@ -113,3 +113,21 @@ describe('PlanEnvelope v1', () => {
     expect(validatePlanEnvelope(noDecision).errors.map((e) => e.code)).toContain('plan.empty_decision');
   });
 });
+
+describe('PlanEnvelope execution', () => {
+  const base = () => ({ schema_version: 1, status: 'complete', executable: false, goal: 'g', requirements: [{ id: 'R1', text: 'r', priority: 'must' }], assumptions: [], decision: { selected: 'd', alternatives: [] }, tasks: [{ id: 'T1', title: 't', requirement_refs: ['R1'], done_criteria: ['d'] }], steps: [['T1']], validation: { commands: [] }, disagreements: [], unresolved_questions: [], provenance: {} });
+  test('keeps notes and a timeout, and emits nothing when unset', async () => {
+    const { normalizePlanEnvelope, validatePlanEnvelope } = await import('../x-plan/lib/x-plan/core.mjs');
+    expect('execution' in normalizePlanEnvelope(base())).toBe(false);
+    const result = validatePlanEnvelope({ ...base(), execution: { notes: ' Build on host ', command_timeout_seconds: 900 } });
+    expect(result.valid).toBe(true);
+    expect(result.value.execution).toEqual({ notes: 'Build on host', command_timeout_seconds: 900 });
+  });
+  test('rejects a wrong type or an out-of-range timeout', async () => {
+    const { validatePlanEnvelope } = await import('../x-plan/lib/x-plan/core.mjs');
+    const codes = (execution) => validatePlanEnvelope({ ...base(), execution }).errors.map((item) => item.path);
+    expect(codes('x')).toEqual(['execution']);
+    expect(codes({ notes: 3 })).toEqual(['execution.notes']);
+    for (const timeout of [0, 1.5, 86401, '60']) expect(codes({ command_timeout_seconds: timeout })).toEqual(['execution.command_timeout_seconds']);
+  });
+});

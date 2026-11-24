@@ -9,6 +9,7 @@ import { join } from 'node:path';
 import { tmpdir } from 'node:os';
 import { spawnSync } from 'node:child_process';
 import { validatePlanEnvelope } from '../x-plan/lib/x-plan/core.mjs';
+import { vacuousTestFilter } from '../x-plan/lib/x-plan/validate.mjs';
 import { synthesizePlanCandidates } from '../x-plan/lib/x-plan/synthesize.mjs';
 
 const CLI = join(import.meta.dirname, '..', 'x-plan', 'lib', 'x-plan-cli.mjs');
@@ -142,5 +143,30 @@ describe('validator warnings on text output', () => {
       const checked = run(['--validate'], JSON.stringify(plan()));
       expect(checked.stdout).toBe('PlanEnvelope is valid. Executable: yes\n');
     } finally { rmSync(dir, { recursive: true, force: true }); }
+  });
+});
+
+describe('verify commands that pass with no matching test', () => {
+  test('flags a cargo test filter and go test -run, and nothing else', () => {
+    expect(vacuousTestFilter('cargo test -p packet-mesh calls::body')).toBe('cargo test');
+    expect(vacuousTestFilter('cargo test --features ebpf -- calls::body --exact')).toBe('cargo test');
+    expect(vacuousTestFilter('cd crates/x && cargo test calls')).toBe('cargo test');
+    expect(vacuousTestFilter('go test ./... -run TestFoo')).toBe('go test -run');
+    expect(vacuousTestFilter('go test ./... -run=TestFoo')).toBe('go test -run');
+    expect(vacuousTestFilter('cargo test missing_test | tee test.log')).toBe('cargo test');
+    expect(vacuousTestFilter('go test ./... -run MissingTest | cat')).toBe('go test -run');
+    expect(vacuousTestFilter('cargo test missing_test || true')).toBe('cargo test');
+    for (const command of ['cargo test -p packet-mesh', 'cargo test --workspace --features ebpf', 'cargo test -- --test-threads 1', 'go test ./...', 'bun test', 'cargo test -p x calls 2>&1 | grep -E "[1-9][0-9]* passed"']) {
+      expect(vacuousTestFilter(command)).toBe(null);
+    }
+  });
+  test('warns on task verify_commands and validation.commands', () => {
+    const result = validatePlanEnvelope(plan({
+      tasks: [{ id: 'T1', title: 'Implement export', depends_on: [], requirement_refs: ['R1'], expected_files: ['src/export.mjs'], done_criteria: ['Works'], verify_commands: ['cargo test -p app export::csv'] }],
+      validation: { commands: ['go test ./... -run TestExport'], requirement_refs: [] },
+    }));
+    expect(result.valid).toBe(true);
+    const paths = result.warnings.filter((item) => item.code === 'verify.vacuous_filter').map((item) => item.path);
+    expect(paths).toEqual(['tasks[0].verify_commands', 'validation.commands']);
   });
 });

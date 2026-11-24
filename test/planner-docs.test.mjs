@@ -28,6 +28,15 @@ describe('planner and build public docs', () => {
     }
   });
 
+  test('document lane mode in the build and plan skills', () => {
+    const build = readFileSync(join(ROOT, 'x-build/skills/build/SKILL.md'), 'utf8');
+    const plan = readFileSync(join(ROOT, 'x-plan/skills/plan/SKILL.md'), 'utf8');
+    expect(build).toContain('progress merge');
+    expect(build).toContain('execution.lanes');
+    expect(build).toContain('lane_path');
+    expect(plan).toContain('execution.lanes');
+  });
+
   test('do not advertise the retired PRD-parallel-gate flow as the default', () => {
     for (const doc of docs) {
       expect(doc).not.toContain('→ PRD → task decomposition → parallel agents → verified');

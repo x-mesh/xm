@@ -598,3 +598,32 @@ describe('xm build progress', () => {
     } finally { rmSync(cwd, { recursive: true, force: true }); }
   });
 });
+
+describe('plan execution context', () => {
+  test('execution.command_timeout_seconds sets the limit of each verify command', () => {
+    const cwd = setup(envelope({ execution: { command_timeout_seconds: 1 }, validation: { commands: ['sleep 5'], requirement_refs: ['R1'] }, tasks: [envelope().tasks[0]], steps: [['A']] }));
+    try {
+      const started = Date.now();
+      const result = verifyA(cwd);
+      expect(result.code).toBe(2);
+      expect(Date.now() - started).toBeLessThan(4500);
+    } finally { rmSync(cwd, { recursive: true, force: true }); }
+  });
+
+  test('execution.notes is written at the top of tasks.md', () => {
+    const cwd = setup(envelope({ execution: { notes: 'Build on the Linux host; merge lanes in task order.' } }));
+    try {
+      expect(progress(cwd, 'show').code).toBe(0);
+      expect(tasksMd(cwd)).toContain('Execution: Build on the Linux host; merge lanes in task order.');
+    } finally { rmSync(cwd, { recursive: true, force: true }); }
+  });
+
+  test('adding execution to a plan does not reset the progress of its tasks', () => {
+    const cwd = setup();
+    try {
+      expect(verifyA(cwd).code).toBe(0);
+      writeEnvelope(cwd, envelope({ execution: { notes: 'n', command_timeout_seconds: 600 } }));
+      expect(statuses(cwd).A).toBe('verified');
+    } finally { rmSync(cwd, { recursive: true, force: true }); }
+  });
+});

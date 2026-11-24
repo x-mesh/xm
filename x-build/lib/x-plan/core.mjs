@@ -57,5 +57,5 @@ export { normalizePlanEnvelope } from './normalize.mjs';
 export { validatePlanEnvelope } from './validate.mjs';
 export function parsePlanEnvelope(text) {
   try { const input = JSON.parse(String(text)); const result = validatePlanEnvelope(input); return { ok: result.valid, ...result }; }
-  catch (error) { return { ok: false, valid: false, errors: [{ code: 'plan.invalid_json', path: '$', message: error.message }], warnings: [], value: null }; }
+  catch (error) { return { ok: false, valid: false, errors: [{ code: 'plan.invalid_json', path: '$', message: error.message + '. --validate and --persist read a PlanEnvelope JSON; to save an unfinished interview, persist an envelope with status "incomplete" and executable false' }], warnings: [], value: null }; }
 }

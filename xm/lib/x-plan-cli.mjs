@@ -11,7 +11,34 @@ import { renderPlan, renderValidation, renderWarnings } from './x-plan/render.mj
 import { runUltraPlan } from './x-plan/ultra.mjs';
 import { recommendPlanMode } from './x-plan/selection.mjs';
 
+const USAGE = `Usage: xm plan [options] [requirements text | file]
+
+Plan from requirements text, a file, or stdin, and save the session under .xm/plan.
+
+Options:
+  --mode <quick|standard|ultra>  Planning mode (default: quick)
+  --models <a,b>       Exact model slots for ultra mode (at least 2)
+  --recommend          Print the recommended mode and exit
+  --validate           Validate a PlanEnvelope JSON (--file or stdin)
+  --persist            Validate and save a PlanEnvelope JSON
+  --session <run-id>   Continue a saved session under .xm/plan
+  --file <path>        Read the input from a file
+  --evidence <path>    evidence.json for standard or ultra
+  --questions <path>   questions.json for standard or ultra
+  --critique <path>    critique.json for standard
+  --output <path>      Save the plan to this path
+  --no-save            Do not save a session (dry run)
+  --json               Print JSON
+  --pretty | --compact JSON formatting
+  -h, --help           Print this help
+
+--validate and --persist read a PlanEnvelope JSON, not requirements text. To save an
+interview that is not finished, persist an envelope with status "incomplete" and
+executable false.
+`;
+
 function parseArgs(argv) {
+  if (argv.includes('--help') || argv.includes('-h')) return { help: true };
   const flags = { pretty: false, compact: false, json: false, validate: false, persist: false, recommend: false, noSave: false, output: null, file: null, mode: null, modeExplicit: false, models: null, evidence: null, questions: null, critique: null, session: null };
   const positional = [];
   for (let i = 0; i < argv.length; i += 1) {
@@ -98,6 +125,7 @@ function emitPlan(plan, validation, flags, extra = {}) {
 
 export async function main(argv = process.argv.slice(2), stdin = null) {
   const parsed = parseArgs(argv);
+  if (parsed.help) { process.stdout.write(USAGE); return 0; }
   if (parsed.error) { reportError({ json: argv.includes('--json') }, 'cli.usage', parsed.error); return 2; }
   const { flags, positional } = parsed;
   let body = ''; let source = 'literal';

@@ -80,6 +80,41 @@ describe('x-plan CLI', () => {
     expect(run(['--validate'], '{').status).toBe(2);
     const r = run(['--validate'], '{}'); expect(r.status).toBe(1); expect(r.stdout).toContain('[plan.missing_field]');
   });
+  test('--help and -h print the usage and exit 0', () => {
+    for (const flag of ['--help', '-h']) {
+      const r = run([flag]);
+      expect(r.status).toBe(0);
+      expect(r.stdout).toContain('Usage: xm plan');
+      for (const option of ['--recommend', '--persist', '--session', '--mode', '--file', '--evidence', '--questions', '--critique', '--validate', '--no-save', '--json']) expect(r.stdout).toContain(option);
+    }
+  });
+  test('requirements text given to --persist says that a PlanEnvelope JSON is expected', () => {
+    const r = run(['--persist', '--mode', 'standard', '--no-save'], 'goal line one\n');
+    expect(r.status).toBe(2);
+    expect(r.stdout).toContain('[plan.invalid_json]');
+    expect(r.stdout).toContain('status "incomplete" and executable false');
+  });
+  test('an unknown status names the values a plan can use', () => {
+    const envelope = { schema_version: 1, status: 'needs_clarification', executable: false, goal: 'g', requirements: [], assumptions: [], decision: {}, tasks: [], steps: [], validation: {}, disagreements: [], unresolved_questions: ['q'], provenance: {} };
+    const r = run(['--validate'], JSON.stringify(envelope));
+    expect(r.status).toBe(1);
+    expect(r.stdout).toContain('invalid status "needs_clarification"; status must be complete or incomplete');
+  });
+  test('an incomplete envelope with requirements and no tasks yet persists, with the gap as a warning', () => {
+    const envelope = { schema_version: 1, status: 'incomplete', executable: false, goal: 'g', requirements: [{ id: 'R1', text: 'r', priority: 'must' }], assumptions: [], decision: {}, tasks: [], steps: [], validation: { commands: [] }, disagreements: [], unresolved_questions: ['Which format?'], provenance: {} };
+    const r = run(['--persist', '--mode', 'standard', '--no-save'], JSON.stringify(envelope));
+    expect(r.status).toBe(0);
+    expect(r.stdout).toContain('[requirement.uncovered]');
+    const complete = run(['--validate'], JSON.stringify({ ...envelope, status: 'complete', unresolved_questions: [] }));
+    expect(complete.status).toBe(1);
+    expect(complete.stdout).toContain('[requirement.uncovered]');
+  });
+  test('an incomplete envelope persists with --persist --mode standard, as the skill describes', () => {
+    const envelope = { schema_version: 1, status: 'incomplete', executable: false, goal: 'g', requirements: [{ id: 'R1', text: 'r', priority: 'must' }], assumptions: [], decision: {}, tasks: [{ id: 'T1', title: 't', requirement_refs: ['R1'], done_criteria: ['d'] }], steps: [['T1']], validation: { commands: [] }, disagreements: [], unresolved_questions: ['Which format?'], provenance: {} };
+    const r = run(['--persist', '--mode', 'standard', '--no-save'], JSON.stringify(envelope));
+    expect(r.status).toBe(0);
+    expect(r.stdout).toContain('Status: incomplete');
+  });
   test('rejects conflicting output flags as JSON', () => {
     const r = run(['--pretty', '--compact', 'x']); expect(r.status).toBe(2); expect(r.stderr).toContain('--pretty and --compact conflict');
   });
