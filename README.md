@@ -14,7 +14,7 @@
 </p>
 
 <p align="center">
-  <a href="https://github.com/x-mesh/xm/releases"><img src="https://img.shields.io/badge/version-2.53.0-blue" alt="Version" /></a>
+  <a href="https://github.com/x-mesh/xm/releases"><img src="https://img.shields.io/badge/version-2.54.0-blue" alt="Version" /></a>
   <a href="./LICENSE"><img src="https://img.shields.io/badge/license-MIT-green" alt="License: MIT" /></a>
   <a href="https://nodejs.org"><img src="https://img.shields.io/badge/node-%3E%3D18-brightgreen" alt="Node.js" /></a>
   <a href="#plugins"><img src="https://img.shields.io/badge/plugins-18-orange" alt="Plugins" /></a>
@@ -515,7 +515,9 @@ xm build progress verify --plan <run-id> --task T1
 xm build progress show --plan <run-id>
 ```
 
-`verify` checks a task only if one of its expected files changed after `start` and each command that it runs exits 0. A task with `verify_commands` runs them, and the plan's `validation.commands` run with the last task left to verify. A task with no `verify_commands` runs the plan's `validation.commands`. If they fail while another task is still open, `verify` exits 0 and records the task as deferred. A task whose dependency is deferred is deferred too. A deferred task is not checked. It is checked when the plan's `validation.commands` pass, its own commands pass again, and one of its expected files still differs from `start`. If one of these conditions fails, the task stays deferred, and `verify` lists it under `still_deferred` with the reason. Each command has a limit of 120 seconds. If a command of the task that `verify` was called for fails in any other case, `verify` exits 2 and records nothing for that task. `.xm/plan/<run-id>/progress.json` keeps the state, and `tasks.md` in the same directory shows it as a checklist. Do not edit these two files.
+`verify` checks a task only if one of its expected files changed after `start` and each command that it runs exits 0. A task with `verify_commands` runs them, and the plan's `validation.commands` run with the last task left to verify. A task with no `verify_commands` runs the plan's `validation.commands`. If they fail while another task is still open, `verify` exits 0 and records the task as deferred. A task whose dependency is deferred is deferred too. A deferred task is not checked. It is checked when the plan's `validation.commands` pass, its own commands pass again, and one of its expected files still differs from `start`. If one of these conditions fails, the task stays deferred, and `verify` lists it under `still_deferred` with the reason. Each command has a limit of 120 seconds unless the plan sets `execution.command_timeout_seconds`. If a command of the task that `verify` was called for fails in any other case, `verify` exits 2 and records nothing for that task. `.xm/plan/<run-id>/progress.json` keeps the state, and `tasks.md` in the same directory shows it as a checklist. Do not edit these two files.
+
+A plan that sets `execution.lanes: true` runs each task of a step with two or more tasks in its own git worktree (a lane). Commit the work of the earlier steps first, because each lane starts from `HEAD`. `start` prints the lane path, and `verify` runs the task's `verify_commands` in the lane. Then run `xm build progress merge --plan <run-id> --task <id>` for one task at a time. `merge` refuses a lane that changed a file outside the task's `expected_files`. It commits the lane, merges it into the current branch, and runs the task's `verify_commands` again. If the merge has a conflict or a command fails, `merge` cancels the merge and exits 2. The other lanes can still merge.
 
 `xm build plan` delegates to the same x-plan entry point and is deprecated. `xm build legacy-plan` retains the former PRD/task/phase planner for explicit compatibility use.
 
