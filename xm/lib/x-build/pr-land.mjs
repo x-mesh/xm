@@ -2,7 +2,7 @@ import { existsSync, readdirSync, readFileSync } from 'node:fs';
 import { spawnSync } from 'node:child_process';
 import { join } from 'node:path';
 
-const USAGE = 'Usage: xm pr land [<number|url|branch>] [--wait] [--timeout <sec>] [--allow-no-checks] [--require-check <name>]... [--require-review] [--cleanup] [--dry-run|--yes] [--json]';
+const USAGE = 'Usage: xm pr land [<number|url|branch>] [--wait|--wait-required] [--timeout <sec>] [--allow-no-checks] [--require-check <name>]... [--require-review] [--cleanup] [--dry-run|--yes] [--json]';
 const VIEW_FIELDS = 'number,url,state,isDraft,baseRefName,headRefName,headRefOid,isCrossRepository,mergeable,mergeStateStatus,mergeCommit,mergedAt';
 const MERGEABLE_STATES = ['CLEAN', 'HAS_HOOKS', 'UNSTABLE'];
 const DEFAULT_TIMEOUT_SEC = 1800;
@@ -225,13 +225,17 @@ function cmdLand(args) {
   const json = args.includes('--json');
   const dryRun = args.includes('--dry-run');
   const yes = args.includes('--yes');
-  const wait = args.includes('--wait');
+  // --wait-required waits for the verdict of the --require-check checks only, so a caller can read a
+  // review while CI still runs. It changes when the wait ends, never what blocks the merge.
+  const waitRequired = args.includes('--wait-required');
+  const wait = waitRequired || args.includes('--wait');
   const requireReview = args.includes('--require-review');
   const cleanup = args.includes('--cleanup');
   const allowNoChecks = args.includes('--allow-no-checks');
   if (dryRun && yes) return fail(action, '--dry-run and --yes cannot be combined', { json });
   const required = requireCheckNames(args);
   if (!required) return fail(action, '--require-check needs a check name', { json });
+  if (waitRequired && !required.length) return fail(action, '--wait-required needs --require-check', { json });
   const positional = positionalArgs(args, ['--timeout', '--require-check']);
   if (positional.length > 1) return fail(action, USAGE, { json });
   const timeoutRaw = option(args, '--timeout');
@@ -276,8 +280,10 @@ function cmdLand(args) {
     requiredChecks = summarizeRequired(read.rows, required);
     const mergeUnknown = pr.mergeable === 'UNKNOWN';
     const requiredSettled = requiredChecks.every((check) => check.status === 'passed');
-    const settled = checks.status === 'failed' || requiredChecks.some((check) => check.status === 'failed')
-      || (requiredSettled && (checks.status === 'passed' || (checks.status === 'none' && allowNoChecks)) && !mergeUnknown);
+    const settled = waitRequired
+      ? requiredChecks.every((check) => check.status === 'passed' || check.status === 'failed')
+      : checks.status === 'failed' || requiredChecks.some((check) => check.status === 'failed')
+        || (requiredSettled && (checks.status === 'passed' || (checks.status === 'none' && allowNoChecks)) && !mergeUnknown);
     if (!wait || settled || pr.state !== 'OPEN' || pr.isDraft || Date.now() >= deadline) break;
     sleep(pollMs);
     viewed = viewPr(gh, target, cwd);

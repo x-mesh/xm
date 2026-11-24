@@ -67,11 +67,13 @@ Drive ONE open PR to merge inside the current session. The reviewer (an external
 
 ### Step 2 — Wait for the review (`--review reviewer`)
 
-Wait for the required check without merging:
+Wait for the verdict of the required check without merging:
 
 ```bash
-xm pr land <pr> --wait --timeout 900 --require-check <name> --dry-run --json
+xm pr land <pr> --wait-required --timeout 900 --require-check <name> --dry-run --json
 ```
+
+`--wait-required` returns as soon as the required check passes or fails. It does not wait for the other checks, so CI can still be running when you read the review. Step 8 waits for every check before the merge.
 
 `900` seconds is the default. If the user gave another timeout, use it and remember the value for the report. Exit code 2 means blocked or awaiting confirmation; it is expected here. Read `required_checks[]` (`name`, `status`, `description`) and branch on `status`:
 
@@ -83,9 +85,8 @@ xm pr land <pr> --wait --timeout 900 --require-check <name> --dry-run --json
 | `missing` after timeout | When `--on-missing` is `stop`, report "no reviewer check appeared" (user-facing: "reviewer 체크가 나타나지 않았습니다") with the timeout used. Stop. Nothing is merged. With `--on-missing here`, report the same line, then continue as `--review here` (Step 7). |
 
 `--on-missing` applies only to `missing` after the timeout. A `failed` check, a capped or errored review, and a `pending` check never switch to a review here.
-| `pending` or `missing` before the timeout | Another check failed, and `--wait` stops as soon as any check fails. Read `checks.failed`. If this PR's change caused the failure, fix it as one fix push (Step 5) and return to Step 2. Otherwise report the failed checks and stop. Never merge. |
 
-Tell the two `pending`/`missing` cases apart by elapsed time: the command ran for less than the timeout, and `checks.status` is `failed`.
+The same output lists the other checks. If `checks.failed` names a check that this PR's change broke, fix it in the same fix push as the review items (Step 5). If the failure does not come from this PR's change, report the failed checks and stop. Never merge. A check that is still pending needs no action here.
 
 ### Step 3 — Read the review
 
@@ -167,7 +168,7 @@ xm pr land <pr> --wait --require-review --yes
 xm pr land <pr> --wait --yes
 ```
 
-If the command stays blocked, read `blocker` and `required_checks[]` from `--json` output and report them. A failed, errored, or capped reviewer check is reported with its description and is never merged around. Do not use `--allow-no-checks`, raw `gh pr merge`, or `--admin` to pass a gate.
+If `blocker` is `checks failed: ...` and this PR's change caused the failure, fix it as one fix push (Step 5) and return to Step 2. If this PR's change did not cause it, report the failed checks and stop. If the command stays blocked for another reason, read `blocker` and `required_checks[]` from `--json` output and report them. A failed, errored, or capped reviewer check is reported with its description and is never merged around. Do not use `--allow-no-checks`, raw `gh pr merge`, or `--admin` to pass a gate.
 
 ### Step 9 — Report
 
