@@ -3710,6 +3710,15 @@ if (STOP_MODE) {
 
 // ── Pre-start checks ─────────────────────────────────────────────────
 
+// A server without its browser bundle still answers /api/health, so it looks
+// alive while every page 404s. Refuse to start instead, naming the directory.
+const missingAssets = BUILD_ASSETS.filter((name) => BUILD.assets[name] === null);
+if (missingAssets.length > 0) {
+  console.error(`[x-dashboard-server] browser assets missing under ${PUBLIC_DIR}: ${missingAssets.join(', ')}`);
+  console.error('[x-dashboard-server] reinstall the bundle that ships this server (xm update), or start it from a lib with a sibling public/');
+  process.exit(1);
+}
+
 checkDuplicateInstance();
 
 // Prime the trace-cost pricing cache from cost-engine before we accept requests,

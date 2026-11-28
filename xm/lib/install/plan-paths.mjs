@@ -21,8 +21,22 @@ import { codexVendorRelativePaths } from './transform/codex-vendor.mjs';
  * @property {string} skill           Owning skill identifier (e.g. xm-build).
  * @property {'overwrite'|'merge-marker'} writeMode
  * @property {0o600|0o644} mode
- * @property {'lib'|'skills'} [bundleSource] Which source tree a kind:'bundle' entry mirrors.
+ * @property {BundleSource} [bundleSource] Which source tree a kind:'bundle' entry mirrors.
  */
+
+/**
+ * @typedef {'lib'|'skills'|'public'} BundleSource
+ */
+
+/**
+ * Source trees mirrored beside each other under `<target>/xm/`. They must stay
+ * siblings because lib modules resolve the others relative to their own
+ * location: review-lifecycle.mjs reaches ../skills/, and
+ * x-dashboard-server.mjs serves ../public/. A tree missing here installs a lib
+ * that runs but cannot find its payload (the dashboard then 404s on `/`).
+ * @type {readonly BundleSource[]}
+ */
+export const BUNDLE_SOURCES = Object.freeze(['lib', 'skills', 'public']);
 
 /**
  * @param {import('./types.mjs').TargetTool} target
@@ -307,15 +321,6 @@ export function bundleDir(target, scope, root) {
   return join(bundleRootDir(target, scope, root), 'lib');
 }
 
-/**
- * @param {import('./types.mjs').TargetTool} target
- * @param {'global'|'local'} scope
- * @param {string} root
- * @returns {string}
- */
-function bundleSkillsDir(target, scope, root) {
-  return join(bundleRootDir(target, scope, root), 'skills');
-}
 
 /**
  * @typedef {Object} PlanInput
@@ -345,18 +350,10 @@ export function planTarget({ skills, target, scope, cwd = process.cwd() }) {
     else if (target === 'opencode') out.push(...planOpencode(s, scope, root));
   }
   out.push(...planSharedFiles(target, scope, root));
-  // Bundle entries (single representative per source tree; the renderer expands
-  // the actual file list). `skills/` ships beside `lib/` because lib modules
-  // reach into the skill tree at runtime — by relative import
-  // (review-lifecycle.mjs -> ../skills/review/scripts/*.mjs) and by computed
-  // reads (lens prompts under ../skills/review/lenses/). Mirroring only lib/
-  // left those paths unresolvable outside the Claude plugin cache, where the
-  // two trees are already siblings.
-  for (const bundleSource of /** @type {const} */ (['lib', 'skills'])) {
+  // One representative entry per source tree; the renderer expands the file list.
+  for (const bundleSource of BUNDLE_SOURCES) {
     out.push({
-      absolutePath: bundleSource === 'skills'
-        ? bundleSkillsDir(target, scope, root)
-        : bundleDir(target, scope, root),
+      absolutePath: join(bundleRootDir(target, scope, root), bundleSource),
       kind: 'bundle',
       bundleSource,
       skill: '*',

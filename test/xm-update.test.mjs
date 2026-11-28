@@ -1,6 +1,6 @@
 import { describe, test, expect } from 'bun:test';
 import { spawnSync } from 'node:child_process';
-import { chmodSync, copyFileSync, cpSync, mkdirSync, mkdtempSync, readFileSync, writeFileSync } from 'node:fs';
+import { chmodSync, copyFileSync, cpSync, existsSync, mkdirSync, mkdtempSync, readFileSync, writeFileSync } from 'node:fs';
 import { dirname, join } from 'node:path';
 import { tmpdir } from 'node:os';
 
@@ -124,7 +124,7 @@ describe('xm update cross-target convergence', () => {
     expect(result.stdout).toContain('Dry run — would run the xm installer');
   });
 
-  test('refreshes Codex even when the Claude marketplace version is already current', () => {
+  function updateWithCodexOverlay({ withPublic }) {
     const home = mkdtempSync(join(tmpdir(), 'xm-update-'));
     const bin = join(home, 'bin');
     const calls = join(home, 'calls.log');
@@ -146,6 +146,7 @@ describe('xm update cross-target convergence', () => {
     mkdirSync(cache, { recursive: true });
     cpSync(LIB, join(cache, 'lib'), { recursive: true });
     cpSync(SKILLS, join(cache, 'skills'), { recursive: true });
+    if (withPublic) cpSync(join(REPO, 'xm', 'public'), join(cache, 'public'), { recursive: true });
     copyFileSync(join(REPO, 'xm', 'skills.checksums.json'), join(cache, 'skills.checksums.json'));
     mkdirSync(join(cache, '.claude-plugin'), { recursive: true });
     copyFileSync(join(REPO, 'xm', '.claude-plugin', 'plugin.json'), join(cache, '.claude-plugin', 'plugin.json'));
@@ -162,6 +163,11 @@ describe('xm update cross-target convergence', () => {
     const result = spawnSync('bash', [SCRIPT, 'update', '--no-cli'], {
       cwd: home, env, encoding: 'utf8', timeout: 60_000,
     });
+    return { home, calls, result };
+  }
+
+  test('refreshes Codex even when the Claude marketplace version is already current', () => {
+    const { home, calls, result } = updateWithCodexOverlay({ withPublic: true });
     if (result.status !== 0) throw new Error(`stdout:\n${result.stdout}\nstderr:\n${result.stderr}`);
     expect(result.status).toBe(0);
     expect(result.stdout).toContain('Claude marketplace is already current; checking installed overlays.');
@@ -171,7 +177,16 @@ describe('xm update cross-target convergence', () => {
     expect(log).not.toContain('claude plugin');
 
     const plugin = JSON.parse(readFileSync(join(home, 'plugins', 'xm', '.codex-plugin', 'plugin.json'), 'utf8'));
+    expect(existsSync(join(home, '.codex', 'xm', 'public', 'index.html'))).toBe(true);
     expect(plugin.version).toMatch(new RegExp(`^${VERSION.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}\\+codex\\.local-`));
+  });
+
+  // The propagate call ran as a bare assignment under set -e, so a failing
+  // overlay ended `xm update` with no reason printed at all.
+  test('names the overlay error when propagation fails', () => {
+    const { result } = updateWithCodexOverlay({ withPublic: false });
+    expect(result.stdout).toContain('propagate exited 1');
+    expect(result.stdout).toContain('codex: plan failed: x-dashboard-server.mjs is bundled but its assets are missing');
   });
 
   // bash keeps executing the dispatcher file it started from, so before the
@@ -226,6 +241,7 @@ describe('xm update cross-target convergence', () => {
     mkdirSync(join(cache, '.claude-plugin'), { recursive: true });
     cpSync(LIB, join(cache, 'lib'), { recursive: true });
     cpSync(SKILLS, join(cache, 'skills'), { recursive: true });
+    cpSync(join(REPO, 'xm', 'public'), join(cache, 'public'), { recursive: true });
     copyFileSync(join(REPO, 'xm', 'skills.checksums.json'), join(cache, 'skills.checksums.json'));
     copyFileSync(join(REPO, 'xm', '.claude-plugin', 'plugin.json'), join(cache, '.claude-plugin', 'plugin.json'));
     writeFileSync(join(home, '.claude', 'plugins', 'installed_plugins.json'), JSON.stringify({ plugins: { 'xm@xm': [{ version: VERSION }] } }));

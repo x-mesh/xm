@@ -341,6 +341,28 @@ trap _xm_trace_record EXIT
 case "$CMD" in
   dashboard|dash)
     LIB_PATH="$(plugin_lib dashboard)"
+    # The server serves ../public beside its lib. A lib without it (e.g. a
+    # Codex bundle installed before public/ was mirrored) starts fine and then
+    # 404s every page, so fall back to the newest cache lib that has one.
+    if [ -n "$LIB_PATH" ] && [ -f "$LIB_PATH/x-dashboard-server.mjs" ] \
+      && [ ! -f "$LIB_PATH/../public/index.html" ]; then
+      SKIPPED_LIB="$LIB_PATH"
+      LIB_PATH=""
+      for CANDIDATE in \
+        "$(ls -d "$HOME/.claude/plugins/cache/xm/xm"/*/lib 2>/dev/null | sort -V | tail -1)" \
+        "$(ls -d "$HOME/.claude/plugins/cache/xm/dashboard"/*/lib 2>/dev/null | sort -V | tail -1)"; do
+        if [ -n "$CANDIDATE" ] && [ -f "$CANDIDATE/x-dashboard-server.mjs" ] \
+          && [ -f "$CANDIDATE/../public/index.html" ]; then
+          LIB_PATH="$CANDIDATE"; break
+        fi
+      done
+      if [ -z "$LIB_PATH" ]; then
+        echo "xm dashboard: $SKIPPED_LIB has no ../public/ (browser assets) and no cache lib has one" >&2
+        echo "  Reinstall: xm update" >&2
+        exit 1
+      fi
+      echo "xm dashboard: $SKIPPED_LIB has no ../public/; using $LIB_PATH (run xm update to repair)" >&2
+    fi
     if [ -z "$LIB_PATH" ] || [ ! -f "$LIB_PATH/x-dashboard-server.mjs" ]; then
       echo "xm dashboard: x-dashboard-server.mjs not found under $LIB" >&2
       echo "  Install bundle: /plugin install xm@xm" >&2
@@ -1153,22 +1175,17 @@ case "$CMD" in
         NEW_CLI="$(ls -d "$HOME/.claude/plugins/cache/xm/xm"/*/lib/install/install-cli.mjs 2>/dev/null | sort -V | tail -1 || true)"
       fi
       if [ -n "$NEW_CLI" ] && [ -f "$NEW_CLI" ]; then
-        # Snapshot lib + skills to tmpdir to avoid source-race when plugin cache
-        # is concurrently rewritten by another marketplace update.
+        # Snapshot the whole version dir to tmpdir to avoid a source-race when
+        # the plugin cache is concurrently rewritten by another marketplace
+        # update. Whole, not a list: the installer reads trees beside lib/
+        # (skills/, public/, .claude-plugin/, skills.checksums.json), and each
+        # tree a hand-kept list missed broke one overlay while the rest
+        # appeared to update (plugin.json for Codex, then public/ for the
+        # dashboard).
         NEW_CACHE_ROOT="$(dirname "$(dirname "$(dirname "$NEW_CLI")")")"   # .../xm/<version>/
         SNAPSHOT_DIR="$(mktemp -d "${TMPDIR:-/tmp}/xm-propagate-XXXXXX")"
         trap 'rm -rf "$SNAPSHOT_DIR"' EXIT INT TERM
-        cp -R "$NEW_CACHE_ROOT/lib" "$SNAPSHOT_DIR/lib" 2>/dev/null
-        cp -R "$NEW_CACHE_ROOT/skills" "$SNAPSHOT_DIR/skills" 2>/dev/null
-        [ ! -f "$NEW_CACHE_ROOT/skills.checksums.json" ] || cp "$NEW_CACHE_ROOT/skills.checksums.json" "$SNAPSHOT_DIR/skills.checksums.json"
-        # Codex rendering needs the plugin version next to skills/. The old
-        # snapshot omitted both metadata candidates, so only the Codex target
-        # failed while other overlays appeared to update successfully.
-        if [ -d "$NEW_CACHE_ROOT/.claude-plugin" ]; then
-          cp -R "$NEW_CACHE_ROOT/.claude-plugin" "$SNAPSHOT_DIR/.claude-plugin" 2>/dev/null
-        elif [ -f "$NEW_CACHE_ROOT/package.json" ]; then
-          cp "$NEW_CACHE_ROOT/package.json" "$SNAPSHOT_DIR/package.json" 2>/dev/null
-        fi
+        cp -R "$NEW_CACHE_ROOT/." "$SNAPSHOT_DIR/"
         SNAP_CLI="$SNAPSHOT_DIR/lib/install/install-cli.mjs"
         SNAP_LIB="$SNAPSHOT_DIR/lib"
         SNAP_SKILLS="$SNAPSHOT_DIR/skills"
@@ -1179,8 +1196,10 @@ case "$CMD" in
           # fresh SemVer build suffix so `codex plugin add` cannot retain stale
           # Skill files when the Claude release version itself is unchanged.
           CODEX_CACHEBUSTER="local-$(date -u +%Y%m%d-%H%M%S)-$$"
-          PROPAGATE_OUT="$(XM_CODEX_CACHEBUSTER="$CODEX_CACHEBUSTER" node "$SNAP_CLI" --propagate --lib-dir "$SNAP_LIB" --skills-dir "$SNAP_SKILLS" 2>&1)"
-          PROPAGATE_EXIT=$?
+          # `|| PROPAGATE_EXIT=$?` keeps set -e from ending the script on this
+          # assignment, which skipped the failure report below and exited silently.
+          PROPAGATE_EXIT=0
+          PROPAGATE_OUT="$(XM_CODEX_CACHEBUSTER="$CODEX_CACHEBUSTER" node "$SNAP_CLI" --propagate --lib-dir "$SNAP_LIB" --skills-dir "$SNAP_SKILLS" 2>&1)" || PROPAGATE_EXIT=$?
           if [ "$PROPAGATE_EXIT" = "0" ]; then
             SUMMARY="$(printf '%s' "$PROPAGATE_OUT" | node -e '
               let s=""; process.stdin.on("data",c=>s+=c).on("end",()=>{
@@ -1244,7 +1263,19 @@ case "$CMD" in
             fi
           else
             echo "⚠️  propagate exited $PROPAGATE_EXIT"
-            echo "$PROPAGATE_OUT" | sed "s/^/    /" | tail -10
+            PROPAGATE_ERRORS="$(printf '%s' "$PROPAGATE_OUT" | node -e '
+              let s=""; process.stdin.on("data",c=>s+=c).on("end",()=>{
+                try {
+                  for (const row of JSON.parse(s).results || []) {
+                    if (row.status === "failed") console.log(`${row.target}: ${row.error || "failed"}`);
+                  }
+                } catch {}
+              })')" || PROPAGATE_ERRORS=""
+            if [ -n "$PROPAGATE_ERRORS" ]; then
+              echo "$PROPAGATE_ERRORS" | sed "s/^/    /"
+            else
+              echo "$PROPAGATE_OUT" | sed "s/^/    /" | tail -10
+            fi
           fi
         else
           echo "⚠️  propagate snapshot incomplete — skipping fan-out"

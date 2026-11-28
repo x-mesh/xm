@@ -11,7 +11,7 @@ import { describe, it, expect, beforeAll, afterAll, beforeEach, afterEach } from
 import { spawn } from 'node:child_process';
 import { join, dirname, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
-import { mkdirSync, writeFileSync, rmSync, existsSync, readFileSync, mkdtempSync, statSync, renameSync, realpathSync } from 'node:fs';
+import { cpSync, mkdirSync, writeFileSync, rmSync, existsSync, readFileSync, mkdtempSync, statSync, renameSync, realpathSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { SCHEMA } from '../../x-build/lib/config-schema.mjs';
 
@@ -1250,6 +1250,16 @@ describe('GET /api/config/schema — bundle-layout smoke (P3)', () => {
   const ESCAPE_LEDGER_SRC = readFileSync(join(PROJECT_ROOT, 'x-dashboard', 'lib', 'x-build', 'escape-ledger.mjs'), 'utf8');
   const ATTENTION_RANK_SRC = readFileSync(join(PROJECT_ROOT, 'x-dashboard', 'lib', 'x-build', 'attention-rank.mjs'), 'utf8');
 
+  // The server serves ../public beside its lib and refuses to start without it,
+  // so the simulated bundle mirrors that layout: <root>/lib/server.mjs + <root>/public/.
+  function makeBundleLib(prefix) {
+    const root = mkdtempSync(prefix);
+    cpSync(join(PROJECT_ROOT, 'x-dashboard', 'public'), join(root, 'public'), { recursive: true });
+    const lib = join(root, 'lib');
+    mkdirSync(lib);
+    return lib;
+  }
+
   function writeStaticDependencies(dir) {
     mkdirSync(join(dir, 'x-build'), { recursive: true });
     writeFileSync(join(dir, 'x-build', 'escape-ledger.mjs'), ESCAPE_LEDGER_SRC);
@@ -1286,7 +1296,7 @@ describe('GET /api/config/schema — bundle-layout smoke (P3)', () => {
   }
 
   it('resolves schema (200, full entry count) when config-schema.mjs + x-build/worktree-shared.mjs sit flat next to the server', async () => {
-    const dir = mkdtempSync(join(tmpdir(), 'xdb-bundle-smoke-'));
+    const dir = makeBundleLib(join(tmpdir(), 'xdb-bundle-smoke-'));
     let proc;
     const port = 19895;
     try {
@@ -1302,12 +1312,12 @@ describe('GET /api/config/schema — bundle-layout smoke (P3)', () => {
       expect(body.entries.length).toBe(SCHEMA.length);
     } finally {
       try { proc?.kill('SIGTERM'); } catch {}
-      rmSync(dir, { recursive: true, force: true });
+      rmSync(dirname(dir), { recursive: true, force: true });
     }
   });
 
   it('serves review precision from the standalone dashboard package layout', async () => {
-    const dir = mkdtempSync(join(tmpdir(), 'xdb-standalone-smoke-'));
+    const dir = makeBundleLib(join(tmpdir(), 'xdb-standalone-smoke-'));
     let proc;
     const port = 19893;
     try {
@@ -1338,12 +1348,12 @@ describe('GET /api/config/schema — bundle-layout smoke (P3)', () => {
       expect(body.totals).toMatchObject({ decided: 1, fix_now: 1, precision: 1 });
     } finally {
       try { proc?.kill('SIGTERM'); } catch {}
-      rmSync(dir, { recursive: true, force: true });
+      rmSync(dirname(dir), { recursive: true, force: true });
     }
   });
 
   it('degrades to 503 when neither config-schema.mjs nor x-build/worktree-shared.mjs is present', async () => {
-    const dir = mkdtempSync(join(tmpdir(), 'xdb-bundle-smoke-missing-'));
+    const dir = makeBundleLib(join(tmpdir(), 'xdb-bundle-smoke-missing-'));
     let proc;
     const port = 19894;
     try {
@@ -1356,7 +1366,7 @@ describe('GET /api/config/schema — bundle-layout smoke (P3)', () => {
       expect(res.status).toBe(503);
     } finally {
       try { proc?.kill('SIGTERM'); } catch {}
-      rmSync(dir, { recursive: true, force: true });
+      rmSync(dirname(dir), { recursive: true, force: true });
     }
   });
 });

@@ -19,7 +19,7 @@ import { parseTargets, safeJoin, scanSecrets } from './security.mjs';
 import { TARGET_TOOLS, PRD_VERSION, targetDirFor } from './types.mjs';
 import { scanAll, listMissingCliRefs } from './scan.mjs';
 import { checksumFiles } from './util/reference-checksum.mjs';
-import { planAll, planTarget, bundleDir } from './plan-paths.mjs';
+import { planAll, planTarget, bundleDir, BUNDLE_SOURCES } from './plan-paths.mjs';
 import { writeOverwrite, writeMergeMarker, removeMarkerBlock } from './merge.mjs';
 import { renderCursorWithDiagnostics } from './transform/cursor.mjs';
 import { renderCursorShared, discoverPluginRoots } from './transform/cursor-shared.mjs';
@@ -375,11 +375,33 @@ function mirrorTreeOutputs(sourceDir, base, mode) {
   return outputs;
 }
 
+const DASHBOARD_SERVER = 'x-dashboard-server.mjs';
+
 /**
- * Mirror `xm/lib` and `xm/skills` into the target's bundle directory so
- * generated skills and hooks can execute the CLI paths produced by
- * expandPaths(). Both trees ship because lib modules resolve skill payloads
- * relative to their own location; see the bundle entries in plan-paths.mjs.
+ * Source directory for each bundled tree. `public/` sits beside `lib/` in both
+ * the repo (xm/) and the plugin cache. It is optional only for a lib that ships
+ * no dashboard server: a bundled server without it starts, then 404s on `/`.
+ *
+ * @param {string} libDir
+ * @param {string} skillsDir
+ * @returns {Partial<Record<import('./plan-paths.mjs').BundleSource, string>>}
+ */
+export function resolveBundleTrees(libDir, skillsDir) {
+  const publicDir = resolve(libDir, '..', 'public');
+  /** @type {Partial<Record<import('./plan-paths.mjs').BundleSource, string>>} */
+  const trees = { lib: libDir, skills: skillsDir };
+  if (existsSync(publicDir)) {
+    trees.public = publicDir;
+  } else if (existsSync(join(libDir, DASHBOARD_SERVER))) {
+    throw new Error(`${DASHBOARD_SERVER} is bundled but its assets are missing: ${publicDir}`);
+  }
+  return trees;
+}
+
+/**
+ * Mirror `xm/lib`, `xm/skills` and `xm/public` into the target's bundle
+ * directory so generated skills and hooks can execute the CLI paths produced
+ * by expandPaths(); see BUNDLE_SOURCES in plan-paths.mjs.
  *
  * @param {string} libDir
  * @param {string} skillsDir
@@ -390,10 +412,11 @@ function mirrorTreeOutputs(sourceDir, base, mode) {
 function renderBundleOutputs(libDir, skillsDir, target, scope) {
   const xmDir = join(targetDirFor(target, scope), 'xm');
   const mode = scope === 'global' ? 0o600 : 0o644;
-  return [
-    ...mirrorTreeOutputs(libDir, join(xmDir, 'lib'), mode),
-    ...mirrorTreeOutputs(skillsDir, join(xmDir, 'skills'), mode),
-  ];
+  const trees = resolveBundleTrees(libDir, skillsDir);
+  return BUNDLE_SOURCES.flatMap((source) => {
+    const sourceDir = trees[source];
+    return sourceDir ? mirrorTreeOutputs(sourceDir, join(xmDir, source), mode) : [];
+  });
 }
 
 /**
@@ -403,13 +426,15 @@ function renderBundleOutputs(libDir, skillsDir, target, scope) {
  * @returns {ReturnType<typeof planTarget>}
  */
 function expandBundlePlanEntries(entries, libDir, skillsDir) {
+  const trees = resolveBundleTrees(libDir, skillsDir);
   const expanded = [];
   for (const entry of entries) {
     if (entry.kind !== 'bundle') {
       expanded.push(entry);
       continue;
     }
-    const sourceDir = entry.bundleSource === 'skills' ? skillsDir : libDir;
+    const sourceDir = trees[entry.bundleSource ?? 'lib'];
+    if (!sourceDir) continue;
     const walk = (dir) => {
       for (const child of readdirSync(dir, { withFileTypes: true }).sort((a, b) => a.name.localeCompare(b.name))) {
         const abs = join(dir, child.name);
